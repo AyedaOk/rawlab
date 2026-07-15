@@ -67,8 +67,18 @@
 
 ## Milestone 7: Qt 6 GUI
 
-- Add Qt 6 desktop application after raw pipeline proof-of-concepts work.
-- Use filesystem open/save workflow, not a catalog system.
+- Status: Next
+- Add a Qt 6 Widgets desktop application after the raw pipeline proof-of-concepts.
+- Use a single-image filesystem open/save workflow, not a catalog or project database.
+- Open a RAW file and generate an RGB preview through LibRaw.
+- Keep Bayer CFA data as the processing truth; RGB is only a display and SAM input.
+- Display the preview with a mask overlay.
+- Add positive and negative SAM point interaction.
+- Run the SAM encoder once and reuse cached embeddings while points change.
+- Re-run only the SAM decoder when prompts change.
+- Run RawNIND through `RawProcessingPipeline`.
+- Provide blend controls without rerunning inference in the GUI process.
+- Map preview masks back to raw coordinates and export non-demosaiced Bayer CFA DNG.
 
 ## Milestone 8: CLI And PoC Command Cleanup
 
@@ -84,4 +94,3 @@
 - Evaluate tiled DNG layout versus scanline strips.
 - Evaluate whether writing only the active area is safe without breaking CFA phase or reader compatibility.
 - Compare output compatibility in darktable, RawTherapee, and `exiftool` before making compression/cropping default.
-

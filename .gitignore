@@ -8,3 +8,4 @@ build/
 .cache/
 .idea/
 .vscode/
+session-*.md
