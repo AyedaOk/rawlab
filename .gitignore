@@ -1,0 +1,10 @@
+build/
+*.dng
+*.png
+*.raw
+*.ARW
+*.arw
+*.onnx
+.cache/
+.idea/
+.vscode/

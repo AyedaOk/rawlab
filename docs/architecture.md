@@ -1,0 +1,59 @@
+# Architecture
+
+RawLab is a cross-platform desktop application for raw photo preprocessing. Linux/KDE Plasma is the primary target, but core code should avoid platform-specific assumptions.
+
+The first implementation phase is not GUI-first. The core risks are raw decoding, CFA preservation, Darktable-style CFA restore, non-demosaiced CFA DNG export, ONNX inference, and mask-to-raw coordinate mapping.
+
+## Initial Components
+
+- `rawlab_core`: reusable raw-domain processing library.
+- `rawlab_cli`: proof-of-concept command-line entrypoint for decode, inspect, process, and export experiments.
+- `rawlab_app`: future Qt 6 desktop application; do not add until the raw pipeline is proven.
+- `tests`: automated checks for deterministic core behavior.
+
+## Pipeline Direction
+
+```text
+RAW file
+  -> raw decoder preserving CFA samples
+  -> canonical RawImage representation
+  -> global CFA modules
+  -> local CFA modules with masks
+  -> CFA-domain blend/composition
+  -> non-demosaiced Bayer CFA DNG export
+```
+
+Demosaiced RGB previews are derived views only. They must not become the internal processing truth.
+
+`RawProcessingPipeline` is the current core pipeline skeleton. It owns full-image RawNIND Bayer orchestration, optional clipped-highlight preservation, post-inference blend-with-original, and masked CFA blending. CLI commands should call this core pipeline instead of owning denoise tiling or local-mask composition directly.
+
+`Sam2Segmenter` owns the interactive segmentation context: the RGB preview encoder runs once, embeddings are cached, and decoder calls can reuse those embeddings and previous-mask feedback as point prompts change. Mask PNGs are preview-space interchange artifacts; CFA composition maps them back to raw coordinates.
+
+## CfaRestoreModel
+
+`CfaRestoreModel` is the model adapter name for denoisers/restorers that consume CFA-derived input and produce CFA-compatible output for export.
+
+The preferred RawNIND Bayer path follows Darktable's approach:
+
+```text
+source CFA
+  -> black-subtract, range-normalize, optional WB normalization
+  -> pack Bayer as 4-channel R/G1/G2/B tensor, forcing RGGB when required
+  -> run ONNX model
+  -> gain-match model output when required
+  -> re-mosaic temporary camRGB output back to one CFA sample per pixel
+  -> cache/produce denoised CFA
+  -> blend original CFA with denoised CFA in C++
+  -> write Bayer CFA DNG
+```
+
+The temporary camRGB output is an implementation detail of some `CfaRestoreModel` backends. The app-level result remains CFA-compatible data.
+
+Blend-with-original is not part of inference. The denoised CFA result should be reusable so UI/module blend changes can recompute only the CFA blend, not the ONNX model.
+
+## Module Model
+
+- A global module applies to the whole raw image.
+- A local module owns its mask, model selection, settings, and blend-with-original amount.
+- Multiple local mask modules must be supported.
+- Module outputs are composed in CFA space for the Bayer DNG export path.
