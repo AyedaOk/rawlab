@@ -1,7 +1,10 @@
 #include "rawlab/core/Version.h"
+#include "rawlab/ai/RawForgeAdapter.h"
 #include "rawlab/dng/DngWriter.h"
 #include "rawlab/image/PngImage.h"
+#include "rawlab/image/RawPreview.h"
 #include "rawlab/pipeline/Mask.h"
+#include "rawlab/pipeline/LayerComposition.h"
 #include "rawlab/pipeline/MaskedBlend.h"
 #include "rawlab/raw/BayerProcessing.h"
 #include "rawlab/raw/RawImage.h"
@@ -14,6 +17,8 @@
 #include <stdexcept>
 #include <string_view>
 #include <vector>
+
+#include <tiffio.h>
 
 namespace {
 
@@ -51,6 +56,11 @@ rawlab::raw::RawImage makeSyntheticRggbImage()
   metadata.activeArea = { 0, 0, 4, 4 };
   metadata.blackLevel = { 0.0f, 0.0f, 0.0f, 0.0f };
   metadata.whiteLevel = 16.0f;
+  metadata.iso = 640.0;
+  metadata.aperture = 2.8;
+  metadata.exposureTimeSeconds = 1.0 / 125.0;
+  metadata.focalLengthMm = 50.0;
+  metadata.captureTimestamp = 1'700'000'000;
   return rawlab::raw::RawImage{
     4,
     4,
@@ -122,6 +132,38 @@ int main()
     if(!nearlyEqual(remosaiced[i], expectedRemosaic[i])) return 1;
   }
 
+  rawlab::raw::RawMetadata rawForgeMetadata;
+  rawForgeMetadata.cfa = rggb;
+  rawForgeMetadata.whiteLevel = 1.0f;
+  rawForgeMetadata.cameraToXyz = {
+    1.0f, 0.1f, 0.0f,
+    0.0f, 1.0f, 0.2f,
+    0.3f, 0.0f, 1.0f,
+  };
+  std::vector<float> constantCfa(64);
+  for(int y = 0; y < 8; ++y)
+    for(int x = 0; x < 8; ++x)
+    {
+      const auto color = rawlab::raw::colorAt(rggb, x, y);
+      constantCfa[static_cast<std::size_t>(y * 8 + x)] = color == rawlab::raw::CfaColor::Red
+        ? 0.2f : color == rawlab::raw::CfaColor::Green ? 0.4f : 0.6f;
+    }
+  const rawlab::raw::RawImage rawForgeInput{8, 8, constantCfa, rawForgeMetadata};
+  const std::vector<float> rec2020 = rawlab::ai::RawForgeAdapter::demosaicToLinearRec2020(
+    rawForgeInput);
+  const std::array<float, 3> expectedRec2020{
+    1.7166512f * 0.24f - 0.3556708f * 0.52f - 0.2533663f * 0.66f,
+    -0.6666844f * 0.24f + 1.6164812f * 0.52f + 0.0157685f * 0.66f,
+    0.0176399f * 0.24f - 0.0427706f * 0.52f + 0.9421031f * 0.66f,
+  };
+  for(int channel = 0; channel < 3; ++channel)
+    if(!nearlyEqual(rec2020[static_cast<std::size_t>(channel) * 64 + 27],
+                    expectedRec2020[static_cast<std::size_t>(channel)])) return 1;
+  const rawlab::raw::RawImage rawForgeRoundTrip =
+    rawlab::ai::RawForgeAdapter::remosaicFromLinearRec2020(rawForgeInput, rec2020);
+  for(std::size_t i = 0; i < constantCfa.size(); ++i)
+    if(!nearlyEqual(rawForgeRoundTrip.samples()[i], constantCfa[i])) return 1;
+
   rawlab::raw::RawMetadata blendMetadata = image.metadata();
   rawlab::raw::RawImage processed{
     4,
@@ -178,6 +220,28 @@ int main()
   if(!nearlyEqual(split.sampleNearest(2, 0), 1.0f)) return 1;
   if(!nearlyEqual(split.sampleNearest(3, 1), 1.0f)) return 1;
 
+  const rawlab::pipeline::Mask feathered = rawlab::pipeline::featherMask(
+    rawlab::pipeline::verticalSplitMask(9, 3), 2.0f);
+  if(!nearlyEqual(feathered.sampleNearest(1, 1), 0.0f)) return 1;
+  if(!nearlyEqual(feathered.sampleNearest(3, 1), 0.375f)) return 1;
+  if(!nearlyEqual(feathered.sampleNearest(4, 1), 0.625f)) return 1;
+  if(!nearlyEqual(feathered.sampleNearest(6, 1), 1.0f)) return 1;
+  const rawlab::pipeline::Mask blurred = rawlab::pipeline::blurMask(
+    rawlab::pipeline::verticalSplitMask(9, 3), 1.0f);
+  if(!nearlyEqual(blurred.sampleNearest(3, 1), 1.0f / 3.0f)) return 1;
+  if(!nearlyEqual(blurred.sampleNearest(4, 1), 2.0f / 3.0f)) return 1;
+  if(!nearlyEqual(mask.sampleBilinear(0.5f, 0.5f), 0.625f)) return 1;
+
+  rawlab::pipeline::Mask painted = rawlab::pipeline::filledMask(9, 9);
+  painted.paintSegment(4.5f, 4.5f, 4.5f, 4.5f, 2.0f, 1.0f, 1.0f);
+  if(!nearlyEqual(painted.sampleNearest(4, 4), 1.0f)) return 1;
+  if(!nearlyEqual(painted.sampleNearest(0, 0), 0.0f)) return 1;
+  painted.paintSegment(4.5f, 4.5f, 4.5f, 4.5f, 1.0f, 1.0f, 0.0f);
+  if(!nearlyEqual(painted.sampleNearest(4, 4), 0.0f)) return 1;
+  rawlab::pipeline::Mask softBrush = rawlab::pipeline::filledMask(9, 9);
+  softBrush.paintSegment(4.5f, 4.5f, 4.5f, 4.5f, 3.0f, 0.0f, 1.0f);
+  if(!(softBrush.sampleNearest(6, 4) > 0.0f && softBrush.sampleNearest(6, 4) < 1.0f)) return 1;
+
   const rawlab::pipeline::Mask previewMask{2, 2, std::vector<float>{ 0.0f, 0.25f, 0.75f, 1.0f }};
   if(!nearlyEqual(previewMask.sampleNearestMapped(0, 0, 4, 4), 0.0f)) return 1;
   if(!nearlyEqual(previewMask.sampleNearestMapped(1, 1, 4, 4), 0.0f)) return 1;
@@ -218,6 +282,180 @@ int main()
   if(!nearlyEqual(mappedSplit.sample(1, 3), image.sample(1, 3))) return 1;
   if(!nearlyEqual(mappedSplit.sample(2, 0), processed.sample(2, 0))) return 1;
   if(!nearlyEqual(mappedSplit.sample(3, 3), processed.sample(3, 3))) return 1;
+
+  const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(image, 2);
+  if(preview.image.width != 2 || preview.image.height != 2) return 1;
+  if(preview.image.pixels.size() != 12) return 1;
+  const rawlab::image::RawPreview fastPreview = rawlab::image::renderRawPreview(
+    image, 4, rawlab::image::PreviewQuality::Fast);
+  const rawlab::image::RawPreview highQualityPreview = rawlab::image::renderRawPreview(
+    image, 4, rawlab::image::PreviewQuality::High);
+  if(highQualityPreview.image.width != fastPreview.image.width
+     || highQualityPreview.image.height != fastPreview.image.height
+     || highQualityPreview.image.pixels == fastPreview.image.pixels) return 1;
+  rawlab::raw::RawMetadata largePreviewMetadata = image.metadata();
+  largePreviewMetadata.activeArea = {0, 0, 16, 8};
+  largePreviewMetadata.whiteLevel = 128.0f;
+  std::vector<float> largePreviewSamples(16 * 8);
+  for(std::size_t index = 0; index < largePreviewSamples.size(); ++index)
+  {
+    largePreviewSamples[index] = static_cast<float>((index * 17) % 127);
+  }
+  const rawlab::raw::RawImage largePreviewSource{
+    16, 8, std::move(largePreviewSamples), largePreviewMetadata,
+  };
+  const rawlab::image::RawPreview downsampledHigh = rawlab::image::renderRawPreview(
+    largePreviewSource, 4, rawlab::image::PreviewQuality::High);
+  if(downsampledHigh.image.width != 4 || downsampledHigh.image.height != 2) return 1;
+
+  rawlab::raw::RawMetadata neutralMetadata = image.metadata();
+  neutralMetadata.whiteLevel = 16.0f;
+  const rawlab::raw::RawImage neutralImage{
+    4, 4, std::vector<float>(16, 8.0f), neutralMetadata,
+  };
+  const rawlab::image::RawPreview neutralPreview = rawlab::image::renderRawPreview(neutralImage, 4);
+  for(std::size_t i = 0; i < neutralPreview.image.pixels.size(); i += 3)
+  {
+    if(neutralPreview.image.pixels[i] != neutralPreview.image.pixels[i + 1]
+       || neutralPreview.image.pixels[i] != neutralPreview.image.pixels[i + 2]) return 1;
+  }
+
+  rawlab::raw::RawMetadata rotatedMetadata = image.metadata();
+  rotatedMetadata.activeArea = {0, 0, 4, 2};
+  rotatedMetadata.flip = 6;
+  const rawlab::raw::RawImage rotatedSource{
+    4,
+    2,
+    std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f},
+    rotatedMetadata,
+  };
+  const rawlab::image::RawPreview rotatedPreview = rawlab::image::renderRawPreview(rotatedSource, 4);
+  if(rotatedPreview.image.width != 2 || rotatedPreview.image.height != 4) return 1;
+  const auto [previewX, previewY] = rotatedPreview.geometry.rawToPreview(0.5f, 0.5f);
+  const auto [mappedRawX, mappedRawY] = rotatedPreview.geometry.previewToRaw(previewX, previewY);
+  if(!nearlyEqual(mappedRawX, 0.5f) || !nearlyEqual(mappedRawY, 0.5f)) return 1;
+
+  const std::filesystem::path orientedDngPath = std::filesystem::temp_directory_path()
+                                                 / "rawlab-oriented-test.dng";
+  rawlab::dng::TiffDngWriter{}.writeCfaDng(orientedDngPath, rotatedSource);
+  TIFF *orientedTiff = TIFFOpen(orientedDngPath.string().c_str(), "r");
+  if(!orientedTiff) return 1;
+  std::uint16_t orientation = 0;
+  const int hasOrientation = TIFFGetField(orientedTiff, TIFFTAG_ORIENTATION, &orientation);
+  TIFFClose(orientedTiff);
+  std::filesystem::remove(orientedDngPath);
+  if(hasOrientation != 1 || orientation != ORIENTATION_RIGHTTOP) return 1;
+
+  rawlab::raw::RawMetadata phaseMetadata = image.metadata();
+  phaseMetadata.activeArea = {1, 1, 2, 2};
+  phaseMetadata.blackLevel = {10.0f, 20.0f, 30.0f, 40.0f};
+  phaseMetadata.colorMatrix1 = {
+    0.7f, -0.1f, 0.2f,
+    -0.2f, 1.1f, 0.1f,
+    0.05f, -0.3f, 0.9f,
+  };
+  phaseMetadata.whiteLevel = 100.0f;
+  const rawlab::raw::RawImage phaseSource{
+    4, 4, std::vector<float>(16, 12.0f), phaseMetadata,
+  };
+  const std::filesystem::path phaseDngPath = std::filesystem::temp_directory_path()
+                                               / "rawlab-phase-test.dng";
+  rawlab::dng::TiffDngWriter{}.writeCfaDng(phaseDngPath, phaseSource);
+  TIFF *phaseTiff = TIFFOpen(phaseDngPath.string().c_str(), "r");
+  if(!phaseTiff) return 1;
+  std::uint32_t patternCount = 0;
+  std::uint8_t *writtenPattern = nullptr;
+  std::uint32_t blackCount = 0;
+  float *writtenBlack = nullptr;
+  std::uint32_t matrixCount = 0;
+  float *writtenMatrix = nullptr;
+  const bool phaseTags = TIFFGetField(phaseTiff, TIFFTAG_CFAPATTERN,
+                                      &patternCount, &writtenPattern) == 1
+                          && TIFFGetField(phaseTiff, TIFFTAG_BLACKLEVEL,
+                                          &blackCount, &writtenBlack) == 1
+                          && TIFFGetField(phaseTiff, TIFFTAG_COLORMATRIX1,
+                                          &matrixCount, &writtenMatrix) == 1;
+  const bool phaseValues = phaseTags && patternCount == 4 && blackCount == 4 && matrixCount == 9
+                           && writtenPattern[0] == 2 && writtenPattern[1] == 1
+                           && writtenPattern[2] == 1 && writtenPattern[3] == 0
+                           && nearlyEqual(writtenBlack[0], 40.0f)
+                            && nearlyEqual(writtenBlack[1], 30.0f)
+                            && nearlyEqual(writtenBlack[2], 20.0f)
+                            && nearlyEqual(writtenBlack[3], 10.0f)
+                            && nearlyEqual(writtenMatrix[0], 0.7f)
+                            && nearlyEqual(writtenMatrix[8], 0.9f);
+  TIFFClose(phaseTiff);
+  std::filesystem::remove(phaseDngPath);
+  if(!phaseValues) return 1;
+
+  rawlab::raw::RawMetadata invalidColorMetadata = rotatedMetadata;
+  invalidColorMetadata.colorMatrix1.fill(0.0f);
+  const rawlab::raw::RawImage invalidColorImage{
+    4, 2, std::vector<float>(8, 1.0f), invalidColorMetadata,
+  };
+  bool rejectedInvalidColor = false;
+  const std::filesystem::path invalidDngPath = std::filesystem::temp_directory_path()
+                                                 / "rawlab-invalid-color-test.dng";
+  try { rawlab::dng::TiffDngWriter{}.writeCfaDng(invalidDngPath, invalidColorImage); }
+  catch(const std::invalid_argument &) { rejectedInvalidColor = true; }
+  if(!rejectedInvalidColor) return 1;
+
+  const rawlab::image::PreviewGeometry activeGeometry{{1, 1, 2, 2}, 2, 2, 0};
+  const rawlab::pipeline::Mask activeMask{2, 2, std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f}};
+  const rawlab::raw::RawImage activeBlend = rawlab::pipeline::blendWithPreviewMask(
+    image, processed, activeMask, activeGeometry, 1.0f);
+  if(!nearlyEqual(activeBlend.sample(1, 1), processed.sample(1, 1))) return 1;
+  if(!nearlyEqual(activeBlend.sample(2, 1), image.sample(2, 1))) return 1;
+  if(!nearlyEqual(activeBlend.sample(0, 0), image.sample(0, 0))) return 1;
+  const rawlab::raw::RawImage invertedBlend = rawlab::pipeline::blendWithPreviewMask(
+    image, processed, activeMask, activeGeometry, 1.0f, true);
+  if(!nearlyEqual(invertedBlend.sample(1, 1), image.sample(1, 1))) return 1;
+  if(!nearlyEqual(invertedBlend.sample(2, 1), processed.sample(2, 1))) return 1;
+
+  const rawlab::pipeline::Mask fullMask = rawlab::pipeline::filledMask(2, 2, 1.0f);
+  const rawlab::image::PreviewGeometry fullGeometry{{0, 0, 2, 2}, 2, 2, 0};
+  const rawlab::raw::RawImage layerA{
+    2, 2, std::vector<float>(4, 20.0f), highlightMetadata,
+  };
+  const rawlab::raw::RawImage layerB{
+    2, 2, std::vector<float>(4, 30.0f), highlightMetadata,
+  };
+  const rawlab::raw::RawImage firstLayer = rawlab::pipeline::blendWithPreviewMask(
+    smallOriginal, layerA, fullMask, fullGeometry, 0.5f);
+  const rawlab::raw::RawImage secondLayer = rawlab::pipeline::blendWithPreviewMask(
+    firstLayer, layerB, fullMask, fullGeometry, 0.5f);
+  if(!nearlyEqual(secondLayer.sample(0, 0), 22.5f)) return 1;
+
+  const rawlab::raw::RawImage globalLayer{
+    2, 2, std::vector<float>(4, 15.0f), highlightMetadata,
+  };
+  const std::array localStack{
+    rawlab::pipeline::LocalLayerInput{&layerA, &fullMask, 1.0f, false, true},
+    rawlab::pipeline::LocalLayerInput{&layerB, &fullMask, 1.0f, false, true},
+  };
+  const rawlab::raw::RawImage stacked = rawlab::pipeline::composeDenoiseLayers(
+    smallOriginal, {&globalLayer, 1.0f, true}, localStack, fullGeometry);
+  if(!nearlyEqual(stacked.sample(0, 0), 30.0f)) return 1;
+  const rawlab::raw::RawImage metadataResult = rawlab::pipeline::composeDenoiseLayers(
+    image, {}, {}, preview.geometry);
+  if(metadataResult.metadata().iso != image.metadata().iso
+     || metadataResult.metadata().aperture != image.metadata().aperture
+     || metadataResult.metadata().captureTimestamp != image.metadata().captureTimestamp) return 1;
+  const rawlab::pipeline::Mask leftMask{2, 2, std::vector<float>{1.0f, 0.0f, 1.0f, 0.0f}};
+  const std::array localLeft{
+    rawlab::pipeline::LocalLayerInput{&layerB, &leftMask, 1.0f, false, true},
+  };
+  const rawlab::raw::RawImage globalWithLocal = rawlab::pipeline::composeDenoiseLayers(
+    smallOriginal, {&globalLayer, 1.0f, true}, localLeft, fullGeometry);
+  if(!nearlyEqual(globalWithLocal.sample(0, 0), 30.0f)) return 1;
+  if(!nearlyEqual(globalWithLocal.sample(1, 0), 15.0f)) return 1;
+  const std::array halfLocal{
+    rawlab::pipeline::LocalLayerInput{&layerB, &leftMask, 0.5f, false, true},
+  };
+  const rawlab::raw::RawImage halfLocalResult = rawlab::pipeline::composeDenoiseLayers(
+    smallOriginal, {&globalLayer, 1.0f, true}, halfLocal, fullGeometry);
+  if(!nearlyEqual(halfLocalResult.sample(0, 0), 20.0f)) return 1;
+  if(!nearlyEqual(halfLocalResult.sample(1, 0), 15.0f)) return 1;
 
   bool dimensionMismatchThrown = false;
   try

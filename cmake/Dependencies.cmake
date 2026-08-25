@@ -1,4 +1,6 @@
 find_package(PkgConfig REQUIRED)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Network)
+find_package(Threads REQUIRED)
 pkg_check_modules(LibRaw REQUIRED IMPORTED_TARGET libraw)
 pkg_check_modules(LibTIFF REQUIRED IMPORTED_TARGET libtiff-4)
 pkg_check_modules(LibPNG REQUIRED IMPORTED_TARGET libpng)

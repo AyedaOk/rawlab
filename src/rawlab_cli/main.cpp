@@ -1,5 +1,6 @@
 #include "rawlab/core/Version.h"
 #include "rawlab/ai/OnnxSession.h"
+#include "rawlab/ai/RawForgeAdapter.h"
 #include "rawlab/ai/Sam2Segmenter.h"
 #include "rawlab/dng/DngWriter.h"
 #include "rawlab/image/PngImage.h"
@@ -40,6 +41,7 @@ void printUsage()
             << "  rawlab test-mask-split <input.raw> <model.onnx> <output.dng>\n"
             << "  rawlab test-preview-mask-split <input.raw> <model.onnx> <output.dng>\n"
             << "  rawlab raw-denoise <input.raw> <model.onnx> <output.dng> [--blend 0..1] [--clipped-highlights]\n"
+            << "  rawlab rawforge-restore <input.raw> <model.onnx> <output.dng>\n"
             << "  rawlab export-cfa-dng <input.raw> <output.dng>\n"
             << "  rawlab write-synthetic-dng <output.dng>\n";
 }
@@ -316,6 +318,14 @@ void printInspectInfo(const rawlab::raw::RawInspectInfo &info)
             << "Model: " << info.model << '\n'
             << "Normalized make: " << info.normalizedMake << '\n'
             << "Normalized model: " << info.normalizedModel << '\n'
+            << "ISO: " << (info.iso ? std::to_string(*info.iso) : "unavailable") << '\n'
+            << "Aperture: " << (info.aperture ? std::to_string(*info.aperture) : "unavailable") << '\n'
+            << "Exposure seconds: " << (info.exposureTimeSeconds
+                                           ? std::to_string(*info.exposureTimeSeconds) : "unavailable") << '\n'
+            << "Focal length mm: " << (info.focalLengthMm
+                                         ? std::to_string(*info.focalLengthMm) : "unavailable") << '\n'
+            << "Capture timestamp: " << (info.captureTimestamp
+                                            ? std::to_string(*info.captureTimestamp) : "unavailable") << '\n'
             << "Raw size: " << info.rawWidth << " x " << info.rawHeight << '\n'
             << "Visible size: " << info.visibleWidth << " x " << info.visibleHeight << '\n'
             << "Active offset: left=" << info.activeLeft
@@ -678,6 +688,27 @@ int main(int argc, char **argv)
     catch(const std::exception &e)
     {
       std::cerr << "rawlab export-cfa-dng failed: " << e.what() << '\n';
+      return 1;
+    }
+  }
+
+  if(argc == 5 && std::string_view{argv[1]} == "rawforge-restore")
+  {
+    try
+    {
+      const rawlab::raw::RawImage source = rawlab::raw::LibRawDecoder{}.decodeRawImage(
+        std::filesystem::path{argv[2]});
+      const rawlab::ai::OnnxSession session{std::filesystem::path{argv[3]}};
+      const float iso = static_cast<float>(source.metadata().iso.value_or(100.0));
+      const rawlab::raw::RawImage restored = rawlab::ai::RawForgeAdapter{}.run(
+        source, session, iso, false, printDenoiseProgress);
+      rawlab::dng::TiffDngWriter{}.writeCfaDng(std::filesystem::path{argv[4]}, restored);
+      std::cout << "Wrote RawForge Bayer CFA DNG: " << argv[4] << '\n';
+      return 0;
+    }
+    catch(const std::exception &e)
+    {
+      std::cerr << "rawlab rawforge-restore failed: " << e.what() << '\n';
       return 1;
     }
   }

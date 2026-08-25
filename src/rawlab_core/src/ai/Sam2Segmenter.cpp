@@ -34,8 +34,10 @@ float bilinear(const float v00, const float v01, const float v10, const float v1
 }
 
 Sam2Segmenter::Sam2Segmenter(const std::filesystem::path &encoderPath,
-                             const std::filesystem::path &decoderPath)
-  : encoder_{encoderPath}, decoder_{decoderPath}, previousMask_(samMaskSize * samMaskSize, 0.0f)
+                             const std::filesystem::path &decoderPath,
+                             const OnnxSessionOptions &options)
+  : encoder_{encoderPath, options}, decoder_{decoderPath, options},
+    previousMask_(samMaskSize * samMaskSize, 0.0f)
 {
 }
 

@@ -20,7 +20,8 @@ class Sam2Segmenter
 {
 public:
   Sam2Segmenter(const std::filesystem::path &encoderPath,
-                const std::filesystem::path &decoderPath);
+                 const std::filesystem::path &decoderPath,
+                 const OnnxSessionOptions &options = {});
 
   void encode(const image::RgbImage &image);
   pipeline::Mask segment(const std::vector<SamPointPrompt> &points);

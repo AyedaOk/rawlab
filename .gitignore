@@ -5,7 +5,10 @@ build/
 *.ARW
 *.arw
 *.onnx
+.env
+models/
+*.user
 .cache/
 .idea/
 .vscode/
-session-*.md
+compile_commands.json

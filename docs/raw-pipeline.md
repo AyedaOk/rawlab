@@ -19,6 +19,12 @@ RawSpeed may be evaluated later after the LibRaw baseline is understood.
 
 Mask and preview coordinates must map back to raw coordinates explicitly. Active-area offsets, crops, rotations, scaling, and CFA phase cannot be implicit.
 
+The Qt editor renders a bounded, display-only RGB preview from the current
+in-memory CFA composition. `PreviewGeometry` records active-area, scale, and
+LibRaw orientation mapping so SAM masks map back to matching sensor
+coordinates. The DNG writer preserves source orientation while leaving CFA
+samples in sensor order.
+
 The first mask proof-of-concept uses masks whose dimensions directly match raw pixels. Pixel `(x, y)` samples mask value `(x, y)` with nearest-neighbor lookup.
 
 Preview-sized masks map raw pixels back to mask pixels explicitly with nearest-neighbor sampling:

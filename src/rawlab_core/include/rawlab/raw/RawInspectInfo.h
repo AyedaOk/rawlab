@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace rawlab::raw {
@@ -30,6 +31,11 @@ struct RawInspectInfo
   std::string model;
   std::string normalizedMake;
   std::string normalizedModel;
+  std::optional<double> iso;
+  std::optional<double> aperture;
+  std::optional<double> exposureTimeSeconds;
+  std::optional<double> focalLengthMm;
+  std::optional<std::int64_t> captureTimestamp;
   int rawWidth = 0;
   int rawHeight = 0;
   int visibleWidth = 0;

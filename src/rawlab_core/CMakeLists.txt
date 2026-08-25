@@ -1,9 +1,12 @@
 add_library(rawlab_core STATIC
   src/ai/OnnxSession.cpp
+  src/ai/RawForgeAdapter.cpp
   src/ai/Sam2Segmenter.cpp
   src/dng/TiffDngWriter.cpp
   src/image/PngImage.cpp
+  src/image/RawPreview.cpp
   src/pipeline/Mask.cpp
+  src/pipeline/LayerComposition.cpp
   src/pipeline/MaskedBlend.cpp
   src/pipeline/RawProcessingPipeline.cpp
   src/raw/BayerProcessing.cpp
@@ -26,6 +29,7 @@ target_link_libraries(rawlab_core
     PkgConfig::LibTIFF
     PkgConfig::LibPNG
     ONNXRuntime::ONNXRuntime
+    Threads::Threads
 )
 
 rawlab_enable_warnings(rawlab_core)

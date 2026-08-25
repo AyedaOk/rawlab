@@ -16,6 +16,10 @@ public:
 
   float sampleNearest(int x, int y) const;
   float sampleNearestMapped(int rawX, int rawY, int rawWidth, int rawHeight) const;
+  float sampleBilinear(float x, float y) const;
+  float sampleBilinearMapped(int rawX, int rawY, int rawWidth, int rawHeight) const;
+  void paintSegment(float x0, float y0, float x1, float y1,
+                    float radius, float hardness, float value);
 
 private:
   int width_ = 0;
@@ -25,5 +29,8 @@ private:
 
 Mask horizontalGradientMask(int width, int height);
 Mask verticalSplitMask(int width, int height);
+Mask filledMask(int width, int height, float value = 0.0f);
+Mask featherMask(const Mask &source, float radius);
+Mask blurMask(const Mask &source, float radius);
 
 }

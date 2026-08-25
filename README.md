@@ -23,6 +23,7 @@ RGB previews are derived views only and are not the processing truth.
 - libtiff
 - libpng
 - ONNX Runtime
+- Qt 6 with Core, Gui, Widgets, and Concurrent
 - ExifTool and `tiffinfo` are recommended for validation
 
 ONNX Runtime must provide `onnxruntime_c_api.h` and `libonnxruntime.so`.
@@ -40,6 +41,61 @@ The CLI binary is:
 ```text
 build/dev/src/rawlab_cli/rawlab
 ```
+
+The desktop application is:
+
+```bash
+./build/dev/src/rawlab_app/rawlab-app
+```
+
+## Desktop Editor
+
+The Qt 6 editor uses a single-image filesystem workflow. Open a RAW image,
+select a denoise model, and press **Run** to cache a full-image denoised CFA result.
+Blend and clipped-highlight changes recompose the preview without rerunning
+inference. The canvas displays an activity indicator while decoding, rendering,
+segmenting, or denoising.
+
+Additional mask layers behave like an ordered layer stack:
+
+- Each mask layer selects its own denoise model and blend amount.
+- The eye beside a layer enables or disables its processing effect.
+- Global remains first; local masks are reordered beneath it by dragging.
+- **Show mask** controls the selected overlay independently from processing.
+- Masks can be inverted, edited with positive and negative SAM points, refined
+  with adjustable brush and erase tools, or painted manually from an empty mask.
+- **Edit Mask** explicitly enters mask-editing mode; **Done** returns the canvas
+  to normal pan and zoom interaction.
+- Denoised CFA output is cached by model, so layers sharing a model reuse one
+  inference result.
+- Global is always composed first; enabled local mask results are applied on
+  top, with the local layer nearest Global winning full-strength overlaps.
+- Local masks can be renamed with double-click, `F2`, or the Rename button.
+
+Application settings keep multiple named SAM 2.1 model folders and denoise
+models. Each SAM folder contains its paired `encoder.onnx` and `decoder.onnx`;
+one Small, Large, or custom SAM entry is active globally. Layers select named
+denoise models from a combo box; inference only starts when **Run** is pressed.
+AI acceleration can use CPU or any compatible execution provider exposed by
+the installed ONNX Runtime, with automatic CPU fallback in Auto mode.
+
+The Library page imports RAW files or folders by reference without copying the
+originals. It persists paths and cached thumbnails. Per-picture JSON recipes
+restore Global settings, mask names/order, selected models, SAM prompts, brush
+strokes, inversion, blend, eye state, and `Show mask`; large denoised CFA
+results remain session-only caches.
+
+Select multiple pictures in the Library and open the selection to tune the
+first picture. **File > Apply to Selected and Export...** scales the complete
+recipe and soft masks to every selected picture, exports all selected files to
+one chosen folder, and continues past individual failures. Batch output uses
+`<source>-rawlab.dng` and never overwrites an existing destination.
+
+The canvas is a display-only demosaic of the current CFA composition. Export
+continues to write the non-demosaiced Bayer CFA data.
+The Preview toolbar provides Library/Edit switching, fit and 100% zoom,
+live zoom percentage, capture metadata, and an optional slower high-quality
+1440-pixel CFA preview.
 
 ## Basic Usage
 
@@ -111,21 +167,12 @@ docs/               Architecture, pipeline, DNG, and licensing notes
 
 ## Status And Next Steps
 
-Milestones 0 through 6 are completed. Milestones 7 and 8 are intentionally
-deferred, and Milestone 9 is reserved for DNG size and compatibility work.
+Milestones 0 through 7 are completed. Milestone 8 covers cleanup of temporary
+CLI proof commands, and Milestone 9 is reserved for DNG size and compatibility
+work.
 
-The next implementation milestone is a Qt 6 Widgets single-image editor:
-
-- Open a RAW file and generate an RGB preview through LibRaw.
-- Keep CFA data as the processing truth.
-- Display the preview with a mask overlay.
-- Add positive and negative SAM point interaction.
-- Reuse cached SAM encoder embeddings while points change.
-- Run RawNIND through `RawProcessingPipeline`.
-- Adjust blend without rerunning inference in the GUI process.
-- Export a non-demosaiced Bayer CFA DNG.
-
-There is no catalog or project database planned for the first GUI version.
+The first library is intentionally lightweight and path-based. It does not
+copy originals or require a catalog database.
 
 ## Licensing
 

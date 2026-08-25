@@ -67,9 +67,9 @@
 
 ## Milestone 7: Qt 6 GUI
 
-- Status: Next
+- Status: Completed
 - Add a Qt 6 Widgets desktop application after the raw pipeline proof-of-concepts.
-- Use a single-image filesystem open/save workflow, not a catalog or project database.
+- Use a single-image editor backed by a lightweight persistent file-reference library, not a managed-original catalog database.
 - Open a RAW file and generate an RGB preview through LibRaw.
 - Keep Bayer CFA data as the processing truth; RGB is only a display and SAM input.
 - Display the preview with a mask overlay.
@@ -79,6 +79,18 @@
 - Run RawNIND through `RawProcessingPipeline`.
 - Provide blend controls without rerunning inference in the GUI process.
 - Map preview masks back to raw coordinates and export non-demosaiced Bayer CFA DNG.
+- Add a permanent Global denoise layer and reorderable local mask layers.
+- Give each local layer independent model, blend, invert, enable, edit, and delete controls.
+- Composite overlapping masks in ordered CFA-space layers, with higher layers over lower layers.
+- Render a live display-only RGB preview from the current CFA composition.
+- Run RAW decode, SAM, RawNIND, composition, and export without blocking the GUI thread.
+- Keep Global first and insert reorderable local masks beneath it.
+- Separate the eye processing toggle from the per-layer `Show mask` overlay control.
+- Add adjustable paint and erase brushes for manual masks and SAM refinements.
+- Add File, View, and Settings menus with fit and preview zoom actions.
+- Persist multiple named SAM model folders with one globally active pair and multiple named denoise models; automatically run uncached inference.
+- Add a separate thumbnail library page that imports files/folders by reference.
+- Persist per-picture layer recipes while keeping denoised CFA outputs as session caches.
 
 ## Milestone 8: CLI And PoC Command Cleanup
 

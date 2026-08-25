@@ -3,12 +3,44 @@
 #include <libraw/libraw.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace rawlab::raw {
 namespace {
+
+std::array<float, 9> inverse3x3(const std::array<float, 9> &matrix, bool &valid)
+{
+  const float determinant = matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7])
+                            - matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6])
+                            + matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
+  if(std::abs(determinant) < 1e-8f)
+  {
+    valid = false;
+    return {
+      1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f,
+      0.0f, 0.0f, 1.0f,
+    };
+  }
+  valid = true;
+  const float reciprocal = 1.0f / determinant;
+  return {
+    (matrix[4] * matrix[8] - matrix[5] * matrix[7]) * reciprocal,
+    (matrix[2] * matrix[7] - matrix[1] * matrix[8]) * reciprocal,
+    (matrix[1] * matrix[5] - matrix[2] * matrix[4]) * reciprocal,
+    (matrix[5] * matrix[6] - matrix[3] * matrix[8]) * reciprocal,
+    (matrix[0] * matrix[8] - matrix[2] * matrix[6]) * reciprocal,
+    (matrix[2] * matrix[3] - matrix[0] * matrix[5]) * reciprocal,
+    (matrix[3] * matrix[7] - matrix[4] * matrix[6]) * reciprocal,
+    (matrix[1] * matrix[6] - matrix[0] * matrix[7]) * reciprocal,
+    (matrix[0] * matrix[4] - matrix[1] * matrix[3]) * reciprocal,
+  };
+}
 
 CfaColor colorFromLibRaw(const int color)
 {
@@ -34,21 +66,38 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
   const libraw_iparams_t &id = processor.imgdata.idata;
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
   const libraw_colordata_t &color = processor.imgdata.color;
+  const libraw_imgother_t &other = processor.imgdata.other;
 
   RawMetadata metadata;
   metadata.make = id.make;
   metadata.model = id.model;
+  const auto positiveValue = [](const float value) -> std::optional<double> {
+    return std::isfinite(value) && value > 0.0f
+      ? std::optional<double>{static_cast<double>(value)} : std::nullopt;
+  };
+  metadata.iso = positiveValue(other.iso_speed);
+  metadata.aperture = positiveValue(other.aperture);
+  metadata.exposureTimeSeconds = positiveValue(other.shutter);
+  metadata.focalLengthMm = positiveValue(other.focal_len);
+  if(other.timestamp > 0) metadata.captureTimestamp = static_cast<std::int64_t>(other.timestamp);
   metadata.activeArea = {
     sizes.left_margin,
     sizes.top_margin,
     sizes.width,
     sizes.height,
   };
+  metadata.flip = sizes.flip;
   metadata.whiteLevel = static_cast<float>(color.maximum);
   float neutralMax = 0.0f;
+  metadata.asShotNeutralValid = true;
   for(std::size_t c = 0; c < metadata.asShotNeutral.size(); ++c)
   {
-    metadata.asShotNeutral[c] = color.cam_mul[c] > 0.0f ? 1.0f / color.cam_mul[c] : 1.0f;
+    if(!std::isfinite(color.cam_mul[c]) || color.cam_mul[c] <= 0.0f)
+    {
+      metadata.asShotNeutralValid = false;
+      metadata.asShotNeutral[c] = 1.0f;
+    }
+    else metadata.asShotNeutral[c] = 1.0f / color.cam_mul[c];
     neutralMax = std::max(neutralMax, metadata.asShotNeutral[c]);
   }
   if(neutralMax > 0.0f)
@@ -62,17 +111,29 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
       metadata.colorMatrix1[static_cast<std::size_t>(cam * 3 + xyz)] = color.cam_xyz[cam][xyz];
     }
   }
-
+  metadata.cameraToXyz = inverse3x3(metadata.colorMatrix1, metadata.colorMatrix1Valid);
+  for(int rgb = 0; rgb < 3; ++rgb)
+  {
+    for(int camera = 0; camera < 3; ++camera)
+    {
+      metadata.cameraToSrgb[static_cast<std::size_t>(rgb * 3 + camera)]
+        = color.rgb_cam[rgb][camera];
+    }
+  }
   const bool hasSeparateBlack = color.cblack[0] != 0 || color.cblack[1] != 0
                                 || color.cblack[2] != 0 || color.cblack[3] != 0;
-  for(std::size_t i = 0; i < metadata.blackLevel.size(); ++i)
+  for(int y = 0; y < 2; ++y)
   {
-    metadata.blackLevel[i] = hasSeparateBlack
-      ? static_cast<float>(color.cblack[i])
-      : static_cast<float>(color.black);
+    for(int x = 0; x < 2; ++x)
+    {
+      const int channel = processor.COLOR(y, x);
+      metadata.blackLevel[static_cast<std::size_t>(siteIndex(x, y))]
+        = static_cast<float>(color.black)
+          + (hasSeparateBlack ? static_cast<float>(color.cblack[channel]) : 0.0f);
+    }
   }
 
-  if(id.filters != 0 && id.filters != 9u)
+  if(id.filters > 999u && id.colors == 3)
   {
     metadata.cfa.isBayer = true;
     for(int y = 0; y < 2; ++y)
@@ -96,13 +157,21 @@ RawImage rawImageFromLibRaw(LibRaw &processor)
     throw std::runtime_error{"LibRaw did not expose a raw_image buffer"};
   }
 
+  const std::size_t rowBytes = static_cast<std::size_t>(sizes.raw_width) * sizeof(std::uint16_t);
+  if(sizes.raw_pitch < rowBytes)
+  {
+    throw std::runtime_error{"LibRaw raw pitch is smaller than the image row"};
+  }
   const std::size_t sampleCount = static_cast<std::size_t>(sizes.raw_width)
                                   * static_cast<std::size_t>(sizes.raw_height);
   std::vector<float> samples;
   samples.reserve(sampleCount);
-  for(std::size_t i = 0; i < sampleCount; ++i)
+  const auto *bytes = reinterpret_cast<const std::byte *>(rawdata.raw_image);
+  for(int y = 0; y < sizes.raw_height; ++y)
   {
-    samples.push_back(static_cast<float>(rawdata.raw_image[i]));
+    const auto *row = reinterpret_cast<const std::uint16_t *>(
+      bytes + static_cast<std::size_t>(y) * sizes.raw_pitch);
+    for(int x = 0; x < sizes.raw_width; ++x) samples.push_back(static_cast<float>(row[x]));
   }
 
   return RawImage{sizes.raw_width, sizes.raw_height, std::move(samples), metadataFromLibRaw(processor)};
@@ -127,6 +196,12 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
   info.model = id.model;
   info.normalizedMake = id.normalized_make;
   info.normalizedModel = id.normalized_model;
+  const RawMetadata metadata = metadataFromLibRaw(processor);
+  info.iso = metadata.iso;
+  info.aperture = metadata.aperture;
+  info.exposureTimeSeconds = metadata.exposureTimeSeconds;
+  info.focalLengthMm = metadata.focalLengthMm;
+  info.captureTimestamp = metadata.captureTimestamp;
   info.rawWidth = sizes.raw_width;
   info.rawHeight = sizes.raw_height;
   info.visibleWidth = sizes.width;
@@ -174,6 +249,14 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
   }
 
   return info;
+}
+
+RawFileMetadata LibRawDecoder::readMetadata(const std::filesystem::path &path) const
+{
+  LibRaw processor;
+  throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
+  return {metadataFromLibRaw(processor), processor.imgdata.sizes.raw_width,
+          processor.imgdata.sizes.raw_height};
 }
 
 RawImage LibRawDecoder::decodeRawImage(const std::filesystem::path &path) const

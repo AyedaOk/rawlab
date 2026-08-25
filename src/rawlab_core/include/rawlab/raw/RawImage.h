@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -22,16 +23,35 @@ struct RawMetadata
 {
   std::string make;
   std::string model;
+  std::optional<double> iso;
+  std::optional<double> aperture;
+  std::optional<double> exposureTimeSeconds;
+  std::optional<double> focalLengthMm;
+  std::optional<std::int64_t> captureTimestamp;
   CfaPattern cfa;
   ActiveArea activeArea;
+  // LibRaw orientation: 0 is normal, 3 is 180, 5 is 90 CCW, 6 is 90 CW.
+  int flip = 0;
   std::array<float, 4> blackLevel = { 0.0f, 0.0f, 0.0f, 0.0f };
   float whiteLevel = 1.0f;
   std::array<float, 3> asShotNeutral = { 1.0f, 1.0f, 1.0f };
+  bool asShotNeutralValid = true;
+  std::array<float, 9> cameraToXyz = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f,
+  };
+  std::array<float, 9> cameraToSrgb = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f,
+  };
   std::array<float, 9> colorMatrix1 = {
     1.0f, 0.0f, 0.0f,
     0.0f, 1.0f, 0.0f,
     0.0f, 0.0f, 1.0f,
   };
+  bool colorMatrix1Valid = true;
 };
 
 class RawImage

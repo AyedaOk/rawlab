@@ -19,6 +19,7 @@ include(Dependencies)
 
 add_subdirectory(src/rawlab_core)
 add_subdirectory(src/rawlab_cli)
+add_subdirectory(src/rawlab_app)
 
 if(BUILD_TESTING)
   add_subdirectory(tests)

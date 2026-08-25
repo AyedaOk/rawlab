@@ -17,8 +17,21 @@ struct OnnxTensorInfo
 struct OnnxModelInfo
 {
   std::string runtimeVersion;
+  std::string executionProvider;
   std::vector<OnnxTensorInfo> inputs;
   std::vector<OnnxTensorInfo> outputs;
+};
+
+struct OnnxSessionOptions
+{
+  std::string provider = "auto";
+  int deviceId = 0;
+};
+
+struct OnnxProviderInfo
+{
+  std::string id;
+  std::string name;
 };
 
 struct OnnxFloatRunResult
@@ -37,7 +50,8 @@ struct OnnxNamedFloatTensor
 class OnnxSession
 {
 public:
-  explicit OnnxSession(const std::filesystem::path &modelPath);
+  explicit OnnxSession(const std::filesystem::path &modelPath,
+                       const OnnxSessionOptions &options = {});
   ~OnnxSession();
 
   OnnxSession(const OnnxSession &) = delete;
@@ -46,6 +60,7 @@ public:
   OnnxSession &operator=(OnnxSession &&) = delete;
 
   const OnnxModelInfo &modelInfo() const { return modelInfo_; }
+  static std::vector<OnnxProviderInfo> availableProviders();
   OnnxFloatRunResult runSingleFloat(const std::vector<float> &input,
                                     const std::vector<std::int64_t> &inputShape) const;
   std::vector<OnnxNamedFloatTensor> runFloat(
