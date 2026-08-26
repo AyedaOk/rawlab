@@ -56,11 +56,33 @@ void ModelDownloader::start(const QStringList &selectedIds)
 {
   if(isRunning()) return;
   cancelled_ = false;
+  catalogOnly_ = false;
   selectedIds_ = selectedIds;
   models_.clear();
   modelIndex_ = 0;
   emit progressChanged(0);
   fetchCatalog();
+}
+
+void ModelDownloader::refreshCatalog()
+{
+  if(isRunning()) return;
+  cancelled_ = false;
+  catalogOnly_ = true;
+  selectedIds_.clear();
+  models_.clear();
+  modelIndex_ = 0;
+  emit progressChanged(0);
+  fetchCatalog();
+}
+
+bool ModelDownloader::loadCachedCatalog()
+{
+  QFile file{QDir{modelRoot_}.filePath(QStringLiteral("catalog.json"))};
+  if(!file.open(QIODevice::ReadOnly)) return false;
+  QString error;
+  if(!processCatalog(file.readAll(), &error)) return false;
+  return true;
 }
 
 void ModelDownloader::cancel()
@@ -100,34 +122,55 @@ void ModelDownloader::fetchCatalog()
   emit statusChanged(tr("Downloading model catalog..."));
   fetchBytes(fileUrl(QStringLiteral("catalog.json")), [this](const QByteArray bytes) {
     QString error;
-    models_ = ModelCatalog::parseCatalog(bytes, &error);
-    if(!error.isEmpty()) return fail(error);
-    QDir root;
-    if(!root.mkpath(modelRoot_)) return fail(tr("Could not create the model directory"));
-    QSaveFile catalogFile{QDir{modelRoot_}.filePath(QStringLiteral("catalog.json"))};
-    if(!catalogFile.open(QIODevice::WriteOnly) || catalogFile.write(bytes) != bytes.size()
-       || !catalogFile.commit()) return fail(tr("Could not save the model catalog"));
-    for(const ModelCatalogEntry &entry : models_)
+    if(!processCatalog(bytes, &error)) return fail(error);
+    if(catalogOnly_)
     {
-      const bool installed = isInstalled(modelRoot_, entry);
-      emit catalogModelFound(entry.id, entry.name, entry.version, entry.task, entry.adapter, installed);
-      if(installed)
-      {
-        const QString directory = QDir{modelRoot_}.filePath(entry.id + QLatin1Char('/') + entry.version);
-        QFile localManifest{QDir{directory}.filePath(QStringLiteral("model.json"))};
-        if(!localManifest.open(QIODevice::ReadOnly)) continue;
-        QString manifestError;
-        const ModelManifest manifest = ModelCatalog::parseManifest(localManifest.readAll(), &manifestError);
-        if(manifestError.isEmpty())
-        {
-          const QString location = entry.task == QStringLiteral("mask") ? directory
-            : QDir{directory}.filePath(manifest.files.front().name);
-          emit modelInstalled(entry.id, entry.name, entry.version, entry.task, entry.adapter, location);
-        }
-      }
+      emit progressChanged(100);
+      emit statusChanged(tr("Model catalog refreshed"));
+      emit finished();
+      return;
     }
     fetchNextManifest();
   });
+}
+
+bool ModelDownloader::processCatalog(const QByteArray &data, QString *error)
+{
+  models_ = ModelCatalog::parseCatalog(data, error);
+  if(error && !error->isEmpty()) return false;
+  QDir root;
+  if(!root.mkpath(modelRoot_))
+  {
+    if(error) *error = tr("Could not create the model directory");
+    return false;
+  }
+  QSaveFile catalogFile{QDir{modelRoot_}.filePath(QStringLiteral("catalog.json"))};
+  if(!catalogFile.open(QIODevice::WriteOnly) || catalogFile.write(data) != data.size()
+     || !catalogFile.commit())
+  {
+    if(error) *error = tr("Could not save the model catalog");
+    return false;
+  }
+  for(const ModelCatalogEntry &entry : models_)
+  {
+    const bool installed = isInstalled(modelRoot_, entry);
+    emit catalogModelFound(entry.id, entry.name, entry.version, entry.task, entry.adapter, installed);
+    if(installed)
+    {
+      const QString directory = QDir{modelRoot_}.filePath(entry.id + QLatin1Char('/') + entry.version);
+      QFile localManifest{QDir{directory}.filePath(QStringLiteral("model.json"))};
+      if(!localManifest.open(QIODevice::ReadOnly)) continue;
+      QString manifestError;
+      const ModelManifest manifest = ModelCatalog::parseManifest(localManifest.readAll(), &manifestError);
+      if(manifestError.isEmpty())
+      {
+        const QString location = entry.task == QStringLiteral("mask") ? directory
+          : QDir{directory}.filePath(manifest.files.front().name);
+        emit modelInstalled(entry.id, entry.name, entry.version, entry.task, entry.adapter, location);
+      }
+    }
+  }
+  return true;
 }
 
 void ModelDownloader::fetchNextManifest()
@@ -141,8 +184,17 @@ void ModelDownloader::fetchNextManifest()
   }
   if(modelIndex_ >= models_.size())
   {
+    const int installedCount = static_cast<int>(std::count_if(
+      models_.cbegin(), models_.cend(), [this](const ModelCatalogEntry &model) {
+        return model.available && isInstalled(modelRoot_, model);
+      }));
+    const int availableCount = static_cast<int>(std::count_if(
+      models_.cbegin(), models_.cend(), [](const ModelCatalogEntry &model) {
+        return model.available;
+      }));
     emit progressChanged(100);
-    emit statusChanged(tr("All models are installed"));
+    emit statusChanged(tr("Model download complete: %1 installed, %2 not installed")
+                       .arg(installedCount).arg(availableCount - installedCount));
     emit finished();
     return;
   }

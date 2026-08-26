@@ -78,6 +78,8 @@ PictureRecipe PictureRecipeStore::scaled(
   for(PictureRecipeLayer &layer : result.layers)
   {
     if(layer.baseMask) layer.baseMask = resizeMask(*layer.baseMask, targetWidth, targetHeight);
+    for(auto &categoryMask : layer.categoryMasks)
+      if(categoryMask) categoryMask = resizeMask(*categoryMask, targetWidth, targetHeight);
   }
   return result;
 }
@@ -89,7 +91,7 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
     throw std::invalid_argument{"cannot save an empty picture recipe"};
   }
   QJsonObject root;
-  root[QStringLiteral("version")] = 6;
+  root[QStringLiteral("version")] = 7;
   root[QStringLiteral("previewWidth")] = recipe.previewWidth;
   root[QStringLiteral("previewHeight")] = recipe.previewHeight;
   root[QStringLiteral("globalModelId")] = recipe.globalModelId;
@@ -100,6 +102,35 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
   root[QStringLiteral("preserveClipped")] = recipe.preserveClipped;
 
   const QFileInfo recipeInfo{pathForSource(sourcePath)};
+  const auto saveMask = [&recipeInfo](const PictureRecipeLayer &layer,
+                                      const rawlab::pipeline::Mask &mask,
+                                      const QString &suffix) {
+    QByteArray maskBytes = QByteArray::number(mask.width()) + 'x'
+                           + QByteArray::number(mask.height()) + ':';
+    maskBytes.append(reinterpret_cast<const char *>(mask.values().data()),
+                     static_cast<qsizetype>(mask.values().size() * sizeof(float)));
+    const QString maskHash = QString::fromLatin1(
+      QCryptographicHash::hash(maskBytes, QCryptographicHash::Sha1).toHex());
+    const QString fileName = recipeInfo.completeBaseName()
+                             + QStringLiteral("-layer-%1-%2-%3.png")
+                                 .arg(layer.id).arg(suffix, maskHash);
+    const QString maskPath = recipeInfo.dir().filePath(fileName);
+    if(!QFileInfo::exists(maskPath)) rawlab::image::writeMaskPng(maskPath.toStdString(), mask);
+    return fileName;
+  };
+  const auto saveStrokes = [](const std::vector<PictureRecipeStroke> &strokes) {
+    QJsonArray result;
+    for(const PictureRecipeStroke &stroke : strokes)
+    {
+      QJsonArray points;
+      for(const QPointF &point : stroke.points) points.push_back(QJsonArray{point.x(), point.y()});
+      result.push_back(QJsonObject{{QStringLiteral("radius"), stroke.radius},
+                                   {QStringLiteral("hardness"), stroke.hardness},
+                                   {QStringLiteral("value"), stroke.value},
+                                   {QStringLiteral("points"), points}});
+    }
+    return result;
+  };
   QJsonArray layers;
   for(const PictureRecipeLayer &layer : recipe.layers)
   {
@@ -135,21 +166,21 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
     object[QStringLiteral("strokes")] = strokes;
     if(layer.baseMask)
     {
-      QByteArray maskBytes = QByteArray::number(layer.baseMask->width()) + 'x'
-                             + QByteArray::number(layer.baseMask->height()) + ':';
-      maskBytes.append(reinterpret_cast<const char *>(layer.baseMask->values().data()),
-                       static_cast<qsizetype>(layer.baseMask->values().size() * sizeof(float)));
-      const QString maskHash = QString::fromLatin1(
-        QCryptographicHash::hash(maskBytes, QCryptographicHash::Sha1).toHex());
-      const QString fileName = recipeInfo.completeBaseName()
-                               + QStringLiteral("-layer-%1-%2.png").arg(layer.id).arg(maskHash);
-      const QString maskPath = recipeInfo.dir().filePath(fileName);
-      if(!QFileInfo::exists(maskPath))
-      {
-        rawlab::image::writeMaskPng(maskPath.toStdString(), *layer.baseMask);
-      }
+      const QString fileName = saveMask(layer, *layer.baseMask, QStringLiteral("base"));
       object[QStringLiteral("baseMask")] = fileName;
     }
+    QJsonArray categoryMasks;
+    QJsonArray categoryStrokes;
+    for(int category = 0; category < 3; ++category)
+    {
+      if(layer.categoryMasks[static_cast<std::size_t>(category)])
+        categoryMasks.push_back(saveMask(layer, *layer.categoryMasks[static_cast<std::size_t>(category)],
+                                          QStringLiteral("category-%1").arg(category)));
+      else categoryMasks.push_back(QJsonValue{});
+      categoryStrokes.push_back(saveStrokes(layer.categoryStrokes[static_cast<std::size_t>(category)]));
+    }
+    object[QStringLiteral("categoryMasks")] = categoryMasks;
+    object[QStringLiteral("categoryStrokes")] = categoryStrokes;
     layers.push_back(object);
   }
   root[QStringLiteral("layers")] = layers;
@@ -168,7 +199,7 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
   const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
   if(root.isEmpty()) return std::nullopt;
   const int version = root.value(QStringLiteral("version")).toInt(1);
-  if(version > 6) return std::nullopt;
+   if(version > 7) return std::nullopt;
   PictureRecipe recipe;
   recipe.previewWidth = targetWidth;
   recipe.previewHeight = targetHeight;
@@ -263,6 +294,45 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
                                  clampUnit(version >= 2 ? y : y / sourceHeight)});
       }
       layer.strokes.push_back(std::move(stroke));
+    }
+    if(version >= 7)
+    {
+      const QJsonArray categoryMasks = object.value(QStringLiteral("categoryMasks")).toArray();
+      const QJsonArray categoryStrokes = object.value(QStringLiteral("categoryStrokes")).toArray();
+      for(int category = 0; category < 3; ++category)
+      {
+        const std::size_t index = static_cast<std::size_t>(category);
+        const QString categoryMaskName = category < categoryMasks.size()
+          ? categoryMasks[category].toString() : QString{};
+        if(!categoryMaskName.isEmpty())
+        {
+          try
+          {
+            layer.categoryMasks[index] = resizeMask(
+              rawlab::image::readMaskPng(recipeInfo.dir().filePath(categoryMaskName).toStdString()),
+              targetWidth, targetHeight);
+          }
+          catch(const std::exception &) {}
+        }
+        const QJsonArray strokes = category < categoryStrokes.size()
+          ? categoryStrokes[category].toArray() : QJsonArray{};
+        for(const QJsonValue &strokeValue : strokes)
+        {
+          const QJsonObject strokeObject = strokeValue.toObject();
+          PictureRecipeStroke stroke;
+          stroke.radius = clampUnit(strokeObject.value(QStringLiteral("radius")).toDouble());
+          stroke.hardness = clampUnit(strokeObject.value(QStringLiteral("hardness")).toDouble(0.8));
+          stroke.value = clampUnit(strokeObject.value(QStringLiteral("value")).toDouble(1.0));
+          for(const QJsonValue &pointValue : strokeObject.value(QStringLiteral("points")).toArray())
+          {
+            const QJsonArray point = pointValue.toArray();
+            if(point.size() != 2) continue;
+            stroke.points.push_back({clampUnit(point[0].toDouble()),
+                                     clampUnit(point[1].toDouble())});
+          }
+          layer.categoryStrokes[index].push_back(std::move(stroke));
+        }
+      }
     }
     recipe.layers.push_back(std::move(layer));
   }

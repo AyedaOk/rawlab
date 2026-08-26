@@ -6,6 +6,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <cmath>
 
 PreviewWidget::PreviewWidget(QWidget *parent)
   : QWidget{parent}
@@ -205,6 +206,30 @@ void PreviewWidget::paintEvent(QPaintEvent *)
     const double scaleX = target.width() / image_.width();
     const double scaleY = target.height() / image_.height();
     painter.setRenderHint(QPainter::Antialiasing, true);
+    if(shaping_)
+    {
+      const QPointF start{target.left() + shapeStart_.x() * scaleX,
+                          target.top() + shapeStart_.y() * scaleY};
+      const QPointF end{target.left() + hoverImagePoint_.x() * scaleX,
+                        target.top() + hoverImagePoint_.y() * scaleY};
+      painter.setPen(QPen{QColor{10, 12, 15, 220}, 5.0, Qt::DashLine});
+      painter.setBrush(Qt::NoBrush);
+      if(promptMode_ == PromptMode::GradientAdd || promptMode_ == PromptMode::GradientSubtract)
+      {
+        painter.drawLine(start, end);
+      }
+      else
+      {
+        const QRectF bounds{std::min(start.x(), end.x()), std::min(start.y(), end.y()),
+                            std::abs(end.x() - start.x()), std::abs(end.y() - start.y())};
+        painter.drawEllipse(bounds);
+        painter.drawRect(bounds);
+      }
+      painter.setPen(QPen{Qt::white, 1.5});
+      painter.setBrush(QColor{105, 167, 208, 220});
+      painter.drawEllipse(start, 5.0, 5.0);
+      painter.drawEllipse(end, 5.0, 5.0);
+    }
     for(const PromptMarker &prompt : prompts_)
     {
       const QPointF center{target.left() + prompt.position.x() * scaleX,
@@ -223,6 +248,10 @@ void PreviewWidget::paintEvent(QPaintEvent *)
       painter.setPen(QPen{Qt::white, 1.2});
       painter.setBrush(Qt::NoBrush);
       painter.drawEllipse(center, brushRadius_ * scaleX, brushRadius_ * scaleY);
+      painter.drawLine(QPointF{center.x() - 5.0, center.y()},
+                       QPointF{center.x() + 5.0, center.y()});
+      painter.drawLine(QPointF{center.x(), center.y() - 5.0},
+                       QPointF{center.x(), center.y() + 5.0});
     }
   }
 

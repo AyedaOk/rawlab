@@ -7,6 +7,7 @@
 #include "rawlab/raw/LibRawDecoder.h"
 
 #include "ApplicationSettings.h"
+#include "ModelDownloader.h"
 #include "PictureLibraryStore.h"
 #include "PictureRecipe.h"
 
@@ -20,6 +21,7 @@
 
 #include <map>
 #include <atomic>
+#include <array>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -49,6 +51,8 @@ public:
   ~MainWindow() override;
 
 private:
+  enum class MaskCategory { Ai, Gradient, Ellipse };
+
   struct MaskLayer
   {
     struct BrushStroke
@@ -57,6 +61,12 @@ private:
       float radius = 30.0f;
       float hardness = 0.8f;
       float value = 1.0f;
+    };
+
+    struct CategoryState
+    {
+      std::optional<rawlab::pipeline::Mask> mask;
+      std::vector<BrushStroke> brushStrokes;
     };
 
     int id = 0;
@@ -76,6 +86,7 @@ private:
     std::optional<rawlab::pipeline::Mask> effectiveMask;
     std::vector<rawlab::ai::SamPointPrompt> points;
     std::vector<BrushStroke> brushStrokes;
+    std::array<CategoryState, 3> categories;
   };
 
   struct LoadResult
@@ -190,6 +201,8 @@ private:
   void refreshLayerControls();
   void refreshFilmstrip();
   void refreshOverlay();
+  void refreshMaskCategoryTools();
+  int maskCategoryIndex() const;
   void syncLayerOrder();
   void setBusy(const QString &message, bool busy);
   void setCanvasBusy(const QString &reason, bool busy);
@@ -228,6 +241,7 @@ private:
   QPushButton *deleteLayerButton_ = nullptr;
   QPushButton *renameLayerButton_ = nullptr;
   QToolBar *maskToolbar_ = nullptr;
+  QComboBox *maskCategoryCombo_ = nullptr;
   QAction *positiveAction_ = nullptr;
   QAction *negativeAction_ = nullptr;
   QAction *brushPaintAction_ = nullptr;
@@ -284,6 +298,7 @@ private:
   bool preserveClipped_ = true;
   int nextLayerId_ = 1;
   int editingLayerId_ = 0;
+  MaskCategory maskCategory_ = MaskCategory::Ai;
   int documentGeneration_ = 0;
   int compositionRevision_ = 0;
   int samRevision_ = 0;
@@ -298,6 +313,7 @@ private:
   ApplicationSettingsStore settingsStore_;
   PictureLibraryStore libraryStore_;
   PictureRecipeStore recipeStore_;
+  ModelDownloader catalogDownloader_;
   QStringList modelQueue_;
   QStringList sharpenQueue_;
   QStringList batchPaths_;

@@ -20,7 +20,8 @@ jobs:
             qt6-base-dev-tools \
             libraw-dev \
             libtiff-dev \
-            libpng-dev
+            libpng-dev \
+            qt6-wayland
       - name: Install ONNX Runtime CPU
         run: |
           curl -L --fail -o /tmp/onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz

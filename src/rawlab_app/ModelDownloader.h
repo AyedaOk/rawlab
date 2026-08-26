@@ -25,6 +25,8 @@ public:
   QString modelRoot() const;
   bool isRunning() const;
   void start(const QStringList &selectedIds = {});
+  void refreshCatalog();
+  bool loadCachedCatalog();
   void cancel();
 
   static bool isInstalled(const QString &modelRoot, const ModelCatalogEntry &entry);
@@ -41,6 +43,7 @@ signals:
 
 private:
   void fetchCatalog();
+  bool processCatalog(const QByteArray &data, QString *error);
   void fetchNextManifest();
   void fetchNextFile();
   void fetchBytes(const QUrl &url, const std::function<void(QByteArray)> &done);
@@ -65,4 +68,5 @@ private:
   QCryptographicHash hash_{QCryptographicHash::Sha256};
   qint64 bytesWritten_ = 0;
   bool cancelled_ = false;
+  bool catalogOnly_ = false;
 };

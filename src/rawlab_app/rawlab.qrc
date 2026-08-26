@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file alias="rawlab.png">../../packaging/rawlab.png</file>
+  </qresource>
+</RCC>

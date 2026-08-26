@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QSettings>
 
 #include <algorithm>
@@ -13,21 +14,52 @@ QString darktableModelPath(const QString &relative)
   return QDir::homePath() + QStringLiteral("/.local/share/darktable/models/") + relative;
 }
 
+QString managedModelPath(const QString &id, const QString &version)
+{
+  return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+         + QStringLiteral("/models/") + id + QLatin1Char('/') + version
+         + QStringLiteral("/model.onnx");
+}
+
 ApplicationSettingsData defaults()
 {
   ApplicationSettingsData data;
   data.samModels.push_back({
-    QStringLiteral("sam21-large-default"),
+    QStringLiteral("hf:mask-object-sam21-large"),
     QStringLiteral("SAM 2.1 Large"),
     darktableModelPath(QStringLiteral("mask-object-sam21-large")),
-    {}, {}, {}, QStringLiteral("default"),
+    QStringLiteral("sam21-split-v1"),
+    QStringLiteral("mask-object-sam21-large"),
+    QStringLiteral("1.0"),
+    QStringLiteral("default"),
   });
   data.activeSamModelId = data.samModels.front().id;
   data.denoiseModels.push_back({
-    QStringLiteral("raw-nind-default"),
+    QStringLiteral("hf:rawdenoise-nind"),
     QStringLiteral("RawNIND Bayer"),
     darktableModelPath(QStringLiteral("rawdenoise-nind/model_bayer.onnx")),
-    {}, {}, {}, QStringLiteral("default"),
+    QStringLiteral("rawnind-bayer-v1"),
+    QStringLiteral("rawdenoise-nind"),
+    QStringLiteral("1.0"),
+    QStringLiteral("default"),
+  });
+  data.denoiseModels.push_back({
+    QStringLiteral("hf:rawdenoise-rawforge-shadowweightedl1"),
+    QStringLiteral("TreeNet Denoise"),
+    managedModelPath(QStringLiteral("rawdenoise-rawforge-shadowweightedl1"), QStringLiteral("1.0")),
+    QStringLiteral("rawforge-rgb-v1"),
+    QStringLiteral("rawdenoise-rawforge-shadowweightedl1"),
+    QStringLiteral("1.0"),
+    QStringLiteral("default"),
+  });
+  data.sharpenModels.push_back({
+    QStringLiteral("hf:rawdenoise-rawforge-deblur-deep-24"),
+    QStringLiteral("DeepSharpen"),
+    managedModelPath(QStringLiteral("rawdenoise-rawforge-deblur-deep-24"), QStringLiteral("1.0")),
+    QStringLiteral("rawforge-rgb-v1"),
+    QStringLiteral("rawdenoise-rawforge-deblur-deep-24"),
+    QStringLiteral("1.0"),
+    QStringLiteral("default"),
   });
   return data;
 }
@@ -40,6 +72,7 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
   ApplicationSettingsData data = defaults();
   data.onnxProvider = settings.value(QStringLiteral("ai/provider"), QStringLiteral("auto")).toString();
   data.onnxDeviceId = std::max(0, settings.value(QStringLiteral("ai/deviceId"), 0).toInt());
+  data.onnxRuntimeLibrary = settings.value(QStringLiteral("ai/runtimeLibrary")).toString();
   const bool hasSavedSamModels = settings.contains(QStringLiteral("samModels/size"));
   if(hasSavedSamModels)
   {
@@ -121,6 +154,7 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
     if(!model.id.isEmpty() && !model.name.isEmpty()) data.sharpenModels.push_back(model);
   }
   settings.endArray();
+
   return data;
 }
 
@@ -129,6 +163,7 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
   QSettings settings;
   settings.setValue(QStringLiteral("ai/provider"), data.onnxProvider);
   settings.setValue(QStringLiteral("ai/deviceId"), std::max(0, data.onnxDeviceId));
+  settings.setValue(QStringLiteral("ai/runtimeLibrary"), data.onnxRuntimeLibrary);
   settings.remove(QStringLiteral("sam21"));
   settings.beginWriteArray(QStringLiteral("samModels"), data.samModels.size());
   for(int i = 0; i < data.samModels.size(); ++i)

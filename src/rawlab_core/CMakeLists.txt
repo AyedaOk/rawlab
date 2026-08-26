@@ -21,6 +21,7 @@ add_library(rawlab::core ALIAS rawlab_core)
 target_include_directories(rawlab_core
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${ONNXRuntime_INCLUDE_DIR}
 )
 
 target_link_libraries(rawlab_core
@@ -28,7 +29,7 @@ target_link_libraries(rawlab_core
     ${RAWLAB_LIBRAW_TARGET}
     ${RAWLAB_LIBTIFF_TARGET}
     ${RAWLAB_LIBPNG_TARGET}
-    ONNXRuntime::ONNXRuntime
+    Qt6::Core
     Threads::Threads
 )
 

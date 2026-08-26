@@ -5,6 +5,7 @@
 #include <QDialog>
 
 class QTableWidget;
+class QLineEdit;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -31,6 +32,7 @@ private:
   bool validate();
 
   QTableWidget *samTable_ = nullptr;
+  QLineEdit *runtimeLibraryEdit_ = nullptr;
   QComboBox *providerCombo_ = nullptr;
   QSpinBox *deviceIdSpin_ = nullptr;
   QTableWidget *modelTable_ = nullptr;
@@ -38,6 +40,7 @@ private:
   QLabel *downloadStatus_ = nullptr;
   QProgressBar *downloadProgress_ = nullptr;
   QPushButton *downloadButton_ = nullptr;
+  QPushButton *refreshCatalogButton_ = nullptr;
   QPushButton *deleteButton_ = nullptr;
   QPushButton *importButton_ = nullptr;
   QPushButton *cancelDownloadButton_ = nullptr;

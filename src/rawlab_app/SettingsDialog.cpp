@@ -5,8 +5,10 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QFileDialog>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -20,10 +22,61 @@
 #include <QTableWidget>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QUuid>
 #include <QVBoxLayout>
 
 #include <exception>
+#include <filesystem>
+
+namespace {
+
+QStringList runtimeSearchRoots()
+{
+  QStringList roots;
+#ifdef Q_OS_WIN
+  roots << QCoreApplication::applicationDirPath()
+        << QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+  const QString path = qEnvironmentVariable("PATH");
+  roots += path.split(QDir::listSeparator(), Qt::SkipEmptyParts);
+#elif defined(Q_OS_MACOS)
+  roots << QStringLiteral("/opt/homebrew/lib") << QStringLiteral("/usr/local/lib")
+        << QStringLiteral("/usr/lib")
+        << QDir::homePath() + QStringLiteral("/.local/lib");
+#else
+  roots << QStringLiteral("/usr/lib") << QStringLiteral("/usr/lib64")
+        << QStringLiteral("/usr/local/lib") << QStringLiteral("/usr/local/lib64")
+        << QDir::homePath() + QStringLiteral("/.local/lib");
+#endif
+  roots.removeDuplicates();
+  return roots;
+}
+
+QStringList runtimeNameFilters()
+{
+#ifdef Q_OS_WIN
+  return {QStringLiteral("onnxruntime*.dll")};
+#elif defined(Q_OS_MACOS)
+  return {QStringLiteral("libonnxruntime*.dylib")};
+#else
+  return {QStringLiteral("libonnxruntime.so*")};
+#endif
+}
+
+QStringList runtimeCandidates()
+{
+  QStringList result;
+  for(const QString &root : runtimeSearchRoots())
+  {
+    QDir directory{root};
+    for(const QFileInfo &file : directory.entryInfoList(runtimeNameFilters(), QDir::Files))
+      result.push_back(file.absoluteFilePath());
+  }
+  result.removeDuplicates();
+  return result;
+}
+
+} // namespace
 
 SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget *parent)
   : QDialog{parent}
@@ -40,7 +93,8 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   providerCombo_->addItem(tr("Auto (best available)"), QStringLiteral("auto"));
   try
   {
-    for(const rawlab::ai::OnnxProviderInfo &provider : rawlab::ai::OnnxSession::availableProviders())
+    for(const rawlab::ai::OnnxProviderInfo &provider : rawlab::ai::OnnxSession::availableProviders(
+          settings.onnxRuntimeLibrary.toStdString()))
       providerCombo_->addItem(QString::fromStdString(provider.name), QString::fromStdString(provider.id));
   }
   catch(const std::exception &)
@@ -59,6 +113,51 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   accelerationLayout->addWidget(deviceIdSpin_);
   accelerationLayout->addStretch();
   layout->addWidget(accelerationGroup);
+
+  auto *runtimeGroup = new QGroupBox{tr("ONNX Runtime"), this};
+  auto *runtimeLayout = new QHBoxLayout{runtimeGroup};
+  runtimeLibraryEdit_ = new QLineEdit{settings.onnxRuntimeLibrary, runtimeGroup};
+  runtimeLibraryEdit_->setPlaceholderText(tr("Bundled or system default"));
+  auto *browseRuntime = new QPushButton{tr("Browse"), runtimeGroup};
+  auto *detectRuntime = new QPushButton{tr("Detect"), runtimeGroup};
+  auto *resetRuntime = new QPushButton{tr("Use Default"), runtimeGroup};
+  runtimeLayout->addWidget(runtimeLibraryEdit_, 1);
+  runtimeLayout->addWidget(browseRuntime);
+  runtimeLayout->addWidget(detectRuntime);
+  runtimeLayout->addWidget(resetRuntime);
+  layout->addWidget(runtimeGroup);
+  connect(browseRuntime, &QPushButton::clicked, this, [this] {
+#ifdef Q_OS_WIN
+    const QString filter = tr("ONNX Runtime library (*.dll)");
+#elif defined(Q_OS_MACOS)
+    const QString filter = tr("ONNX Runtime library (*.dylib)");
+#else
+    const QString filter = tr("ONNX Runtime library (*.so*)");
+#endif
+    const QString path = QFileDialog::getOpenFileName(this, tr("Select ONNX Runtime library"),
+                                                       runtimeLibraryEdit_->text(), filter);
+    if(!path.isEmpty()) runtimeLibraryEdit_->setText(path);
+  });
+  connect(resetRuntime, &QPushButton::clicked, this, [this] {
+    runtimeLibraryEdit_->clear();
+  });
+  connect(detectRuntime, &QPushButton::clicked, this, [this] {
+    const QStringList candidates = runtimeCandidates();
+    for(const QString &candidate : candidates)
+    {
+      try
+      {
+        const auto info = rawlab::ai::OnnxSession::probeRuntime(
+          std::filesystem::path{candidate.toStdString()});
+        runtimeLibraryEdit_->setText(candidate);
+        downloadStatus_->setText(tr("ONNX Runtime %1 detected").arg(QString::fromStdString(info.version)));
+        return;
+      }
+      catch(const std::exception &) {}
+    }
+    QMessageBox::information(this, tr("Detect ONNX Runtime"),
+                             tr("No valid ONNX Runtime library was found."));
+  });
   const auto refreshProviderStatus = [this] {
     const QString id = providerCombo_->currentData().toString();
     deviceIdSpin_->setVisible(id == QStringLiteral("cuda") || id == QStringLiteral("tensorrt")
@@ -200,7 +299,7 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
     managedTable_->setItem(row, 2, new QTableWidgetItem{version.isEmpty() ? tr("Local") : version});
     managedTable_->setItem(row, 3, new QTableWidgetItem{task});
     const QString actualStatus = path.isEmpty() || !QFileInfo::exists(path)
-      ? (status == tr("Active") ? tr("Active (missing)") : tr("Available")) : status;
+      ? tr("Not installed") : status;
     managedTable_->setItem(row, 4, new QTableWidgetItem{actualStatus});
   };
   for(const SamModelDefinition &model : settings.samModels)
@@ -231,6 +330,8 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   auto *downloadButtons = new QHBoxLayout;
   downloadButton_ = new QPushButton{tr("Download Selected"), managedGroup};
   downloadButton_->setObjectName(QStringLiteral("downloadModelsButton"));
+  refreshCatalogButton_ = new QPushButton{tr("Refresh Catalog"), managedGroup};
+  refreshCatalogButton_->setObjectName(QStringLiteral("refreshModelCatalogButton"));
   cancelDownloadButton_ = new QPushButton{tr("Cancel"), managedGroup};
   cancelDownloadButton_->setObjectName(QStringLiteral("cancelModelDownloadButton"));
   cancelDownloadButton_->setEnabled(false);
@@ -238,6 +339,7 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   importButton_ = new QPushButton{tr("Import Model..."), managedGroup};
   downloadButtons->addWidget(downloadStatus_, 1);
   downloadButtons->addWidget(downloadProgress_);
+  downloadButtons->addWidget(refreshCatalogButton_);
   downloadButtons->addWidget(downloadButton_);
   downloadButtons->addWidget(deleteButton_);
   downloadButtons->addWidget(importButton_);
@@ -246,11 +348,15 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   layout->addWidget(managedGroup, 1);
 
   downloader_ = new ModelDownloader{this};
+  connect(refreshCatalogButton_, &QPushButton::clicked, this, [this] {
+    refreshCatalogButton_->setEnabled(false);
+    downloader_->refreshCatalog();
+  });
   connect(downloadButton_, &QPushButton::clicked, this, [this] {
     QStringList ids;
     for(int row = 0; row < managedTable_->rowCount(); ++row)
       if(managedTable_->item(row, 0)->checkState() == Qt::Checked
-         && managedTable_->item(row, 4)->text() == tr("Available"))
+         && managedTable_->item(row, 4)->text() == tr("Not installed"))
         ids << managedTable_->item(row, 1)->data(Qt::UserRole + 1).toString();
     if(ids.isEmpty())
     {
@@ -310,7 +416,7 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
       }
       else
       {
-        managedTable_->item(row, 4)->setText(tr("Available"));
+        managedTable_->item(row, 4)->setText(tr("Not installed"));
         managedTable_->item(row, 0)->setCheckState(Qt::Unchecked);
       }
     }
@@ -406,13 +512,14 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
      managedTable_->setItem(row, 1, nameItem);
      managedTable_->setItem(row, 2, new QTableWidgetItem{version});
      managedTable_->setItem(row, 3, new QTableWidgetItem{task});
-     managedTable_->setItem(row, 4, new QTableWidgetItem{installed ? tr("Installed") : tr("Available")});
+      managedTable_->setItem(row, 4, new QTableWidgetItem{installed ? tr("Installed") : tr("Not installed")});
   });
   connect(downloader_, &ModelDownloader::modelInstalled, this,
            [this](const QString &id, const QString &name, const QString &version,
                   const QString &task, const QString &adapter, const QString &location) {
-     registerInstalledModel(id, name, version, task, adapter, location);
-    for(int row = 0; row < managedTable_->rowCount(); ++row)
+      registerInstalledModel(id, name, version, task, adapter, location);
+      ApplicationSettingsStore{}.save(this->settings());
+     for(int row = 0; row < managedTable_->rowCount(); ++row)
     {
         if(managedTable_->item(row, 1)->data(Qt::UserRole).toString() == id
           || managedTable_->item(row, 1)->data(Qt::UserRole + 1).toString() == id)
@@ -422,15 +529,19 @@ SettingsDialog::SettingsDialog(const ApplicationSettingsData &settings, QWidget 
   connect(downloader_, &ModelDownloader::statusChanged, downloadStatus_, &QLabel::setText);
   connect(downloader_, &ModelDownloader::progressChanged, downloadProgress_, &QProgressBar::setValue);
   connect(downloader_, &ModelDownloader::finished, this, [this] {
+    refreshCatalogButton_->setEnabled(true);
     downloadButton_->setEnabled(true);
     cancelDownloadButton_->setEnabled(false);
     downloadProgress_->setVisible(false);
   });
   connect(downloader_, &ModelDownloader::failed, this, [this](const QString &) {
+    refreshCatalogButton_->setEnabled(true);
     downloadButton_->setEnabled(true);
     cancelDownloadButton_->setEnabled(false);
     downloadProgress_->setVisible(false);
   });
+
+  if(!downloader_->loadCachedCatalog()) refreshCatalogButton_->click();
 
   connect(addButton, &QPushButton::clicked, this, [this] {
     bool accepted = false;
@@ -557,6 +668,7 @@ ApplicationSettingsData SettingsDialog::settings() const
   ApplicationSettingsData data;
   data.onnxProvider = providerCombo_->currentData().toString();
   data.onnxDeviceId = deviceIdSpin_->value();
+  data.onnxRuntimeLibrary = runtimeLibraryEdit_->text().trimmed();
   for(int row = 0; row < samTable_->rowCount(); ++row)
   {
     const QString id = samTable_->item(row, 1)->data(Qt::UserRole).toString();

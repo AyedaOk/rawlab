@@ -2,6 +2,7 @@
 
 #include "LayerItemDelegate.h"
 #include "LibraryPage.h"
+#include "ModelDownloader.h"
 #include "PictureRecipe.h"
 #include "PreviewWidget.h"
 #include "SettingsDialog.h"
@@ -105,7 +106,8 @@ QString sharpenCacheKey(const QString &denoisePath, const QString &sharpenPath)
 
 rawlab::ai::OnnxSessionOptions onnxOptions(const ApplicationSettingsData &settings)
 {
-  return {settings.onnxProvider.toStdString(), settings.onnxDeviceId};
+  return {settings.onnxProvider.toStdString(), settings.onnxDeviceId,
+          settings.onnxRuntimeLibrary.toStdString()};
 }
 
 QString compactNumber(const double value, const int decimals = 1)
@@ -169,7 +171,7 @@ QString shutterText(const double seconds)
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
-  : QMainWindow{parent}
+  : QMainWindow{parent}, catalogDownloader_{this}
 {
   appSettings_ = settingsStore_.load();
   if(!appSettings_.denoiseModels.isEmpty()) globalModelId_ = appSettings_.denoiseModels.front().id;
@@ -178,6 +180,7 @@ MainWindow::MainWindow(QWidget *parent)
   refreshLayerControls();
   refreshLibrary();
   showLibrary();
+  catalogDownloader_.refreshCatalog();
 }
 
 MainWindow::~MainWindow()
@@ -430,6 +433,11 @@ void MainWindow::buildUi()
   maskToolbar_ = addToolBar(tr("Mask Editing"));
   maskToolbar_->setMovable(false);
   maskToolbar_->addWidget(new QLabel{tr("  Editing mask:  "), maskToolbar_});
+  maskCategoryCombo_ = new QComboBox{maskToolbar_};
+  maskCategoryCombo_->addItems({tr("AI"), tr("Gradient"), tr("Ellipse")});
+  maskCategoryCombo_->setToolTip(tr("Choose which mask source to edit"));
+  maskToolbar_->addWidget(maskCategoryCombo_);
+  maskToolbar_->addSeparator();
   positiveAction_ = maskToolbar_->addAction(tr("Add Point"));
   positiveAction_->setCheckable(true);
   negativeAction_ = maskToolbar_->addAction(tr("Subtract Point"));
@@ -650,9 +658,15 @@ void MainWindow::connectUi()
     scheduleComposition();
   });
   connect(positiveAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Ai;
+    maskCategoryCombo_->setCurrentIndex(0);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::Positive);
   });
   connect(negativeAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Ai;
+    maskCategoryCombo_->setCurrentIndex(0);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::Negative);
   });
   connect(brushPaintAction_, &QAction::triggered, this, [this] {
@@ -662,16 +676,48 @@ void MainWindow::connectUi()
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::BrushErase);
   });
   connect(gradientAddAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Gradient;
+    maskCategoryCombo_->setCurrentIndex(1);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::GradientAdd);
   });
   connect(gradientSubtractAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Gradient;
+    maskCategoryCombo_->setCurrentIndex(1);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::GradientSubtract);
   });
   connect(ellipseAddAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Ellipse;
+    maskCategoryCombo_->setCurrentIndex(2);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::EllipseAdd);
   });
   connect(ellipseSubtractAction_, &QAction::triggered, this, [this] {
+    maskCategory_ = MaskCategory::Ellipse;
+    maskCategoryCombo_->setCurrentIndex(2);
+    refreshMaskCategoryTools();
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::EllipseSubtract);
+  });
+  connect(maskCategoryCombo_, &QComboBox::currentIndexChanged, this, [this](const int index) {
+    maskCategory_ = index == 1 ? MaskCategory::Gradient
+                               : index == 2 ? MaskCategory::Ellipse : MaskCategory::Ai;
+    refreshMaskCategoryTools();
+    if(maskCategory_ == MaskCategory::Ai)
+    {
+      positiveAction_->setChecked(true);
+      previewWidget_->setPromptMode(PreviewWidget::PromptMode::Positive);
+    }
+    else if(maskCategory_ == MaskCategory::Gradient)
+    {
+      gradientAddAction_->setChecked(true);
+      previewWidget_->setPromptMode(PreviewWidget::PromptMode::GradientAdd);
+    }
+    else
+    {
+      ellipseAddAction_->setChecked(true);
+      previewWidget_->setPromptMode(PreviewWidget::PromptMode::EllipseAdd);
+    }
   });
   connect(brushSizeSlider_, &QSlider::valueChanged, this, [this](const int value) {
     brushSizeLabel_->setText(QString::number(value));
@@ -684,10 +730,11 @@ void MainWindow::connectUi()
           [this](const QPointF from, const QPointF to, const bool gradient, const bool foreground) {
     MaskLayer *layer = selectedMaskLayer();
     if(!layer || originalPreview_.image.width <= 0 || originalPreview_.image.height <= 0) return;
-    if(!layer->mask) rebuildLayerMask(*layer);
-    if(!layer->mask) return;
     const int width = originalPreview_.image.width;
     const int height = originalPreview_.image.height;
+    const int categoryIndex = gradient ? 1 : 2;
+    auto &category = layer->categories[static_cast<std::size_t>(categoryIndex)];
+    if(!category.mask) category.mask = rawlab::pipeline::filledMask(width, height);
     const auto shape = gradient
       ? rawlab::pipeline::linearGradientMask(width, height,
           static_cast<float>(from.x()), static_cast<float>(from.y()),
@@ -697,13 +744,12 @@ void MainWindow::connectUi()
           static_cast<float>(std::min(from.y(), to.y())),
           static_cast<float>(std::max(from.x(), to.x())),
           static_cast<float>(std::max(from.y(), to.y())));
-    std::vector<float> values = layer->mask->values();
+    std::vector<float> values = category.mask->values();
     for(std::size_t i = 0; i < values.size(); ++i)
       values[i] = foreground ? std::max(values[i], shape.values()[i])
                              : std::max(0.0f, values[i] - shape.values()[i]);
-    layer->samMask = rawlab::pipeline::Mask{width, height, std::move(values)};
-    layer->mask = layer->samMask;
-    requestMaskEffects(*layer);
+    category.mask = rawlab::pipeline::Mask{width, height, std::move(values)};
+    rebuildLayerMask(*layer);
     refreshOverlay();
     scheduleComposition();
   });
@@ -712,20 +758,22 @@ void MainWindow::connectUi()
     MaskLayer *layer = selectedMaskLayer();
     if(!layer) return;
     const bool brushMode = brushPaintAction_->isChecked() || brushEraseAction_->isChecked();
-    if(brushMode && !layer->brushStrokes.empty())
+    auto &category = layer->categories[static_cast<std::size_t>(maskCategoryIndex())];
+    if(brushMode && !category.brushStrokes.empty())
     {
-      layer->brushStrokes.pop_back();
+      layer->categories[static_cast<std::size_t>(maskCategoryIndex())].brushStrokes.pop_back();
       rebuildLayerMask(*layer);
       refreshOverlay();
       scheduleComposition();
     }
-    else if(!layer->points.empty())
+    else if(maskCategory_ == MaskCategory::Ai && !layer->points.empty())
     {
       layer->points.pop_back();
       samNeedsReset_ = true;
       ++samRevision_;
       if(layer->points.empty())
       {
+        layer->categories[0].mask.reset();
         layer->samMask.reset();
         rebuildLayerMask(*layer);
         refreshOverlay();
@@ -737,9 +785,15 @@ void MainWindow::connectUi()
   connect(clearPointsAction_, &QAction::triggered, this, [this] {
     MaskLayer *layer = selectedMaskLayer();
     if(!layer) return;
-    layer->points.clear();
-    layer->samMask.reset();
-    layer->brushStrokes.clear();
+    const int categoryIndex = maskCategoryIndex();
+    layer->categories[static_cast<std::size_t>(categoryIndex)].mask.reset();
+    layer->categories[static_cast<std::size_t>(categoryIndex)].brushStrokes.clear();
+    if(categoryIndex == 0)
+    {
+      layer->points.clear();
+      layer->samMask.reset();
+      layer->brushStrokes.clear();
+    }
     rebuildLayerMask(*layer);
     samNeedsReset_ = true;
     ++samRevision_;
@@ -764,27 +818,32 @@ void MainWindow::connectUi()
             pendingMaskEffects_.remove(layer->id);
             MaskLayer::BrushStroke stroke;
             stroke.points.push_back(point);
-            stroke.radius = static_cast<float>(brushSizeSlider_->value());
-            stroke.hardness = static_cast<float>(brushHardnessSlider_->value()) / 100.0f;
-            stroke.value = paint ? 1.0f : 0.0f;
-            layer->brushStrokes.push_back(stroke);
-            if(!layer->mask) rebuildLayerMask(*layer);
-            layer->mask->paintSegment(static_cast<float>(point.x()), static_cast<float>(point.y()),
-                                      static_cast<float>(point.x()), static_cast<float>(point.y()),
-                                      stroke.radius, stroke.hardness, stroke.value);
-            layer->effectiveMask = layer->mask;
+             stroke.radius = static_cast<float>(brushSizeSlider_->value());
+             stroke.hardness = static_cast<float>(brushHardnessSlider_->value()) / 100.0f;
+             stroke.value = paint ? 1.0f : 0.0f;
+             auto &category = layer->categories[static_cast<std::size_t>(maskCategoryIndex())];
+             category.brushStrokes.push_back(stroke);
+             if(!category.mask)
+               category.mask = rawlab::pipeline::filledMask(originalPreview_.image.width,
+                                                             originalPreview_.image.height);
+             category.mask->paintSegment(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                       static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                       stroke.radius, stroke.hardness, stroke.value);
+             rebuildLayerMask(*layer);
             refreshOverlay();
           });
   connect(previewWidget_, &PreviewWidget::brushStrokeContinued, this,
-          [this](const QPointF from, const QPointF to) {
-            MaskLayer *layer = selectedMaskLayer();
-            if(!layer || layer->id != editingLayerId_ || layer->brushStrokes.empty() || !layer->mask) return;
-            MaskLayer::BrushStroke &stroke = layer->brushStrokes.back();
+             [this](const QPointF from, const QPointF to) {
+             MaskLayer *layer = selectedMaskLayer();
+             if(!layer || layer->id != editingLayerId_) return;
+             auto &category = layer->categories[static_cast<std::size_t>(maskCategoryIndex())];
+             if(category.brushStrokes.empty() || !category.mask) return;
+             MaskLayer::BrushStroke &stroke = category.brushStrokes.back();
             stroke.points.push_back(to);
-            layer->mask->paintSegment(static_cast<float>(from.x()), static_cast<float>(from.y()),
+             category.mask->paintSegment(static_cast<float>(from.x()), static_cast<float>(from.y()),
                                       static_cast<float>(to.x()), static_cast<float>(to.y()),
                                       stroke.radius, stroke.hardness, stroke.value);
-            layer->effectiveMask = layer->mask;
+             rebuildLayerMask(*layer);
             refreshOverlay();
           });
   connect(previewWidget_, &PreviewWidget::brushStrokeFinished, this, [this] {
@@ -926,6 +985,7 @@ void MainWindow::connectUi()
         if(found != layers_.end())
         {
           found->samMask = result.mask;
+          found->categories[0].mask = result.mask;
           rebuildLayerMask(*found);
         }
         refreshOverlay();
@@ -1428,11 +1488,33 @@ void MainWindow::beginMaskEdit()
   layer->showMask = true;
   if(lastSegmentLayerId_ != layer->id) samNeedsReset_ = true;
   maskToolbar_->show();
+  maskCategory_ = MaskCategory::Ai;
+  maskCategoryCombo_->setCurrentIndex(0);
+  refreshMaskCategoryTools();
   positiveAction_->setChecked(true);
   previewWidget_->setPromptMode(PreviewWidget::PromptMode::Positive);
   refreshOverlay();
   refreshLayerControls();
   statusLabel_->setText(tr("Mask editing: use SAM points, brush, gradients, or ellipses"));
+}
+
+void MainWindow::refreshMaskCategoryTools()
+{
+  const bool ai = maskCategory_ == MaskCategory::Ai;
+  const bool gradient = maskCategory_ == MaskCategory::Gradient;
+  const bool ellipse = maskCategory_ == MaskCategory::Ellipse;
+  positiveAction_->setVisible(ai);
+  negativeAction_->setVisible(ai);
+  gradientAddAction_->setVisible(gradient);
+  gradientSubtractAction_->setVisible(gradient);
+  ellipseAddAction_->setVisible(ellipse);
+  ellipseSubtractAction_->setVisible(ellipse);
+}
+
+int MainWindow::maskCategoryIndex() const
+{
+  return maskCategory_ == MaskCategory::Gradient ? 1
+    : maskCategory_ == MaskCategory::Ellipse ? 2 : 0;
 }
 
 void MainWindow::endMaskEdit()
@@ -1454,28 +1536,42 @@ void MainWindow::rebuildLayerMask(MaskLayer &layer)
     return;
   }
 
-  rawlab::pipeline::Mask rebuilt = layer.samMask
-    ? *layer.samMask
-    : rawlab::pipeline::filledMask(originalPreview_.image.width, originalPreview_.image.height);
-  for(const MaskLayer::BrushStroke &stroke : layer.brushStrokes)
+  rawlab::pipeline::Mask rebuilt = rawlab::pipeline::filledMask(
+    originalPreview_.image.width, originalPreview_.image.height);
+  // Recipes from before category editing stored their mask in samMask.
+  if(layer.categories[0].mask == std::nullopt && layer.samMask)
   {
-    if(stroke.points.empty()) continue;
-    if(stroke.points.size() == 1)
+    layer.categories[0].mask = layer.samMask;
+    layer.categories[0].brushStrokes = layer.brushStrokes;
+  }
+  for(auto &category : layer.categories)
+  {
+    if(!category.mask) continue;
+    rawlab::pipeline::Mask contribution = *category.mask;
+    for(const MaskLayer::BrushStroke &stroke : category.brushStrokes)
     {
-      const QPointF point = stroke.points.front();
-      rebuilt.paintSegment(static_cast<float>(point.x()), static_cast<float>(point.y()),
-                           static_cast<float>(point.x()), static_cast<float>(point.y()),
-                           stroke.radius, stroke.hardness, stroke.value);
-      continue;
+      if(stroke.points.empty()) continue;
+      if(stroke.points.size() == 1)
+      {
+        const QPointF point = stroke.points.front();
+        contribution.paintSegment(static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                  static_cast<float>(point.x()), static_cast<float>(point.y()),
+                                  stroke.radius, stroke.hardness, stroke.value);
+        continue;
+      }
+      for(std::size_t i = 1; i < stroke.points.size(); ++i)
+      {
+        const QPointF from = stroke.points[i - 1];
+        const QPointF to = stroke.points[i];
+        contribution.paintSegment(static_cast<float>(from.x()), static_cast<float>(from.y()),
+                                  static_cast<float>(to.x()), static_cast<float>(to.y()),
+                                  stroke.radius, stroke.hardness, stroke.value);
+      }
     }
-    for(std::size_t i = 1; i < stroke.points.size(); ++i)
-    {
-      const QPointF from = stroke.points[i - 1];
-      const QPointF to = stroke.points[i];
-      rebuilt.paintSegment(static_cast<float>(from.x()), static_cast<float>(from.y()),
-                           static_cast<float>(to.x()), static_cast<float>(to.y()),
-                           stroke.radius, stroke.hardness, stroke.value);
-    }
+    std::vector<float> values = rebuilt.values();
+    for(std::size_t i = 0; i < values.size(); ++i)
+      values[i] = std::max(values[i], contribution.values()[i]);
+    rebuilt = rawlab::pipeline::Mask{rebuilt.width(), rebuilt.height(), std::move(values)};
   }
   layer.mask = std::move(rebuilt);
   requestMaskEffects(layer);
@@ -1829,6 +1925,7 @@ void MainWindow::refreshModelCombo()
   modelCombo_->clear();
   for(const DenoiseModelDefinition &model : appSettings_.denoiseModels)
   {
+    if(model.path.isEmpty() || !QFileInfo::exists(model.path)) continue;
     modelCombo_->addItem(model.name, model.id);
     modelCombo_->setItemData(modelCombo_->count() - 1, model.path, Qt::ToolTipRole);
   }
@@ -1851,8 +1948,15 @@ void MainWindow::showSettings()
     return;
   }
   SettingsDialog dialog{appSettings_, this};
-  if(dialog.exec() != QDialog::Accepted) return;
+  if(dialog.exec() != QDialog::Accepted)
+  {
+    appSettings_ = settingsStore_.load();
+    refreshLayerControls();
+    refreshActionState();
+    return;
+  }
   const ApplicationSettingsData updated = dialog.settings();
+  const bool runtimeChanged = updated.onnxRuntimeLibrary != appSettings_.onnxRuntimeLibrary;
   const bool samChanged = activeSamPath(updated, QStringLiteral("encoder.onnx"))
                             != activeSamPath(appSettings_, QStringLiteral("encoder.onnx"))
                           || activeSamPath(updated, QStringLiteral("decoder.onnx"))
@@ -1861,6 +1965,8 @@ void MainWindow::showSettings()
                           || updated.onnxDeviceId != appSettings_.onnxDeviceId;
   appSettings_ = updated;
   settingsStore_.save(appSettings_);
+  if(runtimeChanged)
+    statusLabel_->setText(tr("ONNX Runtime changed; restart RawLab to apply it"));
   if(samChanged)
   {
     segmenter_.reset();
@@ -2126,7 +2232,8 @@ PictureRecipe MainWindow::currentRecipe()
     saved.showMask = layer.showMask;
     saved.feather = layer.featherRadius / radiusScale;
     saved.blur = layer.blurRadius / radiusScale;
-    saved.baseMask = layer.samMask;
+    // Store the flattened result so recipes remain visually compatible with older versions.
+    saved.baseMask = layer.mask;
     for(const auto &point : layer.points)
     {
       saved.prompts.push_back({point.x / width, point.y / height, point.foreground});
@@ -2142,6 +2249,21 @@ PictureRecipe MainWindow::currentRecipe()
         savedStroke.points.push_back({point.x() / width, point.y() / height});
       }
       saved.strokes.push_back(std::move(savedStroke));
+    }
+    for(int category = 0; category < 3; ++category)
+    {
+      const std::size_t index = static_cast<std::size_t>(category);
+      saved.categoryMasks[index] = layer.categories[index].mask;
+      for(const MaskLayer::BrushStroke &stroke : layer.categories[index].brushStrokes)
+      {
+        PictureRecipeStroke savedStroke;
+        savedStroke.radius = stroke.radius / radiusScale;
+        savedStroke.hardness = stroke.hardness;
+        savedStroke.value = stroke.value;
+        for(const QPointF &point : stroke.points)
+          savedStroke.points.push_back({point.x() / width, point.y() / height});
+        saved.categoryStrokes[index].push_back(std::move(savedStroke));
+      }
     }
     recipe.layers.push_back(std::move(saved));
   }
@@ -2196,7 +2318,26 @@ void MainWindow::applyRecipe(const PictureRecipe &recipe)
     layer.showMask = saved.showMask;
     layer.featherRadius = saved.feather * radiusScale;
     layer.blurRadius = saved.blur * radiusScale;
-    layer.samMask = saved.baseMask;
+    bool hasCategoryData = false;
+    for(int category = 0; category < 3; ++category)
+    {
+      const std::size_t index = static_cast<std::size_t>(category);
+      layer.categories[index].mask = saved.categoryMasks[index];
+      hasCategoryData = hasCategoryData || layer.categories[index].mask.has_value()
+                        || !saved.categoryStrokes[index].empty();
+      for(const PictureRecipeStroke &savedStroke : saved.categoryStrokes[index])
+      {
+        MaskLayer::BrushStroke stroke;
+        stroke.radius = savedStroke.radius * radiusScale;
+        stroke.hardness = savedStroke.hardness;
+        stroke.value = savedStroke.value;
+        for(const QPointF &point : savedStroke.points)
+          stroke.points.push_back({std::clamp(point.x(), 0.0, 1.0) * width,
+                                   std::clamp(point.y(), 0.0, 1.0) * height});
+        layer.categories[index].brushStrokes.push_back(std::move(stroke));
+      }
+    }
+    if(!hasCategoryData) layer.samMask = saved.baseMask;
     for(const PictureRecipePrompt &prompt : saved.prompts)
     {
       layer.points.push_back({std::min(std::clamp(prompt.x, 0.0f, 1.0f) * width, width - 0.001f),
@@ -2365,11 +2506,14 @@ void MainWindow::refreshLayerControls()
   blurValueLabel_->setText(tr("%1 px").arg(blur));
   const int sharpen = global ? static_cast<int>(std::lround(globalSharpenStrength_ * 100.0f))
                              : layer ? static_cast<int>(std::lround(layer->sharpenStrength * 100.0f)) : 100;
-  const bool sharpenAvailable = !appSettings_.sharpenModels.isEmpty();
+  const QString sharpenPath = sharpenModelPath();
+  const bool sharpenAvailable = !sharpenPath.isEmpty() && QFileInfo::exists(sharpenPath);
   const bool sharpenEnabled = global ? globalSharpenEnabled_ : layer && layer->sharpenEnabled;
   sharpenCheck_->setChecked(sharpenEnabled && sharpenAvailable);
-  sharpenCheck_->setText(sharpenAvailable ? appSettings_.sharpenModels.front().name
-                                          : tr("DeepSharpen (not installed)"));
+  const QString sharpenName = appSettings_.sharpenModels.isEmpty()
+    ? QStringLiteral("DeepSharpen") : appSettings_.sharpenModels.front().name;
+  sharpenCheck_->setText(sharpenAvailable ? sharpenName
+                                          : tr("%1 (not installed)").arg(sharpenName));
   sharpenCheck_->setEnabled((global || layer != nullptr) && sharpenAvailable);
   sharpenSlider_->setValue(sharpen);
   sharpenSlider_->setEnabled((global || layer != nullptr) && sharpenEnabled && sharpenAvailable);

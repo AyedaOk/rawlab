@@ -38,6 +38,7 @@ struct SharpenModelDefinition
 
 struct ApplicationSettingsData
 {
+  QString onnxRuntimeLibrary;
   QString onnxProvider = QStringLiteral("auto");
   int onnxDeviceId = 0;
   QList<SamModelDefinition> samModels;

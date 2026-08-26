@@ -67,17 +67,7 @@ find_path(ONNXRuntime_INCLUDE_DIR
   PATHS "${RAWLAB_DEPENDENCY_ROOT}/include"
   PATH_SUFFIXES onnxruntime onnxruntime/core/session
 )
-find_library(ONNXRuntime_LIBRARY
-  NAMES onnxruntime
-  PATHS "${RAWLAB_DEPENDENCY_ROOT}/lib" "${RAWLAB_DEPENDENCY_ROOT}/lib64"
-)
 
-if(NOT ONNXRuntime_INCLUDE_DIR OR NOT ONNXRuntime_LIBRARY)
-  message(FATAL_ERROR "ONNX Runtime headers/library not found")
+if(NOT ONNXRuntime_INCLUDE_DIR)
+  message(FATAL_ERROR "ONNX Runtime headers not found")
 endif()
-
-add_library(ONNXRuntime::ONNXRuntime UNKNOWN IMPORTED)
-set_target_properties(ONNXRuntime::ONNXRuntime PROPERTIES
-  IMPORTED_LOCATION "${ONNXRuntime_LIBRARY}"
-  INTERFACE_INCLUDE_DIRECTORIES "${ONNXRuntime_INCLUDE_DIR}"
-)

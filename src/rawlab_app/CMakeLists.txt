@@ -16,6 +16,7 @@ qt_add_executable(rawlab_app
   LibraryPage.h
   PreviewWidget.cpp
   PreviewWidget.h
+  rawlab.qrc
   PictureLibraryStore.cpp
   PictureLibraryStore.h
   PictureRecipe.cpp

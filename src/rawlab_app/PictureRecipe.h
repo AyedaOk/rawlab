@@ -5,6 +5,7 @@
 #include <QPointF>
 #include <QString>
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -37,6 +38,8 @@ struct PictureRecipeLayer
   float feather = 0.0f;
   float blur = 0.0f;
   std::optional<rawlab::pipeline::Mask> baseMask;
+  std::array<std::optional<rawlab::pipeline::Mask>, 3> categoryMasks;
+  std::array<std::vector<PictureRecipeStroke>, 3> categoryStrokes;
   std::vector<PictureRecipePrompt> prompts;
   std::vector<PictureRecipeStroke> strokes;
 };

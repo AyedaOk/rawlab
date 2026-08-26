@@ -26,12 +26,19 @@ struct OnnxSessionOptions
 {
   std::string provider = "auto";
   int deviceId = 0;
+  std::string runtimeLibrary;
 };
 
 struct OnnxProviderInfo
 {
   std::string id;
   std::string name;
+};
+
+struct OnnxRuntimeInfo
+{
+  std::string version;
+  std::vector<OnnxProviderInfo> providers;
 };
 
 struct OnnxFloatRunResult
@@ -60,7 +67,8 @@ public:
   OnnxSession &operator=(OnnxSession &&) = delete;
 
   const OnnxModelInfo &modelInfo() const { return modelInfo_; }
-  static std::vector<OnnxProviderInfo> availableProviders();
+  static std::vector<OnnxProviderInfo> availableProviders(const std::string &runtimeLibrary = {});
+  static OnnxRuntimeInfo probeRuntime(const std::filesystem::path &runtimeLibrary);
   OnnxFloatRunResult runSingleFloat(const std::vector<float> &input,
                                     const std::vector<std::int64_t> &inputShape) const;
   std::vector<OnnxNamedFloatTensor> runFloat(

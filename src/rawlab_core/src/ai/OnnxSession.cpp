@@ -2,6 +2,9 @@
 
 #include <onnxruntime_c_api.h>
 
+#include <QLibrary>
+#include <QString>
+
 #include <algorithm>
 #include <memory>
 #include <bit>
@@ -15,9 +18,39 @@
 namespace rawlab::ai {
 namespace {
 
-const OrtApi &ortApi()
+struct RuntimeState
 {
-  const OrtApi *api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+  QLibrary library;
+  const OrtApi *api = nullptr;
+  std::string version;
+};
+
+RuntimeState &runtimeState()
+{
+  static RuntimeState state;
+  return state;
+}
+
+const OrtApi &ortApi(const std::string &runtimeLibrary = {})
+{
+  RuntimeState &state = runtimeState();
+  if(!state.api)
+  {
+    const QString name = runtimeLibrary.empty()
+      ? QStringLiteral("onnxruntime") : QString::fromStdString(runtimeLibrary);
+    state.library.setFileName(name);
+    if(!state.library.load())
+      throw std::runtime_error{"Could not load ONNX Runtime library '" + name.toStdString()
+                               + "': " + state.library.errorString().toStdString()};
+    using GetApiBase = const OrtApiBase *(*)();
+    const auto getApiBase = reinterpret_cast<GetApiBase>(state.library.resolve("OrtGetApiBase"));
+    if(!getApiBase) throw std::runtime_error{"ONNX Runtime library does not export OrtGetApiBase"};
+    const OrtApiBase *base = getApiBase();
+    if(!base) throw std::runtime_error{"ONNX Runtime returned no API base"};
+    state.version = base->GetVersionString() ? base->GetVersionString() : "unknown";
+    state.api = base->GetApi(ORT_API_VERSION);
+  }
+  const OrtApi *api = state.api;
   if(!api) throw std::runtime_error{"ONNX Runtime API is unavailable"};
   return *api;
 }
@@ -212,7 +245,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
                          const OnnxSessionOptions &options)
   : impl_{new Impl{}}
 {
-  const OrtApi &api = ortApi();
+  const OrtApi &api = ortApi(options.runtimeLibrary);
   const auto cleanupImpl = [&api](Impl *value) {
     if(!value) return;
     if(value->memoryInfo) api.ReleaseMemoryInfo(value->memoryInfo);
@@ -222,7 +255,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
     delete value;
   };
   std::unique_ptr<Impl, decltype(cleanupImpl)> constructionGuard{impl_, cleanupImpl};
-  modelInfo_.runtimeVersion = OrtGetApiBase()->GetVersionString();
+  modelInfo_.runtimeVersion = runtimeState().version;
 
   throwIfOrtError(api.CreateEnv(ORT_LOGGING_LEVEL_WARNING, "rawlab", &impl_->env), "Ort CreateEnv");
   throwIfOrtError(api.CreateSessionOptions(&impl_->options), "Ort CreateSessionOptions");
@@ -555,13 +588,35 @@ std::vector<OnnxNamedFloatTensor> OnnxSession::runFloat(
   }
 }
 
-std::vector<OnnxProviderInfo> OnnxSession::availableProviders()
+std::vector<OnnxProviderInfo> OnnxSession::availableProviders(const std::string &runtimeLibrary)
 {
-  const OrtApi &api = ortApi();
+  const OrtApi &api = ortApi(runtimeLibrary);
   const std::vector<std::string> available = advertisedProviders(api);
   std::vector<OnnxProviderInfo> result{{"cpu", "CPU"}};
   for(const ProviderMapping &mapping : providers)
     if(isAdvertised(available, mapping)) result.push_back({mapping.id, mapping.displayName});
+  return result;
+}
+
+OnnxRuntimeInfo OnnxSession::probeRuntime(const std::filesystem::path &runtimeLibrary)
+{
+  QLibrary library{QString::fromStdString(runtimeLibrary.string())};
+  if(!library.load())
+    throw std::runtime_error{"Could not load ONNX Runtime library '" + runtimeLibrary.string()
+                             + "': " + library.errorString().toStdString()};
+  using GetApiBase = const OrtApiBase *(*)();
+  const auto getApiBase = reinterpret_cast<GetApiBase>(library.resolve("OrtGetApiBase"));
+  if(!getApiBase) throw std::runtime_error{"ONNX Runtime library does not export OrtGetApiBase"};
+  const OrtApiBase *base = getApiBase();
+  if(!base || !base->GetApi(ORT_API_VERSION))
+    throw std::runtime_error{"ONNX Runtime library has no compatible API"};
+  OnnxRuntimeInfo result;
+  result.version = base->GetVersionString() ? base->GetVersionString() : "unknown";
+  const OrtApi &api = *base->GetApi(ORT_API_VERSION);
+  const std::vector<std::string> advertised = advertisedProviders(api);
+  result.providers.push_back({"cpu", "CPU"});
+  for(const ProviderMapping &mapping : providers)
+    if(isAdvertised(advertised, mapping)) result.providers.push_back({mapping.id, mapping.displayName});
   return result;
 }
 
