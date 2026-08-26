@@ -12,15 +12,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.2"
-          host: linux
-          target: desktop
-          arch: gcc_64
-          install-deps: true
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libraw-dev libtiff-dev libpng-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev \
+            qt6-base-dev-tools \
+            libraw-dev \
+            libtiff-dev \
+            libpng-dev
       - name: Install ONNX Runtime CPU
         run: |
           curl -L --fail -o /tmp/onnxruntime.tgz https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz
@@ -33,7 +33,7 @@ jobs:
           -DONNXRuntime_LIBRARY=/tmp/onnxruntime-linux-x64-1.20.1/lib/libonnxruntime.so
           && cmake --build --preset release
       - name: Package
-        run: bash scripts/package-linux.sh
+        run: QMAKE=/usr/bin/qmake6 bash scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: linux
