@@ -1,4 +1,10 @@
 build/
+AppDir/
+RawLab-*.AppImage
+linuxdeploy*.AppImage
+linuxdeploy.log
+dist/
+release/
 *.dng
 *.png
 *.raw
@@ -12,3 +18,5 @@ models/
 .idea/
 .vscode/
 compile_commands.json
+
+!packaging/rawlab.png

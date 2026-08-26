@@ -25,9 +25,9 @@ target_include_directories(rawlab_core
 
 target_link_libraries(rawlab_core
   PUBLIC
-    PkgConfig::LibRaw
-    PkgConfig::LibTIFF
-    PkgConfig::LibPNG
+    ${RAWLAB_LIBRAW_TARGET}
+    ${RAWLAB_LIBTIFF_TARGET}
+    ${RAWLAB_LIBPNG_TARGET}
     ONNXRuntime::ONNXRuntime
     Threads::Threads
 )
