@@ -5,6 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/dist"
 rm -rf "$out" "$root/AppDir"
+mkdir -p "$out"
 cmake --install "$root/build/release" --prefix "$root/AppDir/usr"
 cp "$root/packaging/rawlab.desktop" "$root/AppDir/rawlab.desktop"
 
