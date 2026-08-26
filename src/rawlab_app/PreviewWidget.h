@@ -11,7 +11,8 @@ class PreviewWidget final : public QWidget
   Q_OBJECT
 
 public:
-  enum class PromptMode { None, Positive, Negative, BrushPaint, BrushErase };
+  enum class PromptMode { None, Positive, Negative, BrushPaint, BrushErase,
+                          GradientAdd, GradientSubtract, EllipseAdd, EllipseSubtract };
 
   struct PromptMarker
   {
@@ -41,6 +42,7 @@ signals:
   void brushStrokeStarted(QPointF imagePosition, bool paint);
   void brushStrokeContinued(QPointF from, QPointF to);
   void brushStrokeFinished();
+  void shapeRequested(QPointF from, QPointF to, bool gradient, bool foreground);
   void zoomChanged(double imageScale);
 
 protected:
@@ -75,6 +77,8 @@ private:
   double dividerPosition_ = 0.5;
   bool actualSizeMode_ = false;
   QPointF lastBrushPoint_;
+  QPointF shapeStart_;
+  bool shaping_ = false;
   QPointF hoverImagePoint_;
   float brushRadius_ = 30.0f;
   QTimer processingTimer_;

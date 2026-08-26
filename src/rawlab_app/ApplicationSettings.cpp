@@ -20,12 +20,14 @@ ApplicationSettingsData defaults()
     QStringLiteral("sam21-large-default"),
     QStringLiteral("SAM 2.1 Large"),
     darktableModelPath(QStringLiteral("mask-object-sam21-large")),
+    {}, {}, {}, QStringLiteral("default"),
   });
   data.activeSamModelId = data.samModels.front().id;
   data.denoiseModels.push_back({
     QStringLiteral("raw-nind-default"),
     QStringLiteral("RawNIND Bayer"),
     darktableModelPath(QStringLiteral("rawdenoise-nind/model_bayer.onnx")),
+    {}, {}, {}, QStringLiteral("default"),
   });
   return data;
 }
@@ -53,6 +55,8 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
         settings.value(QStringLiteral("adapter")).toString(),
         settings.value(QStringLiteral("sourceId")).toString(),
         settings.value(QStringLiteral("version")).toString(),
+        settings.value(QStringLiteral("origin"), settings.value(QStringLiteral("sourceId")).toString().isEmpty()
+          ? QStringLiteral("default") : QStringLiteral("verified")).toString(),
       };
       if(!model.id.isEmpty() && !model.name.isEmpty()) data.samModels.push_back(model);
     }
@@ -91,6 +95,8 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
       settings.value(QStringLiteral("adapter")).toString(),
       settings.value(QStringLiteral("sourceId")).toString(),
       settings.value(QStringLiteral("version")).toString(),
+      settings.value(QStringLiteral("origin"), settings.value(QStringLiteral("sourceId")).toString().isEmpty()
+        ? QStringLiteral("default") : QStringLiteral("verified")).toString(),
     };
     if(!model.id.isEmpty() && !model.name.isEmpty()) data.denoiseModels.push_back(model);
   }
@@ -109,6 +115,8 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
       settings.value(QStringLiteral("adapter")).toString(),
       settings.value(QStringLiteral("sourceId")).toString(),
       settings.value(QStringLiteral("version")).toString(),
+      settings.value(QStringLiteral("origin"), settings.value(QStringLiteral("sourceId")).toString().isEmpty()
+        ? QStringLiteral("default") : QStringLiteral("verified")).toString(),
     };
     if(!model.id.isEmpty() && !model.name.isEmpty()) data.sharpenModels.push_back(model);
   }
@@ -133,6 +141,7 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
     settings.setValue(QStringLiteral("adapter"), model.adapter);
     settings.setValue(QStringLiteral("sourceId"), model.sourceId);
     settings.setValue(QStringLiteral("version"), model.version);
+    settings.setValue(QStringLiteral("origin"), model.origin);
   }
   settings.endArray();
   settings.setValue(QStringLiteral("samModels/activeId"), data.activeSamModelId);
@@ -147,6 +156,7 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
     settings.setValue(QStringLiteral("adapter"), model.adapter);
     settings.setValue(QStringLiteral("sourceId"), model.sourceId);
     settings.setValue(QStringLiteral("version"), model.version);
+    settings.setValue(QStringLiteral("origin"), model.origin);
   }
   settings.endArray();
   settings.beginWriteArray(QStringLiteral("sharpenModels"), data.sharpenModels.size());
@@ -160,6 +170,7 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
     settings.setValue(QStringLiteral("adapter"), model.adapter);
     settings.setValue(QStringLiteral("sourceId"), model.sourceId);
     settings.setValue(QStringLiteral("version"), model.version);
+    settings.setValue(QStringLiteral("origin"), model.origin);
   }
   settings.endArray();
 }
@@ -190,7 +201,8 @@ void ApplicationSettingsStore::registerInstalledModel(ApplicationSettingsData &d
                                                        const QString &task,
                                                        const QString &adapter,
                                                        const QString &location,
-                                                       const QString &version)
+                                                       const QString &version,
+                                                       const QString &origin)
 {
   const QString managedId = QStringLiteral("hf:%1").arg(sourceId);
   if(task == QStringLiteral("mask"))
@@ -203,10 +215,11 @@ void ApplicationSettingsStore::registerInstalledModel(ApplicationSettingsData &d
         model.folder = location;
         model.adapter = adapter;
         model.version = version;
+        model.origin = origin;
         return;
       }
     }
-    data.samModels.push_back({managedId, name, location, adapter, sourceId, version});
+    data.samModels.push_back({managedId, name, location, adapter, sourceId, version, origin});
     if(data.activeSamModelId.isEmpty()) data.activeSamModelId = managedId;
     return;
   }
@@ -220,10 +233,11 @@ void ApplicationSettingsStore::registerInstalledModel(ApplicationSettingsData &d
         model.path = location;
         model.adapter = adapter;
         model.version = version;
+        model.origin = origin;
         return;
       }
     }
-    data.denoiseModels.push_back({managedId, name, location, adapter, sourceId, version});
+    data.denoiseModels.push_back({managedId, name, location, adapter, sourceId, version, origin});
     return;
   }
   if(task == QStringLiteral("sharpen"))
@@ -236,9 +250,10 @@ void ApplicationSettingsStore::registerInstalledModel(ApplicationSettingsData &d
         model.path = location;
         model.adapter = adapter;
         model.version = version;
+        model.origin = origin;
         return;
       }
     }
-    data.sharpenModels.push_back({managedId, name, location, adapter, sourceId, version});
+    data.sharpenModels.push_back({managedId, name, location, adapter, sourceId, version, origin});
   }
 }

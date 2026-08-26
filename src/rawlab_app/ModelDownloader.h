@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QStringList>
 #include <QUrl>
 
 #include <functional>
@@ -23,7 +24,7 @@ public:
 
   QString modelRoot() const;
   bool isRunning() const;
-  void start();
+  void start(const QStringList &selectedIds = {});
   void cancel();
 
   static bool isInstalled(const QString &modelRoot, const ModelCatalogEntry &entry);
@@ -54,6 +55,7 @@ private:
   QString modelRoot_;
   QUrl repositoryUrl_;
   QList<ModelCatalogEntry> models_;
+  QStringList selectedIds_;
   int modelIndex_ = 0;
   ModelManifest manifest_;
   QByteArray manifestBytes_;

@@ -278,6 +278,20 @@ void PreviewWidget::mousePressEvent(QMouseEvent *event)
     }
     return;
   }
+  if((promptMode_ == PromptMode::GradientAdd || promptMode_ == PromptMode::GradientSubtract
+      || promptMode_ == PromptMode::EllipseAdd || promptMode_ == PromptMode::EllipseSubtract)
+     && event->button() == Qt::LeftButton)
+  {
+    const QPointF point = widgetToImage(event->position());
+    if(QRectF{QPointF{0.0, 0.0}, QSizeF{image_.size()}}.contains(point))
+    {
+      shaping_ = true;
+      shapeStart_ = point;
+      hoverImagePoint_ = point;
+      update();
+    }
+    return;
+  }
   if(event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton)
   {
     dragging_ = true;
@@ -309,6 +323,12 @@ void PreviewWidget::mouseMoveEvent(QMouseEvent *event)
     lastBrushPoint_ = point;
     return;
   }
+  if(shaping_)
+  {
+    hoverImagePoint_ = widgetToImage(event->position());
+    update();
+    return;
+  }
   if(dragging_)
   {
     pan_ = panStart_ + event->position() - dragStart_;
@@ -331,6 +351,16 @@ void PreviewWidget::mouseReleaseEvent(QMouseEvent *event)
   {
     brushing_ = false;
     emit brushStrokeFinished();
+  }
+  if(shaping_ && event->button() == Qt::LeftButton)
+  {
+    shaping_ = false;
+    const QPointF end = widgetToImage(event->position());
+    const bool gradient = promptMode_ == PromptMode::GradientAdd
+      || promptMode_ == PromptMode::GradientSubtract;
+    const bool foreground = promptMode_ == PromptMode::GradientAdd
+      || promptMode_ == PromptMode::EllipseAdd;
+    emit shapeRequested(shapeStart_, end, gradient, foreground);
   }
   dragging_ = false;
   updateCursor(event->position());

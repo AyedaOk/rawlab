@@ -232,6 +232,10 @@ private:
   QAction *negativeAction_ = nullptr;
   QAction *brushPaintAction_ = nullptr;
   QAction *brushEraseAction_ = nullptr;
+  QAction *gradientAddAction_ = nullptr;
+  QAction *gradientSubtractAction_ = nullptr;
+  QAction *ellipseAddAction_ = nullptr;
+  QAction *ellipseSubtractAction_ = nullptr;
   QAction *undoPointAction_ = nullptr;
   QAction *clearPointsAction_ = nullptr;
   QAction *doneMaskAction_ = nullptr;

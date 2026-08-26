@@ -26,7 +26,8 @@ private:
   void ensureActiveSamModel();
   void rebuildModelTables(const ApplicationSettingsData &settings);
   void registerInstalledModel(const QString &id, const QString &name, const QString &version,
-                              const QString &task, const QString &adapter, const QString &location);
+                              const QString &task, const QString &adapter, const QString &location,
+                              const QString &origin = QStringLiteral("verified"));
   bool validate();
 
   QTableWidget *samTable_ = nullptr;
@@ -37,6 +38,8 @@ private:
   QLabel *downloadStatus_ = nullptr;
   QProgressBar *downloadProgress_ = nullptr;
   QPushButton *downloadButton_ = nullptr;
+  QPushButton *deleteButton_ = nullptr;
+  QPushButton *importButton_ = nullptr;
   QPushButton *cancelDownloadButton_ = nullptr;
   ModelDownloader *downloader_ = nullptr;
   QList<SharpenModelDefinition> sharpenModels_;

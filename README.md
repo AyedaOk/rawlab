@@ -1,34 +1,28 @@
 # RawLab
 
-RawLab is a GPLv3-or-later raw photo preprocessing application focused on
-preserving Bayer CFA data from RAW decode through non-demosaiced DNG export.
-RGB previews are derived views only and are not the processing truth.
+RawLab is a desktop RAW photo preprocessing application. It keeps Bayer CFA
+data intact while applying AI denoise, masks, and sharpening, then exports a
+non-demosaiced CFA DNG for use in a RAW editor.
 
-## Current Features
+## Features
 
-- RawNIND Bayer denoise through ONNX Runtime
-- SAM 2.1 interactive segmentation masks
-- Positive and negative point prompts
-- Preview-to-raw mask mapping
-- Post-inference blend with original CFA data
-- Clipped-highlight preservation
-- Non-demosaiced Bayer CFA DNG export
+- RAW photo library that references your original files
+- Global and local denoise layers
+- SAM 2.1 masks with point prompts and manual editing
+- DeepSharpen after denoising
+- Blend and clipped-highlight preservation
+- Batch editing with a hideable filmstrip
+- CPU and compatible GPU inference providers
+- Model Manager for installing SAM, denoise, and sharpen models
+- Per-picture recipes and cached previews
 
-## Requirements
+## Build From Source
 
-- C++20 compiler
-- CMake 3.25 or newer
-- Ninja
-- LibRaw
-- libtiff
-- libpng
-- ONNX Runtime
-- Qt 6 with Core, Gui, Widgets, and Concurrent
-- ExifTool and `tiffinfo` are recommended for validation
+Development requirements are C++20, CMake 3.25+, Ninja, Qt 6, LibRaw,
+libtiff, libpng, and the C++ ONNX Runtime library. ONNX Runtime must provide
+`onnxruntime_c_api.h` and its shared library.
 
-ONNX Runtime must provide `onnxruntime_c_api.h` and `libonnxruntime.so`.
-
-## Build
+Development build:
 
 ```bash
 cmake --preset dev
@@ -36,148 +30,63 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-The CLI binary is:
-
-```text
-build/dev/src/rawlab_cli/rawlab
-```
-
-The desktop application is:
+Release GUI build:
 
 ```bash
-./build/dev/src/rawlab_app/rawlab-app
+cmake --preset release
+cmake --build --preset release
 ```
 
-## Desktop Editor
+The desktop application is `build/release/src/rawlab_app/rawlab-app`.
 
-The Qt 6 editor uses a single-image filesystem workflow. Open a RAW image,
-select a denoise model, and press **Run** to cache a full-image denoised CFA result.
-Blend and clipped-highlight changes recompose the preview without rerunning
-inference. The canvas displays an activity indicator while decoding, rendering,
-segmenting, or denoising.
+## Basic Workflow
 
-Additional mask layers behave like an ordered layer stack:
+1. Import RAW files or a folder in the Library.
+2. Open a picture and choose a denoise model.
+3. Press **Run** to generate the denoised preview.
+4. Adjust blend, highlights, masks, and DeepSharpen.
+5. Export a CFA DNG.
 
-- Each mask layer selects its own denoise model and blend amount.
-- The eye beside a layer enables or disables its processing effect.
-- Global remains first; local masks are reordered beneath it by dragging.
-- **Show mask** controls the selected overlay independently from processing.
-- Masks can be inverted, edited with positive and negative SAM points, refined
-  with adjustable brush and erase tools, or painted manually from an empty mask.
-- **Edit Mask** explicitly enters mask-editing mode; **Done** returns the canvas
-  to normal pan and zoom interaction.
-- Denoised CFA output is cached by model, so layers sharing a model reuse one
-  inference result.
-- Global is always composed first; enabled local mask results are applied on
-  top, with the local layer nearest Global winning full-strength overlaps.
-- Local masks can be renamed with double-click, `F2`, or the Rename button.
+Select several pictures before opening them to edit the selection with the
+bottom filmstrip. Click a thumbnail to move between pictures; each picture
+keeps its own settings. The export button becomes **Export Selected...** for
+multi-picture sessions.
 
-Application settings keep multiple named SAM 2.1 model folders and denoise
-models. Each SAM folder contains its paired `encoder.onnx` and `decoder.onnx`;
-one Small, Large, or custom SAM entry is active globally. Layers select named
-denoise models from a combo box; inference only starts when **Run** is pressed.
-AI acceleration can use CPU or any compatible execution provider exposed by
-the installed ONNX Runtime, with automatic CPU fallback in Auto mode.
+## Models
 
-The Library page imports RAW files or folders by reference without copying the
-originals. It persists paths and cached thumbnails. Per-picture JSON recipes
-restore Global settings, mask names/order, selected models, SAM prompts, brush
-strokes, inversion, blend, eye state, and `Show mask`; large denoised CFA
-results remain session-only caches.
+Model weights are not included in the source repository or application. Use
+**Settings > Model Manager** to download available SAM 2.1, denoise, and
+sharpen models, or add local models manually. Model licenses are separate from
+the RawLab license.
 
-Select multiple pictures in the Library and open the selection to tune the
-first picture. **File > Apply to Selected and Export...** scales the complete
-recipe and soft masks to every selected picture, exports all selected files to
-one chosen folder, and continues past individual failures. Batch output uses
-`<source>-rawlab.dng` and never overwrites an existing destination.
+## Acceleration
 
-The canvas is a display-only demosaic of the current CFA composition. Export
-continues to write the non-demosaiced Bayer CFA data.
-The Preview toolbar provides Library/Edit switching, fit and 100% zoom,
-live zoom percentage, capture metadata, and an optional slower high-quality
-1440-pixel CFA preview.
+RawLab uses the execution providers exposed by the installed ONNX Runtime.
+Select **Auto** to use the best available provider with CPU fallback. GPU
+acceleration requires compatible hardware drivers and matching runtime
+libraries; CPU mode works without a supported GPU.
 
-## Basic Usage
+## Output
 
-Inspect a RAW file:
+RawLab exports non-demosaiced Bayer CFA DNG files. The editor preview is a
+display-only RGB view. Output files can be opened by RAW applications that
+support CFA DNG workflows.
+
+Original files are never copied or modified. RawLab stores library references,
+thumbnails, recipes, and downloaded models in its application data directory.
+
+## CLI
+
+The optional CLI provides stable automation commands:
 
 ```bash
-./build/dev/src/rawlab_cli/rawlab inspect input.ARW
+rawlab inspect input.ARW
+rawlab process input.ARW output.dng
+rawlab process input.ARW output.dng --denoise model.onnx --blend 1.0
+rawlab mask preview.png mask.png --encoder encoder.onnx --decoder decoder.onnx --point 790 430
 ```
 
-Export decoded CFA data directly:
+## License
 
-```bash
-./build/dev/src/rawlab_cli/rawlab process input.ARW output.dng
-```
-
-Run RawNIND denoise:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab process \
-  input.ARW \
-  output.dng \
-  --denoise model_bayer.onnx \
-  --blend 1.0 \
-  --clipped-highlights
-```
-
-`--blend` and `--clipped-highlights` require `--denoise`.
-
-## SAM Masks
-
-SAM segmentation currently accepts an existing RGB preview PNG:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab mask \
-  preview.png \
-  mask.png \
-  --encoder /path/to/encoder.onnx \
-  --decoder /path/to/decoder.onnx \
-  --point 790 430 \
-  --negative-point 1000 500
-```
-
-Positive and negative points use pixel coordinates in the preview image.
-The encoder runs once per segmenter context; decoder calls use all supplied
-points and previous-mask feedback.
-
-Use the generated mask during RAW processing:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab process \
-  input.ARW \
-  masked-output.dng \
-  --denoise model_bayer.onnx \
-  --mask mask.png \
-  --blend 1.0
-```
-
-The mask is mapped from preview dimensions to raw dimensions using
-nearest-neighbor sampling.
-
-## Project Structure
-
-```text
-src/rawlab_core/    Reusable raw-domain processing library
-src/rawlab_cli/     CLI proof and end-to-end commands
-tests/              Core and CLI regression tests
-docs/               Architecture, pipeline, DNG, and licensing notes
-```
-
-## Status And Next Steps
-
-Milestones 0 through 7 are completed. Milestone 8 covers cleanup of temporary
-CLI proof commands, and Milestone 9 is reserved for DNG size and compatibility
-work.
-
-The first library is intentionally lightweight and path-based. It does not
-copy originals or require a catalog database.
-
-## Licensing
-
-RawLab is GPLv3-or-later. Darktable-derived code is limited to focused
-raw-processing and CFA DNG logic with GPL-compatible licensing and attribution.
-
-Model files are not included in this repository. Verify model licensing and
-redistribution terms before distributing model weights.
+RawLab is licensed under GPLv3-or-later. Model files have their own licensing
+terms. See `docs/model-licensing.md` before redistributing model weights.

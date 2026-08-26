@@ -11,6 +11,7 @@ struct DenoiseModelDefinition
   QString adapter{};
   QString sourceId{};
   QString version{};
+  QString origin{};
 };
 
 struct SamModelDefinition
@@ -21,6 +22,7 @@ struct SamModelDefinition
   QString adapter{};
   QString sourceId{};
   QString version{};
+  QString origin{};
 };
 
 struct SharpenModelDefinition
@@ -31,6 +33,7 @@ struct SharpenModelDefinition
   QString adapter{};
   QString sourceId{};
   QString version{};
+  QString origin{};
 };
 
 struct ApplicationSettingsData
@@ -56,5 +59,6 @@ public:
   static void registerInstalledModel(ApplicationSettingsData &data, const QString &sourceId,
                                      const QString &name, const QString &task,
                                      const QString &adapter, const QString &location,
-                                     const QString &version = QString{});
+                                     const QString &version = QString{},
+                                     const QString &origin = QStringLiteral("verified"));
 };

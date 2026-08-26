@@ -52,10 +52,11 @@ QString ModelDownloader::modelRoot() const { return modelRoot_; }
 
 bool ModelDownloader::isRunning() const { return reply_ || !stagingPath_.isEmpty(); }
 
-void ModelDownloader::start()
+void ModelDownloader::start(const QStringList &selectedIds)
 {
   if(isRunning()) return;
   cancelled_ = false;
+  selectedIds_ = selectedIds;
   models_.clear();
   modelIndex_ = 0;
   emit progressChanged(0);
@@ -133,7 +134,8 @@ void ModelDownloader::fetchNextManifest()
 {
   if(cancelled_) return;
   while(modelIndex_ < models_.size()
-        && (!models_[modelIndex_].available || isInstalled(modelRoot_, models_[modelIndex_])))
+        && (!models_[modelIndex_].available || isInstalled(modelRoot_, models_[modelIndex_])
+            || (!selectedIds_.isEmpty() && !selectedIds_.contains(models_[modelIndex_].id))))
   {
     ++modelIndex_;
   }

@@ -203,6 +203,42 @@ Mask horizontalGradientMask(const int width, const int height)
   return Mask{width, height, std::move(values)};
 }
 
+Mask linearGradientMask(const int width, const int height, const float x0, const float y0,
+                        const float x1, const float y1)
+{
+  if(width <= 0 || height <= 0) throw std::invalid_argument{"Mask dimensions must be positive"};
+  const float dx = x1 - x0;
+  const float dy = y1 - y0;
+  const float lengthSquared = dx * dx + dy * dy;
+  std::vector<float> values(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+  for(int y = 0; y < height; ++y) for(int x = 0; x < width; ++x)
+  {
+    const float projection = lengthSquared > 0.0f
+      ? ((static_cast<float>(x) - x0) * dx + (static_cast<float>(y) - y0) * dy) / lengthSquared
+      : 0.0f;
+    values[static_cast<std::size_t>(y * width + x)] = std::clamp(projection, 0.0f, 1.0f);
+  }
+  return {width, height, std::move(values)};
+}
+
+Mask ellipseMask(const int width, const int height, const float left, const float top,
+                 const float right, const float bottom)
+{
+  if(width <= 0 || height <= 0) throw std::invalid_argument{"Mask dimensions must be positive"};
+  const float centerX = (left + right) * 0.5f;
+  const float centerY = (top + bottom) * 0.5f;
+  const float radiusX = std::max(0.5f, std::fabs(right - left) * 0.5f);
+  const float radiusY = std::max(0.5f, std::fabs(bottom - top) * 0.5f);
+  std::vector<float> values(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+  for(int y = 0; y < height; ++y) for(int x = 0; x < width; ++x)
+  {
+    const float dx = (static_cast<float>(x) + 0.5f - centerX) / radiusX;
+    const float dy = (static_cast<float>(y) + 0.5f - centerY) / radiusY;
+    values[static_cast<std::size_t>(y * width + x)] = dx * dx + dy * dy <= 1.0f ? 1.0f : 0.0f;
+  }
+  return {width, height, std::move(values)};
+}
+
 Mask verticalSplitMask(const int width, const int height)
 {
   if(width <= 0 || height <= 0) throw std::invalid_argument{"Mask dimensions must be positive"};

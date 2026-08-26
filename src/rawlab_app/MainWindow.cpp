@@ -438,12 +438,24 @@ void MainWindow::buildUi()
   brushPaintAction_->setCheckable(true);
   brushEraseAction_ = maskToolbar_->addAction(tr("Erase"));
   brushEraseAction_->setCheckable(true);
+  gradientAddAction_ = maskToolbar_->addAction(tr("Gradient Add"));
+  gradientAddAction_->setCheckable(true);
+  gradientSubtractAction_ = maskToolbar_->addAction(tr("Gradient Subtract"));
+  gradientSubtractAction_->setCheckable(true);
+  ellipseAddAction_ = maskToolbar_->addAction(tr("Ellipse Add"));
+  ellipseAddAction_->setCheckable(true);
+  ellipseSubtractAction_ = maskToolbar_->addAction(tr("Ellipse Subtract"));
+  ellipseSubtractAction_->setCheckable(true);
   auto *promptGroup = new QActionGroup{maskToolbar_};
   promptGroup->setExclusive(true);
   promptGroup->addAction(positiveAction_);
   promptGroup->addAction(negativeAction_);
   promptGroup->addAction(brushPaintAction_);
   promptGroup->addAction(brushEraseAction_);
+  promptGroup->addAction(gradientAddAction_);
+  promptGroup->addAction(gradientSubtractAction_);
+  promptGroup->addAction(ellipseAddAction_);
+  promptGroup->addAction(ellipseSubtractAction_);
   positiveAction_->setChecked(true);
   maskToolbar_->addSeparator();
   maskToolbar_->addWidget(new QLabel{tr("Size"), maskToolbar_});
@@ -649,12 +661,51 @@ void MainWindow::connectUi()
   connect(brushEraseAction_, &QAction::triggered, this, [this] {
     previewWidget_->setPromptMode(PreviewWidget::PromptMode::BrushErase);
   });
+  connect(gradientAddAction_, &QAction::triggered, this, [this] {
+    previewWidget_->setPromptMode(PreviewWidget::PromptMode::GradientAdd);
+  });
+  connect(gradientSubtractAction_, &QAction::triggered, this, [this] {
+    previewWidget_->setPromptMode(PreviewWidget::PromptMode::GradientSubtract);
+  });
+  connect(ellipseAddAction_, &QAction::triggered, this, [this] {
+    previewWidget_->setPromptMode(PreviewWidget::PromptMode::EllipseAdd);
+  });
+  connect(ellipseSubtractAction_, &QAction::triggered, this, [this] {
+    previewWidget_->setPromptMode(PreviewWidget::PromptMode::EllipseSubtract);
+  });
   connect(brushSizeSlider_, &QSlider::valueChanged, this, [this](const int value) {
     brushSizeLabel_->setText(QString::number(value));
     previewWidget_->setBrushRadius(static_cast<float>(value));
   });
   connect(brushHardnessSlider_, &QSlider::valueChanged, this, [this](const int value) {
     brushHardnessLabel_->setText(QString::number(value) + QStringLiteral("%"));
+  });
+  connect(previewWidget_, &PreviewWidget::shapeRequested, this,
+          [this](const QPointF from, const QPointF to, const bool gradient, const bool foreground) {
+    MaskLayer *layer = selectedMaskLayer();
+    if(!layer || originalPreview_.image.width <= 0 || originalPreview_.image.height <= 0) return;
+    if(!layer->mask) rebuildLayerMask(*layer);
+    if(!layer->mask) return;
+    const int width = originalPreview_.image.width;
+    const int height = originalPreview_.image.height;
+    const auto shape = gradient
+      ? rawlab::pipeline::linearGradientMask(width, height,
+          static_cast<float>(from.x()), static_cast<float>(from.y()),
+          static_cast<float>(to.x()), static_cast<float>(to.y()))
+      : rawlab::pipeline::ellipseMask(width, height,
+          static_cast<float>(std::min(from.x(), to.x())),
+          static_cast<float>(std::min(from.y(), to.y())),
+          static_cast<float>(std::max(from.x(), to.x())),
+          static_cast<float>(std::max(from.y(), to.y())));
+    std::vector<float> values = layer->mask->values();
+    for(std::size_t i = 0; i < values.size(); ++i)
+      values[i] = foreground ? std::max(values[i], shape.values()[i])
+                             : std::max(0.0f, values[i] - shape.values()[i]);
+    layer->samMask = rawlab::pipeline::Mask{width, height, std::move(values)};
+    layer->mask = layer->samMask;
+    requestMaskEffects(*layer);
+    refreshOverlay();
+    scheduleComposition();
   });
   connect(doneMaskAction_, &QAction::triggered, this, &MainWindow::endMaskEdit);
   connect(undoPointAction_, &QAction::triggered, this, [this] {
@@ -1381,7 +1432,7 @@ void MainWindow::beginMaskEdit()
   previewWidget_->setPromptMode(PreviewWidget::PromptMode::Positive);
   refreshOverlay();
   refreshLayerControls();
-  statusLabel_->setText(tr("Mask editing: use SAM points or paint and erase with the brush"));
+  statusLabel_->setText(tr("Mask editing: use SAM points, brush, gradients, or ellipses"));
 }
 
 void MainWindow::endMaskEdit()
