@@ -33,7 +33,9 @@ jobs:
           -DONNXRuntime_LIBRARY=/tmp/onnxruntime-linux-x64-1.20.1/lib/libonnxruntime.so
           && cmake --build --preset release
       - name: Package
-        run: QMAKE=/usr/bin/qmake6 bash scripts/package-linux.sh
+        run: >-
+          ONNXRUNTIME_LIB_DIR=/tmp/onnxruntime-linux-x64-1.20.1/lib
+          QMAKE=/usr/bin/qmake6 bash scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: linux

@@ -9,6 +9,10 @@ mkdir -p "$out"
 cmake --install "$root/build/release" --prefix "$root/AppDir/usr"
 cp "$root/packaging/rawlab.desktop" "$root/AppDir/rawlab.desktop"
 
+: "${ONNXRUNTIME_LIB_DIR:?ONNXRUNTIME_LIB_DIR must point to the ONNX Runtime lib directory}"
+mkdir -p "$root/AppDir/usr/lib"
+cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$root/AppDir/usr/lib/"
+
 curl -L --fail --retry 3 -o "$out/linuxdeploy-x86_64.AppImage" \
   https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
 curl -L --fail --retry 3 -o "$out/linuxdeploy-plugin-qt-x86_64.AppImage" \
