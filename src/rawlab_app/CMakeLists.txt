@@ -26,6 +26,7 @@ qt_add_executable(rawlab_app
 
 set_target_properties(rawlab_app PROPERTIES
   OUTPUT_NAME rawlab-app
+  MACOSX_BUNDLE TRUE
 )
 
 target_link_libraries(rawlab_app

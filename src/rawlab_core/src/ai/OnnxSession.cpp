@@ -254,7 +254,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
                                + ": " + providerError};
     modelInfo_.executionProvider = mapping->displayName;
   }
-  OrtStatus *sessionStatus = api.CreateSession(impl_->env, modelPath.string().c_str(),
+   OrtStatus *sessionStatus = api.CreateSession(impl_->env, modelPath.native().c_str(),
                                                impl_->options, &impl_->session);
   if(sessionStatus && options.provider == "auto" && modelInfo_.executionProvider != "CPU")
   {
@@ -267,7 +267,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
     throwIfOrtError(api.SetSessionGraphOptimizationLevel(impl_->options, ORT_ENABLE_ALL),
                     "Ort SetSessionGraphOptimizationLevel CPU fallback");
     modelInfo_.executionProvider = "CPU";
-    sessionStatus = api.CreateSession(impl_->env, modelPath.string().c_str(),
+     sessionStatus = api.CreateSession(impl_->env, modelPath.native().c_str(),
                                       impl_->options, &impl_->session);
   }
   throwIfOrtError(sessionStatus, "Ort CreateSession");
