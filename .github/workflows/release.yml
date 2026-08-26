@@ -29,7 +29,7 @@ jobs:
         run: >-
           cmake --preset release
           -DRAWLAB_DEPENDENCY_ROOT=/tmp/onnxruntime-linux-x64-1.20.1
-          -DONNXRuntime_INCLUDE_DIR=/tmp/onnxruntime-linux-x64-1.20.1/include/onnxruntime/core/session
+          -DONNXRuntime_INCLUDE_DIR=/tmp/onnxruntime-linux-x64-1.20.1/include
           -DONNXRuntime_LIBRARY=/tmp/onnxruntime-linux-x64-1.20.1/lib/libonnxruntime.so
           && cmake --build --preset release
       - name: Package
@@ -60,7 +60,7 @@ jobs:
         run: >-
           cmake --preset release
           -DRAWLAB_DEPENDENCY_ROOT=/tmp/onnxruntime-osx-arm64-1.20.1
-          -DONNXRuntime_INCLUDE_DIR=/tmp/onnxruntime-osx-arm64-1.20.1/include/onnxruntime/core/session
+          -DONNXRuntime_INCLUDE_DIR=/tmp/onnxruntime-osx-arm64-1.20.1/include
           -DONNXRuntime_LIBRARY=/tmp/onnxruntime-osx-arm64-1.20.1/lib/libonnxruntime.dylib
           && cmake --build --preset release
       - name: Package
@@ -98,7 +98,7 @@ jobs:
           cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
           -DRAWLAB_DEPENDENCY_ROOT=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows
-          -DONNXRuntime_INCLUDE_DIR=$env:RUNNER_TEMP/onnx/include/onnxruntime/core/session
+          -DONNXRuntime_INCLUDE_DIR=$env:RUNNER_TEMP/onnx/include
           -DONNXRuntime_LIBRARY=$env:RUNNER_TEMP/onnx/lib/onnxruntime.lib
           -DQt6_DIR=$env:Qt6_DIR
           && cmake --build build/release
