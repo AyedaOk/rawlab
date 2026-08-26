@@ -6,5 +6,5 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 app="$root/build/release/src/rawlab_app/rawlab-app.app"
 out="$root/dist"
 mkdir -p "$out"
-"${Qt6_DIR}/bin/macdeployqt" "$app" -dmg
+"${QT_ROOT_DIR}/bin/macdeployqt" "$app" -dmg
 mv "$root/build/release/src/rawlab_app"/*.dmg "$out/RawLab-${GITHUB_REF_NAME}-macOS-arm64.dmg"

@@ -94,15 +94,18 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile $zip
           Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP
           Rename-Item (Join-Path $env:RUNNER_TEMP "onnxruntime-win-x64-1.20.1") (Join-Path $env:RUNNER_TEMP "onnx")
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja --no-progress -y
       - name: Configure and build
         shell: pwsh
         run: >-
           cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
-          -DRAWLAB_DEPENDENCY_ROOT=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows
-          -DONNXRuntime_INCLUDE_DIR=$env:RUNNER_TEMP/onnx/include
-          -DONNXRuntime_LIBRARY=$env:RUNNER_TEMP/onnx/lib/onnxruntime.lib
-          -DQt6_DIR=$env:Qt6_DIR
+          "-DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
+          "-DRAWLAB_DEPENDENCY_ROOT=${env:VCPKG_INSTALLATION_ROOT}/installed/x64-windows"
+          "-DONNXRuntime_INCLUDE_DIR=${env:RUNNER_TEMP}/onnx/include"
+          "-DONNXRuntime_LIBRARY=${env:RUNNER_TEMP}/onnx/lib/onnxruntime.lib"
+          "-DCMAKE_PREFIX_PATH=${env:QT_ROOT_DIR}"
           && cmake --build build/release
       - name: Package
         shell: pwsh
