@@ -20,7 +20,6 @@ curl -L --fail --retry 3 -o "$out/linuxdeploy-plugin-qt-x86_64.AppImage" \
 chmod +x "$out"/*.AppImage
 
 "$out/linuxdeploy-x86_64.AppImage" --appdir "$root/AppDir" \
-  --plugin-dir "$out" \
   --desktop-file "$root/packaging/rawlab.desktop" \
   --icon-file "$root/packaging/rawlab.png" \
   --plugin qt --output appimage
