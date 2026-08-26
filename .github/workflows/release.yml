@@ -85,6 +85,7 @@ jobs:
           target: desktop
           arch: win64_msvc2022_64
           install-deps: true
+      - uses: ilammy/msvc-dev-cmd@v1
       - name: Install vcpkg dependencies
         shell: pwsh
         run: vcpkg install libraw tiff libpng --triplet x64-windows
@@ -103,6 +104,7 @@ jobs:
         shell: pwsh
         run: >-
           cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=cl
           -DBUILD_TESTING=OFF -DRAWLAB_BUILD_GUI=ON -DRAWLAB_BUILD_CLI=OFF
           "-DCMAKE_TOOLCHAIN_FILE=${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
           "-DRAWLAB_DEPENDENCY_ROOT=${env:VCPKG_INSTALLATION_ROOT}/installed/x64-windows"
