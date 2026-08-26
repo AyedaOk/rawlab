@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=RawLab
+Comment=AI RAW photo preprocessing
+Exec=rawlab-app
+Icon=rawlab
+Categories=Graphics;Photography;
+Terminal=false
