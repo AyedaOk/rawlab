@@ -14,6 +14,10 @@ non-demosaiced CFA DNG for use in a RAW editor.
 - CPU and compatible GPU inference
 - Model Manager for installing SAM, denoise, and sharpen models
 
+## Screenshots
+
+![RawLab editor with before-and-after comparison](docs/screenshots/Screenshot_20260827_012134.png)
+
 ## Build From Source
 
 Development requirements are C++20, CMake 3.25+, Ninja, Qt 6, LibRaw,

@@ -25,6 +25,7 @@ public:
   void setImage(QImage image, bool resetView = false);
   void setBeforeImage(QImage image);
   void setComparisonEnabled(bool enabled);
+  void setComparisonReversed(bool reversed);
   void setMask(QImage mask);
   void setPrompts(QVector<PromptMarker> prompts);
   void setPromptMode(PromptMode mode);
@@ -73,6 +74,7 @@ private:
   bool dragging_ = false;
   bool brushing_ = false;
   bool comparisonEnabled_ = false;
+  bool comparisonReversed_ = false;
   bool dividerDragging_ = false;
   double dividerPosition_ = 0.5;
   bool actualSizeMode_ = false;

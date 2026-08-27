@@ -6,7 +6,18 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QVBoxLayout>
+
+namespace {
+
+QIcon themedIcon(QWidget *widget, const QString &name, const QStyle::StandardPixmap fallback)
+{
+  const QIcon themed = QIcon::fromTheme(name);
+  return themed.isNull() ? widget->style()->standardIcon(fallback) : themed;
+}
+
+} // namespace
 
 LibraryPage::LibraryPage(QWidget *parent)
   : QWidget{parent}
@@ -18,6 +29,14 @@ LibraryPage::LibraryPage(QWidget *parent)
   auto *importFolder = new QPushButton{tr("Import Folder"), this};
   auto *open = new QPushButton{tr("Open"), this};
   auto *remove = new QPushButton{tr("Remove From Library"), this};
+  importFiles->setIcon(themedIcon(this, QStringLiteral("list-add"), QStyle::SP_FileDialogNewFolder));
+  importFolder->setIcon(themedIcon(this, QStringLiteral("folder-open"), QStyle::SP_DirOpenIcon));
+  open->setIcon(themedIcon(this, QStringLiteral("document-open"), QStyle::SP_DialogOpenButton));
+  remove->setIcon(themedIcon(this, QStringLiteral("edit-delete"), QStyle::SP_TrashIcon));
+  importFiles->setToolTip(tr("Import one or more pictures"));
+  importFolder->setToolTip(tr("Import all supported pictures in a folder"));
+  open->setToolTip(tr("Open the selected picture(s)"));
+  remove->setToolTip(tr("Remove selected pictures from the library"));
   buttons->addWidget(importFiles);
   buttons->addWidget(importFolder);
   buttons->addStretch();

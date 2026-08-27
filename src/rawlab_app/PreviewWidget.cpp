@@ -46,6 +46,13 @@ void PreviewWidget::setComparisonEnabled(const bool enabled)
   update();
 }
 
+void PreviewWidget::setComparisonReversed(const bool reversed)
+{
+  if(comparisonReversed_ == reversed) return;
+  comparisonReversed_ = reversed;
+  update();
+}
+
 void PreviewWidget::setMask(QImage mask)
 {
   mask_ = std::move(mask);
@@ -190,8 +197,9 @@ void PreviewWidget::paintEvent(QPaintEvent *)
     {
       const qreal dividerX = target.left() + dividerPosition_ * target.width();
       painter.save();
-      painter.setClipRect(QRectF{target.left(), target.top(),
-                                 dividerX - target.left(), target.height()});
+      painter.setClipRect(comparisonReversed_
+                            ? QRectF{dividerX, target.top(), target.right() - dividerX, target.height()}
+                            : QRectF{target.left(), target.top(), dividerX - target.left(), target.height()});
       painter.drawImage(target, beforeImage_);
       painter.restore();
       const QRectF visible = target.intersected(QRectF{rect()});

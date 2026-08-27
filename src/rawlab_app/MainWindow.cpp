@@ -48,6 +48,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
 #include <QToolBar>
 #include <QToolButton>
 #include <QUuid>
@@ -168,6 +169,12 @@ QString shutterText(const double seconds)
   return QStringLiteral("1/%1 s").arg(denominator);
 }
 
+QIcon themedIcon(QWidget *widget, const QString &name, const QStyle::StandardPixmap fallback)
+{
+  const QIcon themed = QIcon::fromTheme(name);
+  return themed.isNull() ? widget->style()->standardIcon(fallback) : themed;
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent)
@@ -204,38 +211,64 @@ void MainWindow::buildUi()
   setWindowTitle(tr("RawLab"));
   resize(1440, 900);
   setStyleSheet(QStringLiteral(
-    "QMainWindow,QWidget{background:#202329;color:#e7e9ed;}"
-    "QMenuBar,QMenu,QToolBar{background:#181b20;color:#e7e9ed;}"
-    "QGroupBox{border:1px solid #393e47;border-radius:5px;margin-top:10px;padding-top:10px;}"
-    "QGroupBox::title{subcontrol-origin:margin;left:9px;padding:0 4px;color:#b9c0ca;}"
-    "QLineEdit,QListWidget{background:#171a1f;border:1px solid #3d434d;border-radius:4px;padding:5px;}"
-    "QPushButton,QToolButton{background:#353b45;border:1px solid #4b5360;border-radius:4px;padding:6px 10px;}"
-    "QPushButton:hover,QToolButton:hover{background:#414956;}"
-    "QPushButton:disabled,QToolButton:disabled{color:#747b85;background:#292d34;}"
-    "QToolButton:checked{background:#36566f;border-color:#69a7d0;}"
-    "QListWidget::item{padding:7px;border-bottom:1px solid #2c3037;}"
-    "QListWidget::item:selected{background:#36566f;}"
-    "QSlider::groove:horizontal{height:4px;background:#444a54;}"
-    "QSlider::handle:horizontal{width:14px;margin:-5px 0;background:#69a7d0;border-radius:7px;}"));
+    "QMainWindow,QWidget{background:#1b1e24;color:#e8eaed;}"
+    "QMenuBar,QMenu,QToolBar{background:#15181d;color:#e8eaed;}"
+    "QMenuBar{padding:4px 8px;}"
+    "QMenuBar::item,QMenu::item{padding:6px 10px;border-radius:5px;}"
+    "QMenuBar::item:selected,QMenu::item:selected{background:#2d465a;}"
+    "QToolBar{border:0;padding:7px 10px;spacing:5px;}"
+    "QToolBar::separator{width:1px;background:#343a43;margin:4px 6px;}"
+    "QGroupBox{background:#1b1e24;border:1px solid #353c46;border-radius:10px;margin-top:14px;padding:16px 10px 10px;}"
+    "QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 6px;color:#c3cad4;font-weight:600;}"
+    "QLineEdit,QComboBox,QListWidget{background:#15181d;border:1px solid #39414b;border-radius:7px;padding:6px 8px;selection-background-color:#31536c;}"
+    "QComboBox::drop-down{border:0;width:24px;}"
+    "QPushButton,QToolButton{background:#2d333c;border:1px solid #414a56;border-radius:7px;padding:7px 11px;}"
+    "QPushButton:hover,QToolButton:hover{background:#39434f;border-color:#58748b;}"
+    "QPushButton:pressed,QToolButton:pressed,QToolButton:checked{background:#2d536d;border-color:#71afd8;}"
+    "QPushButton:disabled,QToolButton:disabled{color:#707782;background:#242930;border-color:#30353d;}"
+    "QPushButton#exportButton{text-align:center;}"
+    "QListWidget{padding:6px;}"
+    "QListWidget::item{padding:8px;border-radius:6px;}"
+    "QListWidget::item:hover{background:#272e37;}"
+    "QListWidget::item:selected{background:#294b63;color:#ffffff;}"
+    "QSplitter::handle{background:#303640;}"
+    "QSplitter::handle:horizontal{width:2px;}"
+    "QCheckBox::indicator{width:16px;height:16px;border:1px solid #59636f;border-radius:4px;background:#171a1f;}"
+    "QCheckBox::indicator:checked{background:#4e91b9;border-color:#72b6dc;}"
+    "QSlider::groove:horizontal{height:4px;border-radius:2px;background:#424a55;}"
+    "QSlider::sub-page:horizontal{background:#4f8eaf;border-radius:2px;}"
+    "QSlider::handle:horizontal{width:15px;margin:-6px 0;background:#83c3e5;border:2px solid #1b1e24;border-radius:8px;}"
+    "QProgressBar{background:#15181d;border:1px solid #39414b;border-radius:6px;text-align:center;}"
+    "QProgressBar::chunk{background:#4f8eaf;border-radius:5px;}"
+    "QStatusBar{background:#15181d;color:#9da6b2;}"
+    "QScrollBar:vertical{background:#171a1f;width:10px;margin:2px;}"
+    "QScrollBar::handle:vertical{background:#454f5b;border-radius:5px;min-height:24px;}"
+    "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"));
 
   auto *fileMenu = menuBar()->addMenu(tr("&File"));
   QAction *openAction = fileMenu->addAction(tr("&Open RAW..."));
+  openAction->setIcon(themedIcon(this, QStringLiteral("document-open"), QStyle::SP_DialogOpenButton));
   openAction->setShortcut(QKeySequence::Open);
   exportAction_ = fileMenu->addAction(tr("&Export DNG..."));
+  exportAction_->setIcon(themedIcon(this, QStringLiteral("document-save-as"), QStyle::SP_DialogSaveButton));
   exportAction_->setShortcut(QKeySequence::SaveAs);
   exportAction_->setEnabled(false);
   batchAction_ = new QAction{tr("Export Selected..."), this};
   batchAction_->setEnabled(false);
   fileMenu->addSeparator();
   QAction *importPicturesAction = fileMenu->addAction(tr("&Import Pictures..."));
+  importPicturesAction->setIcon(themedIcon(this, QStringLiteral("list-add"), QStyle::SP_FileDialogNewFolder));
   QAction *importFolderAction = fileMenu->addAction(tr("Import &Folder..."));
+  importFolderAction->setIcon(themedIcon(this, QStringLiteral("folder-open"), QStyle::SP_DirOpenIcon));
   fileMenu->addSeparator();
   QAction *quitAction = fileMenu->addAction(tr("&Quit"));
   quitAction->setShortcut(QKeySequence::Quit);
 
   auto *viewMenu = menuBar()->addMenu(tr("&View"));
   libraryAction_ = viewMenu->addAction(tr("&Library"));
+  libraryAction_->setIcon(themedIcon(this, QStringLiteral("folder-pictures"), QStyle::SP_DirHomeIcon));
   editorAction_ = viewMenu->addAction(tr("&Edit"));
+  editorAction_->setIcon(themedIcon(this, QStringLiteral("document-edit"), QStyle::SP_FileDialogDetailedView));
   filmstripAction_ = viewMenu->addAction(tr("Filmstrip"));
   filmstripAction_->setCheckable(true);
   filmstripAction_->setChecked(filmstripVisible_);
@@ -257,10 +290,20 @@ void MainWindow::buildUi()
 
   auto *settingsMenu = menuBar()->addMenu(tr("&Settings"));
   QAction *settingsAction = settingsMenu->addAction(tr("&Settings..."));
+  settingsAction->setIcon(themedIcon(this, QStringLiteral("configure"), QStyle::SP_FileDialogDetailedView));
 
   previewToolbar_ = addToolBar(tr("Preview"));
   previewToolbar_->setObjectName(QStringLiteral("previewToolbar"));
   previewToolbar_->setMovable(false);
+  previewToolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+  fitAction_->setIcon(themedIcon(this, QStringLiteral("zoom-fit-best"), QStyle::SP_TitleBarNormalButton));
+  fitAction_->setToolTip(tr("Fit preview (F)"));
+  actualSizeAction_->setIcon(QIcon{QStringLiteral(":/icons/zoom-in-area.svg")});
+  actualSizeAction_->setToolTip(tr("Preview at 100% (Ctrl+1)"));
+  zoomOutAction_->setIcon(themedIcon(this, QStringLiteral("zoom-out"), QStyle::SP_ArrowDown));
+  zoomOutAction_->setToolTip(tr("Zoom out"));
+  zoomInAction_->setIcon(themedIcon(this, QStringLiteral("zoom-in"), QStyle::SP_ArrowUp));
+  zoomInAction_->setToolTip(tr("Zoom in"));
   previewToolbar_->addAction(fitAction_);
   previewToolbar_->addAction(actualSizeAction_);
   previewToolbar_->addAction(zoomOutAction_);
@@ -271,20 +314,33 @@ void MainWindow::buildUi()
   zoomLabelAction_ = previewToolbar_->addWidget(zoomLabel_);
   previewToolbar_->addAction(zoomInAction_);
   highQualityAction_ = previewToolbar_->addAction(tr("High Quality"));
+  highQualityAction_->setIcon(QIcon{QStringLiteral(":/icons/aspect-ratio.svg")});
+  highQualityAction_->setToolTip(tr("Use high-quality preview rendering"));
   highQualityAction_->setCheckable(true);
   highQualityAction_->setChecked(true);
   beforeAfterAction_ = previewToolbar_->addAction(tr("Before / After"));
+  beforeAfterAction_->setIcon(themedIcon(this, QStringLiteral("view-split-left-right"), QStyle::SP_FileDialogContentsView));
   beforeAfterAction_->setCheckable(true);
   beforeAfterAction_->setToolTip(tr("Drag the divider to compare original and processed previews"));
+  swapComparisonAction_ = new QAction{tr("Swap Sides"), this};
+  swapComparisonAction_->setIcon(themedIcon(this, QStringLiteral("object-flip-horizontal"), QStyle::SP_BrowserReload));
+  swapComparisonAction_->setCheckable(true);
+  swapComparisonAction_->setEnabled(false);
+  swapComparisonAction_->setToolTip(tr("Swap before and after sides"));
   viewMenu->addSeparator();
   viewMenu->addAction(highQualityAction_);
   viewMenu->addAction(beforeAfterAction_);
+  viewMenu->addAction(swapComparisonAction_);
   previewControlsSeparator_ = previewToolbar_->addSeparator();
   auto *previewSpacer = new QWidget{previewToolbar_};
   previewSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   previewToolbar_->addWidget(previewSpacer);
   previewToolbar_->addAction(libraryAction_);
   previewToolbar_->addAction(editorAction_);
+  if(auto *button = qobject_cast<QToolButton *>(previewToolbar_->widgetForAction(libraryAction_)))
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  if(auto *button = qobject_cast<QToolButton *>(previewToolbar_->widgetForAction(editorAction_)))
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
 
   editorPage_ = new QWidget{this};
   auto *editorLayout = new QVBoxLayout{editorPage_};
@@ -319,9 +375,14 @@ void MainWindow::buildUi()
   panelLayout->addWidget(layerList_, 1);
 
   auto *layerButtons = new QHBoxLayout;
-  auto *addMaskButton = new QPushButton{tr("+ Mask"), panel};
+  auto *addMaskButton = new QPushButton{tr("Mask"), panel};
   renameLayerButton_ = new QPushButton{tr("Rename"), panel};
   deleteLayerButton_ = new QPushButton{tr("Delete"), panel};
+  addMaskButton->setIcon(themedIcon(this, QStringLiteral("list-add"), QStyle::SP_FileDialogNewFolder));
+  renameLayerButton_->setIcon(themedIcon(this, QStringLiteral("document-edit"), QStyle::SP_FileDialogDetailedView));
+  deleteLayerButton_->setIcon(themedIcon(this, QStringLiteral("edit-delete"), QStyle::SP_TrashIcon));
+  renameLayerButton_->setToolTip(tr("Rename selected layer"));
+  deleteLayerButton_->setToolTip(tr("Delete selected layer"));
   layerButtons->addWidget(addMaskButton);
   layerButtons->addWidget(renameLayerButton_);
   layerButtons->addWidget(deleteLayerButton_);
@@ -335,6 +396,8 @@ void MainWindow::buildUi()
   modelCombo_ = new QComboBox{modelRow};
   runModelButton_ = new QPushButton{tr("Run"), modelRow};
   runModelButton_->setObjectName(QStringLiteral("runModelButton"));
+  runModelButton_->setIcon(themedIcon(this, QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
+  runModelButton_->setToolTip(tr("Run the selected denoise model"));
   runModelButton_->setMinimumWidth(96);
   modelLayout->addWidget(modelCombo_, 1);
   modelLayout->addWidget(runModelButton_);
@@ -397,16 +460,27 @@ void MainWindow::buildUi()
   settingsLayout->addRow(QString{}, showMaskCheck_);
   settingsLayout->addRow(QString{}, clippedCheck_);
   editMaskButton_ = new QPushButton{tr("Edit Mask"), settingsGroup};
+  editMaskButton_->setIcon(themedIcon(this, QStringLiteral("draw-brush"), QStyle::SP_DialogApplyButton));
+  editMaskButton_->setToolTip(tr("Edit the selected mask"));
   settingsLayout->addRow(editMaskButton_);
   panelLayout->addWidget(settingsGroup);
 
   auto *exportGroup = new QGroupBox{tr("Export"), panel};
   auto *exportLayout = new QVBoxLayout{exportGroup};
-  auto *singleExportButton = new QToolButton{exportGroup};
-  singleExportButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
-  singleExportButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-  singleExportButton->setDefaultAction(exportAction_);
-  exportLayout->addWidget(singleExportButton);
+  exportButton_ = new QPushButton{exportAction_->text(), exportGroup};
+  exportButton_->setObjectName(QStringLiteral("exportButton"));
+  exportButton_->setIcon(exportAction_->icon());
+  exportButton_->setIconSize(QSize{20, 20});
+  exportButton_->setToolTip(tr("Export the current or selected pictures"));
+  exportButton_->setEnabled(exportAction_->isEnabled());
+  exportButton_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  exportLayout->addWidget(exportButton_);
+  connect(exportButton_, &QPushButton::clicked, this, [this] { exportAction_->trigger(); });
+  connect(exportAction_, &QAction::changed, this, [this] {
+    exportButton_->setText(exportAction_->text());
+    exportButton_->setIcon(exportAction_->icon());
+    exportButton_->setEnabled(exportAction_->isEnabled());
+  });
   panelLayout->addWidget(exportGroup);
 
   splitter->addWidget(panel);
@@ -432,6 +506,7 @@ void MainWindow::buildUi()
   addToolBarBreak(Qt::TopToolBarArea);
   maskToolbar_ = addToolBar(tr("Mask Editing"));
   maskToolbar_->setMovable(false);
+  maskToolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
   maskToolbar_->addWidget(new QLabel{tr("  Editing mask:  "), maskToolbar_});
   maskCategoryCombo_ = new QComboBox{maskToolbar_};
   maskCategoryCombo_->addItems({tr("AI"), tr("Gradient"), tr("Ellipse")});
@@ -439,20 +514,36 @@ void MainWindow::buildUi()
   maskToolbar_->addWidget(maskCategoryCombo_);
   maskToolbar_->addSeparator();
   positiveAction_ = maskToolbar_->addAction(tr("Add Point"));
+  positiveAction_->setIcon(themedIcon(this, QStringLiteral("list-add"), QStyle::SP_DialogYesButton));
+  positiveAction_->setToolTip(tr("Add positive point"));
   positiveAction_->setCheckable(true);
   negativeAction_ = maskToolbar_->addAction(tr("Subtract Point"));
+  negativeAction_->setIcon(themedIcon(this, QStringLiteral("list-remove"), QStyle::SP_DialogCancelButton));
+  negativeAction_->setToolTip(tr("Subtract point"));
   negativeAction_->setCheckable(true);
   brushPaintAction_ = maskToolbar_->addAction(tr("Brush"));
+  brushPaintAction_->setIcon(themedIcon(this, QStringLiteral("draw-brush"), QStyle::SP_DialogApplyButton));
+  brushPaintAction_->setToolTip(tr("Paint mask"));
   brushPaintAction_->setCheckable(true);
   brushEraseAction_ = maskToolbar_->addAction(tr("Erase"));
+  brushEraseAction_->setIcon(themedIcon(this, QStringLiteral("edit-clear"), QStyle::SP_DialogResetButton));
+  brushEraseAction_->setToolTip(tr("Erase mask"));
   brushEraseAction_->setCheckable(true);
   gradientAddAction_ = maskToolbar_->addAction(tr("Gradient Add"));
+  gradientAddAction_->setIcon(themedIcon(this, QStringLiteral("format-fill-color"), QStyle::SP_DialogApplyButton));
+  gradientAddAction_->setToolTip(tr("Add gradient"));
   gradientAddAction_->setCheckable(true);
   gradientSubtractAction_ = maskToolbar_->addAction(tr("Gradient Subtract"));
+  gradientSubtractAction_->setIcon(themedIcon(this, QStringLiteral("format-stroke-color"), QStyle::SP_DialogCancelButton));
+  gradientSubtractAction_->setToolTip(tr("Subtract gradient"));
   gradientSubtractAction_->setCheckable(true);
   ellipseAddAction_ = maskToolbar_->addAction(tr("Ellipse Add"));
+  ellipseAddAction_->setIcon(themedIcon(this, QStringLiteral("draw-ellipse"), QStyle::SP_DialogApplyButton));
+  ellipseAddAction_->setToolTip(tr("Add ellipse"));
   ellipseAddAction_->setCheckable(true);
   ellipseSubtractAction_ = maskToolbar_->addAction(tr("Ellipse Subtract"));
+  ellipseSubtractAction_->setIcon(themedIcon(this, QStringLiteral("draw-ellipse"), QStyle::SP_DialogCancelButton));
+  ellipseSubtractAction_->setToolTip(tr("Subtract ellipse"));
   ellipseSubtractAction_->setCheckable(true);
   auto *promptGroup = new QActionGroup{maskToolbar_};
   promptGroup->setExclusive(true);
@@ -486,9 +577,15 @@ void MainWindow::buildUi()
   maskToolbar_->addWidget(brushHardnessLabel_);
   maskToolbar_->addSeparator();
   undoPointAction_ = maskToolbar_->addAction(tr("Undo Point"));
+  undoPointAction_->setIcon(themedIcon(this, QStringLiteral("edit-undo"), QStyle::SP_ArrowBack));
+  undoPointAction_->setToolTip(tr("Undo last mask point or stroke"));
   clearPointsAction_ = maskToolbar_->addAction(tr("Clear"));
+  clearPointsAction_->setIcon(themedIcon(this, QStringLiteral("edit-clear"), QStyle::SP_DialogResetButton));
+  clearPointsAction_->setToolTip(tr("Clear mask edits"));
   maskToolbar_->addSeparator();
   doneMaskAction_ = maskToolbar_->addAction(tr("Done"));
+  doneMaskAction_->setIcon(themedIcon(this, QStringLiteral("dialog-ok"), QStyle::SP_DialogApplyButton));
+  doneMaskAction_->setToolTip(tr("Finish mask editing"));
   maskToolbar_->hide();
 
   metadataDetailsLabel_ = new QLabel{tr("No picture selected"), statusBar()};
@@ -602,6 +699,11 @@ void MainWindow::connectUi()
   connect(runModelButton_, &QPushButton::clicked, this, &MainWindow::runSelectedModel);
   connect(beforeAfterAction_, &QAction::toggled,
           previewWidget_, &PreviewWidget::setComparisonEnabled);
+  connect(beforeAfterAction_, &QAction::toggled, this, [this](const bool enabled) {
+    swapComparisonAction_->setEnabled(enabled);
+  });
+  connect(swapComparisonAction_, &QAction::toggled,
+          previewWidget_, &PreviewWidget::setComparisonReversed);
   connect(blendSlider_, &QSlider::valueChanged, this, [this](const int value) {
     blendValueLabel_->setText(QString::number(value) + QStringLiteral("%"));
     if(selectedLayerId() == globalLayerId) globalBlend_ = static_cast<float>(value) / 100.0f;
@@ -2631,10 +2733,12 @@ void MainWindow::refreshActionState()
   zoomOutAction_->setEnabled(editorControls);
   highQualityAction_->setEnabled(editorControls);
   beforeAfterAction_->setEnabled(editorControls && compositionValid_ && processingReady());
+  swapComparisonAction_->setEnabled(beforeAfterAction_->isEnabled() && beforeAfterAction_->isChecked());
   const bool inEditor = pages_->currentWidget() == editorPage_;
   filmstripAction_->setVisible(inEditor);
   for(QAction *action : {fitAction_, actualSizeAction_, zoomOutAction_, zoomInAction_,
-                          highQualityAction_, beforeAfterAction_, previewControlsSeparator_})
+                         highQualityAction_, beforeAfterAction_, swapComparisonAction_,
+                         previewControlsSeparator_})
   {
     action->setVisible(inEditor);
   }

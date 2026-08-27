@@ -240,6 +240,7 @@ private:
   QPushButton *editMaskButton_ = nullptr;
   QPushButton *deleteLayerButton_ = nullptr;
   QPushButton *renameLayerButton_ = nullptr;
+  QPushButton *exportButton_ = nullptr;
   QToolBar *maskToolbar_ = nullptr;
   QComboBox *maskCategoryCombo_ = nullptr;
   QAction *positiveAction_ = nullptr;
@@ -268,6 +269,7 @@ private:
   QAction *actualSizeAction_ = nullptr;
   QAction *highQualityAction_ = nullptr;
   QAction *beforeAfterAction_ = nullptr;
+  QAction *swapComparisonAction_ = nullptr;
   QAction *previewControlsSeparator_ = nullptr;
   QToolBar *previewToolbar_ = nullptr;
   QLabel *zoomLabel_ = nullptr;
