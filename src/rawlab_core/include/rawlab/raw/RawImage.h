@@ -27,7 +27,15 @@ struct RawMetadata
   std::optional<double> aperture;
   std::optional<double> exposureTimeSeconds;
   std::optional<double> focalLengthMm;
+  std::optional<double> focalLength35mm;
   std::optional<std::int64_t> captureTimestamp;
+  std::string artist;
+  std::string description;
+  std::string bodySerial;
+  std::string lensMake;
+  std::string lensModel;
+  std::string lensSerial;
+  std::optional<std::array<double, 4>> lensSpecification;
   CfaPattern cfa;
   ActiveArea activeArea;
   // LibRaw orientation: 0 is normal, 3 is 180, 5 is 90 CCW, 6 is 90 CW.

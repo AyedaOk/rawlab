@@ -5,9 +5,13 @@
 #include <tiffio.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -71,7 +75,143 @@ void registerDngFields(TIFF *tif)
   TIFFMergeFieldInfo(tif, fields, static_cast<std::uint32_t>(std::size(fields)));
 }
 
-void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata)
+bool validPositive(const std::optional<double> value)
+{
+  return value && std::isfinite(*value) && *value > 0.0;
+}
+
+bool validLensSpecification(const std::optional<std::array<double, 4>> &specification)
+{
+  return specification && std::all_of(specification->begin(), specification->end(),
+    [](const double value) { return std::isfinite(value) && value > 0.0; });
+}
+
+std::optional<std::array<char, 20>> exifDateTime(const std::optional<std::int64_t> timestamp)
+{
+  if(!timestamp) return std::nullopt;
+  const std::time_t value = static_cast<std::time_t>(*timestamp);
+  if(static_cast<std::int64_t>(value) != *timestamp) return std::nullopt;
+  std::tm local{};
+#ifdef _WIN32
+  if(localtime_s(&local, &value) != 0) return std::nullopt;
+#else
+  if(!localtime_r(&value, &local)) return std::nullopt;
+#endif
+  std::array<char, 20> result{};
+  if(std::strftime(result.data(), result.size(), "%Y:%m:%d %H:%M:%S", &local) != 19)
+  {
+    return std::nullopt;
+  }
+  return result;
+}
+
+bool hasExifMetadata(const raw::RawMetadata &metadata)
+{
+  return validPositive(metadata.iso) || validPositive(metadata.aperture)
+         || validPositive(metadata.exposureTimeSeconds) || validPositive(metadata.focalLengthMm)
+         || validPositive(metadata.focalLength35mm) || exifDateTime(metadata.captureTimestamp)
+         || !metadata.bodySerial.empty() || !metadata.lensMake.empty()
+         || !metadata.lensModel.empty() || !metadata.lensSerial.empty()
+         || validLensSpecification(metadata.lensSpecification);
+}
+
+toff_t writeExifDirectory(TIFF *tif, const raw::RawMetadata &metadata)
+{
+  if(!hasExifMetadata(metadata)) return 0;
+  if(TIFFCreateEXIFDirectory(tif) != 0)
+  {
+    throw std::runtime_error{"Could not create DNG EXIF directory"};
+  }
+
+  const std::uint8_t exifVersion[4] = {'0', '2', '3', '2'};
+  if(TIFFSetField(tif, EXIFTAG_EXIFVERSION, exifVersion) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG EXIF version"};
+  }
+  if(validPositive(metadata.exposureTimeSeconds)
+     && TIFFSetField(tif, EXIFTAG_EXPOSURETIME, *metadata.exposureTimeSeconds) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG exposure time"};
+  }
+  if(validPositive(metadata.aperture)
+     && TIFFSetField(tif, EXIFTAG_FNUMBER, *metadata.aperture) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG aperture"};
+  }
+  if(validPositive(metadata.iso))
+  {
+    const double rounded = std::round(*metadata.iso);
+    if(rounded >= 1.0 && rounded <= std::numeric_limits<std::uint16_t>::max())
+    {
+      const std::uint16_t iso = static_cast<std::uint16_t>(rounded);
+      if(TIFFSetField(tif, EXIFTAG_ISOSPEEDRATINGS, 1, &iso) != 1)
+      {
+        throw std::runtime_error{"Could not write DNG ISO speed"};
+      }
+    }
+    else if(rounded > std::numeric_limits<std::uint16_t>::max()
+            && rounded <= std::numeric_limits<std::uint32_t>::max())
+    {
+      const std::uint16_t sensitivityType = 3;
+      const std::uint32_t iso = static_cast<std::uint32_t>(rounded);
+      if(TIFFSetField(tif, EXIFTAG_SENSITIVITYTYPE, sensitivityType) != 1
+         || TIFFSetField(tif, EXIFTAG_ISOSPEED, iso) != 1)
+      {
+        throw std::runtime_error{"Could not write DNG extended ISO speed"};
+      }
+    }
+  }
+  if(const auto dateTime = exifDateTime(metadata.captureTimestamp);
+     dateTime && TIFFSetField(tif, EXIFTAG_DATETIMEORIGINAL, dateTime->data()) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG capture time"};
+  }
+  if(validPositive(metadata.focalLengthMm)
+     && TIFFSetField(tif, EXIFTAG_FOCALLENGTH, *metadata.focalLengthMm) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG focal length"};
+  }
+  if(validPositive(metadata.focalLength35mm)
+     && *metadata.focalLength35mm >= 0.5
+     && *metadata.focalLength35mm <= std::numeric_limits<std::uint16_t>::max())
+  {
+    const auto focalLength = static_cast<std::uint16_t>(std::lround(*metadata.focalLength35mm));
+    if(TIFFSetField(tif, EXIFTAG_FOCALLENGTHIN35MMFILM, focalLength) != 1)
+    {
+      throw std::runtime_error{"Could not write DNG 35 mm focal length"};
+    }
+  }
+  const auto setString = [tif](const std::uint32_t tag, const std::string &value,
+                              const char *error) {
+    if(!value.empty() && TIFFSetField(tif, tag, value.c_str()) != 1)
+    {
+      throw std::runtime_error{error};
+    }
+  };
+  setString(EXIFTAG_BODYSERIALNUMBER, metadata.bodySerial, "Could not write DNG body serial");
+  setString(EXIFTAG_LENSMAKE, metadata.lensMake, "Could not write DNG lens make");
+  setString(EXIFTAG_LENSMODEL, metadata.lensModel, "Could not write DNG lens model");
+  setString(EXIFTAG_LENSSERIALNUMBER, metadata.lensSerial, "Could not write DNG lens serial");
+  if(validLensSpecification(metadata.lensSpecification))
+  {
+    std::array<float, 4> specification{};
+    std::transform(metadata.lensSpecification->begin(), metadata.lensSpecification->end(),
+                   specification.begin(), [](const double value) { return static_cast<float>(value); });
+    if(TIFFSetField(tif, EXIFTAG_LENSSPECIFICATION, specification.data()) != 1)
+    {
+      throw std::runtime_error{"Could not write DNG lens specification"};
+    }
+  }
+
+  toff_t offset = 0;
+  if(TIFFWriteCustomDirectory(tif, &offset) != 1 || offset == 0)
+  {
+    throw std::runtime_error{"Could not write DNG EXIF directory"};
+  }
+  return offset;
+}
+
+void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t exifOffset)
 {
   const std::uint8_t dngVersion[4] = {1, 4, 0, 0};
   const std::uint8_t dngBackwardVersion[4] = {1, 2, 0, 0};
@@ -82,6 +222,12 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata)
                metadata.model.empty() ? "Synthetic Bayer CFA" : metadata.model.c_str());
   TIFFSetField(tif, TIFFTAG_UNIQUECAMERAMODEL,
                metadata.model.empty() ? "RawLab Synthetic Bayer CFA" : metadata.model.c_str());
+  if(!metadata.artist.empty()) TIFFSetField(tif, TIFFTAG_ARTIST, metadata.artist.c_str());
+  if(!metadata.description.empty())
+  {
+    TIFFSetField(tif, TIFFTAG_IMAGEDESCRIPTION, metadata.description.c_str());
+  }
+  if(exifOffset != 0) TIFFSetField(tif, TIFFTAG_EXIFIFD, exifOffset);
   TIFFSetField(tif, TIFFTAG_ASSHOTNEUTRAL,
                static_cast<std::uint32_t>(metadata.asShotNeutral.size()),
                metadata.asShotNeutral.data());
@@ -94,6 +240,7 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata)
 
 void setJpegPreviewFields(TIFF *tif, const JpegPreview &preview,
                           const raw::RawMetadata *metadata,
+                          const toff_t exifOffset,
                           const std::uint16_t subIfdCount)
 {
   TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_REDUCEDIMAGE);
@@ -107,7 +254,7 @@ void setJpegPreviewFields(TIFF *tif, const JpegPreview &preview,
   TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
   TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, static_cast<std::uint32_t>(preview.height));
   TIFFSetField(tif, TIFFTAG_PREVIEWCOLORSPACE, static_cast<std::uint32_t>(2));
-  if(metadata) setSharedMetadata(tif, *metadata);
+  if(metadata) setSharedMetadata(tif, *metadata, exifOffset);
   std::array<toff_t, 2> offsets{};
   if(subIfdCount > 0) TIFFSetField(tif, TIFFTAG_SUBIFD, subIfdCount, offsets.data());
 }
@@ -208,11 +355,16 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
 
   TIFF *tif = TIFFOpen(path.string().c_str(), "wl");
   if(!tif) throw std::runtime_error{"Could not open DNG output for writing"};
-  registerDngFields(tif);
 
   try
   {
     const raw::RawMetadata &metadata = image.metadata();
+    const toff_t exifOffset = writeExifDirectory(tif, metadata);
+    if(TIFFCreateDirectory(tif) != 0)
+    {
+      throw std::runtime_error{"Could not create DNG image directory"};
+    }
+    registerDngFields(tif);
     const float white = std::clamp(metadata.whiteLevel, 1.0f, 65535.0f);
     const std::vector<std::uint16_t> cfa = toUint16Cfa(image, white);
     raw::ActiveArea active = metadata.activeArea;
@@ -226,13 +378,13 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
 
     if(canonical)
     {
-      setJpegPreviewFields(tif, previews->thumbnail, &metadata, 2);
+      setJpegPreviewFields(tif, previews->thumbnail, &metadata, exifOffset, 2);
       writeJpegStrip(tif, previews->thumbnail);
       requireTiffOk(TIFFWriteDirectory(tif), "DNG thumbnail directory");
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
     }
-    else setSharedMetadata(tif, metadata);
+    else setSharedMetadata(tif, metadata, exifOffset);
 
     TIFFSetField(tif, TIFFTAG_SUBFILETYPE, static_cast<std::uint32_t>(0));
     TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, static_cast<std::uint32_t>(image.width()));
@@ -325,7 +477,7 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     {
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
-      setJpegPreviewFields(tif, previews->display, nullptr, 0);
+      setJpegPreviewFields(tif, previews->display, nullptr, 0, 0);
       writeJpegStrip(tif, previews->display);
       requireTiffOk(TIFFWriteDirectory(tif), "DNG display preview directory");
     }

@@ -60,7 +60,15 @@ rawlab::raw::RawImage makeSyntheticRggbImage()
   metadata.aperture = 2.8;
   metadata.exposureTimeSeconds = 1.0 / 125.0;
   metadata.focalLengthMm = 50.0;
+  metadata.focalLength35mm = 75.0;
   metadata.captureTimestamp = 1'700'000'000;
+  metadata.artist = "RawLab Artist";
+  metadata.description = "RawLab EXIF test";
+  metadata.bodySerial = "BODY-123";
+  metadata.lensMake = "Test Optics";
+  metadata.lensModel = "Test Lens 50mm";
+  metadata.lensSerial = "LENS-456";
+  metadata.lensSpecification = std::array<double, 4>{50.0, 50.0, 2.8, 2.8};
   return rawlab::raw::RawImage{
     4,
     4,
@@ -98,6 +106,77 @@ int main()
   if(!nearlyEqual(rawlab::raw::denormalizeRawSample(0.5f, 2.0f, 10.0f), 6.0f)) return 1;
 
   const rawlab::raw::RawImage image = makeSyntheticRggbImage();
+  const std::filesystem::path exifDngPath = std::filesystem::temp_directory_path()
+                                                  / "rawlab-exif-test.dng";
+  rawlab::dng::TiffDngWriter{}.writeCfaDng(exifDngPath, image);
+  TIFF *exifTiff = TIFFOpen(exifDngPath.string().c_str(), "r");
+  if(!exifTiff) return 1;
+  char *artist = nullptr;
+  char *description = nullptr;
+  toff_t exifOffset = 0;
+  const bool hasBaselineMetadata = TIFFGetField(exifTiff, TIFFTAG_ARTIST, &artist) == 1
+                                   && TIFFGetField(exifTiff, TIFFTAG_IMAGEDESCRIPTION,
+                                                   &description) == 1
+                                   && TIFFGetField(exifTiff, TIFFTAG_EXIFIFD, &exifOffset) == 1
+                                   && artist && description && exifOffset != 0
+                                   && std::string_view{artist} == "RawLab Artist"
+                                   && std::string_view{description} == "RawLab EXIF test";
+  if(!hasBaselineMetadata || TIFFReadEXIFDirectory(exifTiff, exifOffset) != 1)
+  {
+    TIFFClose(exifTiff);
+    return 1;
+  }
+  std::uint8_t *exifVersion = nullptr;
+  float exposureTime = 0.0f;
+  float aperture = 0.0f;
+  float focalLength = 0.0f;
+  std::uint16_t isoCount = 0;
+  std::uint16_t *iso = nullptr;
+  char *captureTime = nullptr;
+  std::uint16_t focalLength35mm = 0;
+  char *bodySerial = nullptr;
+  char *lensMake = nullptr;
+  char *lensModel = nullptr;
+  char *lensSerial = nullptr;
+  float *lensSpecification = nullptr;
+  const bool hasExifMetadata = TIFFGetField(exifTiff, EXIFTAG_EXIFVERSION, &exifVersion) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_EXPOSURETIME,
+                                               &exposureTime) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_FNUMBER, &aperture) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_ISOSPEEDRATINGS,
+                                               &isoCount, &iso) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_DATETIMEORIGINAL,
+                                               &captureTime) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_FOCALLENGTH,
+                                               &focalLength) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_FOCALLENGTHIN35MMFILM,
+                                               &focalLength35mm) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_BODYSERIALNUMBER,
+                                               &bodySerial) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_LENSMAKE, &lensMake) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_LENSMODEL, &lensModel) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_LENSSERIALNUMBER,
+                                               &lensSerial) == 1
+                               && TIFFGetField(exifTiff, EXIFTAG_LENSSPECIFICATION,
+                                               &lensSpecification) == 1;
+  const bool validExifMetadata = hasExifMetadata && exifVersion && iso && captureTime
+                                 && bodySerial && lensMake && lensModel && lensSerial
+                                 && lensSpecification
+                                 && std::string_view{reinterpret_cast<char *>(exifVersion), 4}
+                                      == "0232"
+                                 && nearlyEqual(exposureTime, 1.0f / 125.0f)
+                                 && nearlyEqual(aperture, 2.8f) && isoCount == 1 && iso[0] == 640
+                                 && std::string_view{captureTime}.size() == 19
+                                 && nearlyEqual(focalLength, 50.0f) && focalLength35mm == 75
+                                 && std::string_view{bodySerial} == "BODY-123"
+                                 && std::string_view{lensMake} == "Test Optics"
+                                 && std::string_view{lensModel} == "Test Lens 50mm"
+                                 && std::string_view{lensSerial} == "LENS-456"
+                                 && nearlyEqual(lensSpecification[0], 50.0f)
+                                 && nearlyEqual(lensSpecification[3], 2.8f);
+  TIFFClose(exifTiff);
+  std::filesystem::remove(exifDngPath);
+  if(!validExifMetadata) return 1;
   const rawlab::raw::PackedBayerImage packed = rawlab::raw::packBayerForceRggb(image);
   if(packed.width != 2 || packed.height != 2) return 1;
 
@@ -440,7 +519,17 @@ int main()
     image, {}, {}, preview.geometry);
   if(metadataResult.metadata().iso != image.metadata().iso
      || metadataResult.metadata().aperture != image.metadata().aperture
-     || metadataResult.metadata().captureTimestamp != image.metadata().captureTimestamp) return 1;
+     || metadataResult.metadata().exposureTimeSeconds != image.metadata().exposureTimeSeconds
+     || metadataResult.metadata().focalLengthMm != image.metadata().focalLengthMm
+     || metadataResult.metadata().focalLength35mm != image.metadata().focalLength35mm
+     || metadataResult.metadata().captureTimestamp != image.metadata().captureTimestamp
+     || metadataResult.metadata().artist != image.metadata().artist
+     || metadataResult.metadata().description != image.metadata().description
+     || metadataResult.metadata().bodySerial != image.metadata().bodySerial
+     || metadataResult.metadata().lensMake != image.metadata().lensMake
+     || metadataResult.metadata().lensModel != image.metadata().lensModel
+     || metadataResult.metadata().lensSerial != image.metadata().lensSerial
+     || metadataResult.metadata().lensSpecification != image.metadata().lensSpecification) return 1;
   const rawlab::pipeline::Mask leftMask{2, 2, std::vector<float>{1.0f, 0.0f, 1.0f, 0.0f}};
   const std::array localLeft{
     rawlab::pipeline::LocalLayerInput{&layerB, &leftMask, 1.0f, false, true},

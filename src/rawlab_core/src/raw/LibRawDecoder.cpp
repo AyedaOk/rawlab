@@ -54,6 +54,13 @@ CfaColor colorFromLibRaw(const int color)
   }
 }
 
+template<std::size_t Size>
+std::string boundedString(const char (&value)[Size])
+{
+  const auto end = std::find(value, value + Size, '\0');
+  return std::string{value, end};
+}
+
 void throwOnLibRawError(const int error, const char *operation)
 {
   if(error == LIBRAW_SUCCESS) return;
@@ -67,6 +74,8 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
   const libraw_colordata_t &color = processor.imgdata.color;
   const libraw_imgother_t &other = processor.imgdata.other;
+  const libraw_lensinfo_t &lens = processor.imgdata.lens;
+  const libraw_shootinginfo_t &shooting = processor.imgdata.shootinginfo;
 
   RawMetadata metadata;
   metadata.make = id.make;
@@ -79,7 +88,22 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
   metadata.aperture = positiveValue(other.aperture);
   metadata.exposureTimeSeconds = positiveValue(other.shutter);
   metadata.focalLengthMm = positiveValue(other.focal_len);
+  metadata.focalLength35mm = positiveValue(static_cast<float>(lens.FocalLengthIn35mmFormat));
   if(other.timestamp > 0) metadata.captureTimestamp = static_cast<std::int64_t>(other.timestamp);
+  metadata.artist = boundedString(other.artist);
+  metadata.description = boundedString(other.desc);
+  metadata.bodySerial = boundedString(shooting.BodySerial);
+  metadata.lensMake = boundedString(lens.LensMake);
+  metadata.lensModel = boundedString(lens.Lens);
+  metadata.lensSerial = boundedString(lens.LensSerial);
+  const std::array<double, 4> lensSpecification{
+    lens.MinFocal, lens.MaxFocal, lens.MaxAp4MinFocal, lens.MaxAp4MaxFocal,
+  };
+  if(std::all_of(lensSpecification.begin(), lensSpecification.end(),
+                 [](const double value) { return std::isfinite(value) && value > 0.0; }))
+  {
+    metadata.lensSpecification = lensSpecification;
+  }
   metadata.activeArea = {
     sizes.left_margin,
     sizes.top_margin,

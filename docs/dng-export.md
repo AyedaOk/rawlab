@@ -26,7 +26,11 @@ it runs the production raw-domain pipeline before writing the Bayer CFA DNG.
 - `ColorMatrix1` from the source camera matrix.
 - Make, model, and unique model strings.
 - Active area/crop metadata when needed for correct re-import.
-- Optional EXIF and embedded JPEG preview later.
+- Source ISO, aperture, exposure time, focal length, and capture time in a dedicated EXIF IFD.
+- Lens make/model/specification/serial, camera body serial, artist, and image description when LibRaw exposes them.
+- Embedded JPEG thumbnail and display preview for GUI exports.
+
+GPS, MakerNotes, XMP, and arbitrary source structural tags are intentionally not copied. This keeps the generated DNG layout valid and avoids silently carrying location metadata.
 
 ## Validation
 
@@ -41,7 +45,7 @@ Document required tags, uncertain tags, and reader compatibility findings here a
 
 The first synthetic DNG was validated with `tiffinfo` and `exiftool`; both identify it as a DNG with `PhotometricInterpretation=CFA` and CFA pattern `[Red,Green][Green,Blue]`.
 
-The first ARW-derived DNG from a Sony `ILCE-7CM2` file was validated with `exiftool`; it reports `PhotometricInterpretation=Color Filter Array`, RGGB CFA pattern, source make/model, active area, black/white levels, normalized `AsShotNeutral`, and `ColorMatrix1`.
+The first ARW-derived DNG from a Sony `ILCE-7CM2` file was validated with `exiftool`; it reports `PhotometricInterpretation=Color Filter Array`, RGGB CFA pattern, source make/model, active area, black/white levels, normalized `AsShotNeutral`, and `ColorMatrix1`. Capture and safe lens metadata are written through a referenced EXIF IFD when available.
 
 ## Known Risk
 

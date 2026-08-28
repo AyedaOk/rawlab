@@ -256,6 +256,7 @@ int main(int argc, char **argv)
   dngMetadata.cfa.cells[1][1] = rawlab::raw::CfaColor::Blue;
   dngMetadata.activeArea = {0, 0, 64, 64};
   dngMetadata.whiteLevel = 1023.0f;
+  dngMetadata.iso = 100.0;
   const rawlab::raw::RawImage dngImage{
     64, 64, std::vector<float>(64 * 64, 512.0f), dngMetadata,
   };
@@ -266,9 +267,11 @@ int main(int argc, char **argv)
   if(!dngTiff) return 1;
   std::uint16_t subIfdCount = 0;
   toff_t *subIfdOffsets = nullptr;
+  toff_t exifOffset = 0;
   const bool hasRawSubIfd = TIFFGetField(dngTiff, TIFFTAG_SUBIFD, &subIfdCount,
                                          &subIfdOffsets) == 1
-                           && subIfdCount == 2 && subIfdOffsets;
+                           && TIFFGetField(dngTiff, TIFFTAG_EXIFIFD, &exifOffset) == 1
+                           && subIfdCount == 2 && subIfdOffsets && exifOffset != 0;
   const toff_t rawSubIfdOffset = hasRawSubIfd ? subIfdOffsets[0] : 0;
   if(!hasRawSubIfd || TIFFSetSubDirectory(dngTiff, rawSubIfdOffset) != 1)
   {
