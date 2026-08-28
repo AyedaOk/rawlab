@@ -25,6 +25,21 @@ cp -a "$qt_plugins/tls/"*.so "$root/AppDir/usr/plugins/tls/"
 mkdir -p "$root/AppDir/usr/lib"
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$root/AppDir/usr/lib/"
 
+copy_system_library()
+{
+  local name="$1"
+  local path
+  path="$(ldconfig -p | awk -v library="$name" '$1 == library {print $NF; exit}')"
+  if [[ -z "$path" || ! -f "$path" ]]; then
+    echo "Required system library not found: $name" >&2
+    exit 1
+  fi
+  cp -L "$path" "$root/AppDir/usr/lib/"
+}
+
+copy_system_library libssl.so.3
+copy_system_library libcrypto.so.3
+
 curl -L --fail --retry 3 -o "$tools/linuxdeploy-x86_64.AppImage" \
   https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
 curl -L --fail --retry 3 -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \

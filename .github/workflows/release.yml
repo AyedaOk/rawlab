@@ -21,6 +21,7 @@ jobs:
             libraw-dev \
             libtiff-dev \
             libpng-dev \
+            libssl3 \
             qt6-wayland
       - name: Install ONNX Runtime CPU
         run: |
