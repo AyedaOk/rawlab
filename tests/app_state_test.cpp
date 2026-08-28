@@ -8,6 +8,8 @@
 #include "rawlab/dng/DngWriter.h"
 #include "rawlab/raw/LibRawDecoder.h"
 
+#include <tiffio.h>
+
 #include <QApplication>
 #include <QBuffer>
 #include <QComboBox>
@@ -260,6 +262,32 @@ int main(int argc, char **argv)
   const QString dngPath = settingsDirectory.filePath(QStringLiteral("preview-roundtrip.dng"));
   rawlab::dng::TiffDngWriter{}.writeCfaDng(
     std::filesystem::path{dngPath.toStdString()}, dngImage, &dngPreviews);
+  TIFF *dngTiff = TIFFOpen(dngPath.toStdString().c_str(), "r");
+  if(!dngTiff) return 1;
+  std::uint16_t subIfdCount = 0;
+  toff_t *subIfdOffsets = nullptr;
+  const bool hasRawSubIfd = TIFFGetField(dngTiff, TIFFTAG_SUBIFD, &subIfdCount,
+                                         &subIfdOffsets) == 1
+                           && subIfdCount == 2 && subIfdOffsets;
+  const toff_t rawSubIfdOffset = hasRawSubIfd ? subIfdOffsets[0] : 0;
+  if(!hasRawSubIfd || TIFFSetSubDirectory(dngTiff, rawSubIfdOffset) != 1)
+  {
+    TIFFClose(dngTiff);
+    return 1;
+  }
+  std::uint16_t *repeatDimensions = nullptr;
+  std::uint32_t patternCount = 0;
+  std::uint8_t *pattern = nullptr;
+  const bool hasCfaTags = TIFFGetField(dngTiff, TIFFTAG_CFAREPEATPATTERNDIM,
+                                       &repeatDimensions) == 1
+                          && TIFFGetField(dngTiff, TIFFTAG_CFAPATTERN,
+                                          &patternCount, &pattern) == 1;
+  const bool validCfaTags = hasCfaTags && repeatDimensions && pattern
+                            && repeatDimensions[0] == 2 && repeatDimensions[1] == 2
+                            && patternCount == 4 && pattern[0] == 0 && pattern[1] == 1
+                            && pattern[2] == 1 && pattern[3] == 2;
+  TIFFClose(dngTiff);
+  if(!validCfaTags) return 1;
   const rawlab::raw::RawImage decodedDng = rawlab::raw::LibRawDecoder{}.decodeRawImage(
     std::filesystem::path{dngPath.toStdString()});
   if(decodedDng.width() != 64 || decodedDng.height() != 64

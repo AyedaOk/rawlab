@@ -63,8 +63,12 @@ void registerDngFields(TIFF *tif)
   static const TIFFFieldInfo fields[] = {
     {TIFFTAG_PREVIEWCOLORSPACE, 1, 1, TIFF_LONG, FIELD_CUSTOM, true, false,
      const_cast<char *>("PreviewColorSpace")},
+    {TIFFTAG_CFAREPEATPATTERNDIM, 2, 2, TIFF_SHORT, FIELD_CUSTOM, true, false,
+     const_cast<char *>("CFARepeatPatternDim")},
+    {TIFFTAG_CFAPATTERN, TIFF_VARIABLE, TIFF_VARIABLE, TIFF_BYTE, FIELD_CUSTOM, true, true,
+     const_cast<char *>("CFAPattern")},
   };
-  TIFFMergeFieldInfo(tif, fields, 1);
+  TIFFMergeFieldInfo(tif, fields, static_cast<std::uint32_t>(std::size(fields)));
 }
 
 void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata)
@@ -247,7 +251,10 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
 
     const std::uint16_t cfaRepeatDim[2] = { 2, 2 };
-    TIFFSetField(tif, TIFFTAG_CFAREPEATPATTERNDIM, cfaRepeatDim);
+    if(TIFFSetField(tif, TIFFTAG_CFAREPEATPATTERNDIM, cfaRepeatDim) != 1)
+    {
+      throw std::runtime_error{"Could not write DNG CFA repeat dimensions"};
+    }
     const std::array<std::uint8_t, 4> nativePattern = cfaPatternBytes(metadata.cfa);
     std::array<std::uint8_t, 4> cfaPattern{};
     const int phaseX = active.left & 1;
@@ -261,7 +268,11 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
                                                    + ((x + phaseX) & 1))];
       }
     }
-    TIFFSetField(tif, TIFFTAG_CFAPATTERN, static_cast<std::uint32_t>(cfaPattern.size()), cfaPattern.data());
+    if(TIFFSetField(tif, TIFFTAG_CFAPATTERN, static_cast<std::uint32_t>(cfaPattern.size()),
+                    cfaPattern.data()) != 1)
+    {
+      throw std::runtime_error{"Could not write DNG CFA pattern"};
+    }
     const std::uint8_t cfaPlaneColor[3] = { 0, 1, 2 };
     TIFFSetField(tif, TIFFTAG_CFAPLANECOLOR, static_cast<std::uint32_t>(3), cfaPlaneColor);
     TIFFSetField(tif, TIFFTAG_CFALAYOUT, static_cast<std::uint16_t>(1));
