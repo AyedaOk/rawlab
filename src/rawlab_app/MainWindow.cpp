@@ -298,7 +298,8 @@ void MainWindow::buildUi()
   previewToolbar_->setToolButtonStyle(Qt::ToolButtonIconOnly);
   fitAction_->setIcon(themedIcon(this, QStringLiteral("zoom-fit-best"), QStyle::SP_TitleBarNormalButton));
   fitAction_->setToolTip(tr("Fit preview (F)"));
-  actualSizeAction_->setIcon(QIcon{QStringLiteral(":/icons/zoom-in-area.svg")});
+  actualSizeAction_->setIcon(themedIcon(this, QStringLiteral("zoom-original"),
+                                        QStyle::SP_FileDialogContentsView));
   actualSizeAction_->setToolTip(tr("Preview at 100% (Ctrl+1)"));
   zoomOutAction_->setIcon(themedIcon(this, QStringLiteral("zoom-out"), QStyle::SP_ArrowDown));
   zoomOutAction_->setToolTip(tr("Zoom out"));
@@ -314,7 +315,8 @@ void MainWindow::buildUi()
   zoomLabelAction_ = previewToolbar_->addWidget(zoomLabel_);
   previewToolbar_->addAction(zoomInAction_);
   highQualityAction_ = previewToolbar_->addAction(tr("High Quality"));
-  highQualityAction_->setIcon(QIcon{QStringLiteral(":/icons/aspect-ratio.svg")});
+  highQualityAction_->setIcon(themedIcon(this, QStringLiteral("image-x-generic"),
+                                         QStyle::SP_FileDialogContentsView));
   highQualityAction_->setToolTip(tr("Use high-quality preview rendering"));
   highQualityAction_->setCheckable(true);
   highQualityAction_->setChecked(true);

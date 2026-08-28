@@ -2,25 +2,20 @@
 
 The target export is a non-demosaiced Bayer CFA DNG for Bayer raws, not a demosaiced RGB image.
 
-## Initial Direction
+## Current Workflow
 
 Start with an isolated libtiff-based writer modeled on Darktable's CFA writer approach. Do not use the Adobe DNG SDK unless its license is verified as compatible with the project.
 
-The Milestone 3 writer should accept a `uint16` Bayer CFA buffer plus source raw metadata and write `PhotometricInterpretation=CFA`.
-
-Current proof-of-concept command:
+The stable CLI export command is:
 
 ```bash
-./build/dev/src/rawlab_cli/rawlab write-synthetic-dng build/dev/synthetic-cfa.dng
+./build/dev/src/rawlab_cli/rawlab process input.raw output.dng
+./build/dev/src/rawlab_cli/rawlab process input.raw output.dng \
+  --denoise model.onnx --blend 1.0 --clipped-highlights
 ```
 
-This writes a tiny synthetic RGGB CFA DNG for structural validation before real ARW-derived export is attempted.
-
-Real raw-derived CFA export command:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab export-cfa-dng input.raw output.dng
-```
+Without `--denoise`, the command exports the decoded CFA directly. With a model,
+it runs the production raw-domain pipeline before writing the Bayer CFA DNG.
 
 ## Metadata To Preserve
 

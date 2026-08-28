@@ -1,8 +1,8 @@
 # RawLab
 
-RawLab is a desktop RAW photo preprocessing application developed 
-through “vibe coding”. It keeps Bayer CFA data intact while applying 
-AI denoise and sharpening, then exports a non-demosaiced CFA DNG 
+RawLab is a desktop RAW photo preprocessing application developed
+through “vibe coding”. It keeps Bayer CFA data intact while applying
+AI denoise and sharpening, then exports a non-demosaiced CFA DNG
 for use in a RAW editor.
 
 ## Features
@@ -22,7 +22,7 @@ for use in a RAW editor.
 ## Build From Source
 
 Development requirements are C++20, CMake 3.25+, Ninja, Qt 6, LibRaw,
-libtiff, libpng, and the C++ ONNX Runtime library. ONNX Runtime must provide
+libtiff, libpng, and the ONNX Runtime C API headers. ONNX Runtime must provide
 `onnxruntime_c_api.h` and its shared library.
 
 Development build:

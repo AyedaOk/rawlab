@@ -36,20 +36,16 @@
 ## Milestone 4: ONNX CfaRestoreModel Sandbox
 
 - Status: Completed
-- Add ONNX Runtime wrapper and verify model I/O with `rawlab inspect-onnx <model.onnx>`.
+- Add ONNX Runtime wrapper and verify model I/O through the core API and tests.
 - Integrate RawNIND Bayer as a `CfaRestoreModel` after license review.
-- Add temporary `rawlab test-rawnind-tile <input.raw> <model.onnx> <output.dng>` command for one red-origin-aligned 1024x1024 CFA tile.
-- Add `rawlab raw-denoise <input.raw> <model.onnx> <output.dng> [--blend 0..1] [--clipped-highlights]` for full-image RawNIND Bayer inference, clipped-highlight preservation, post-inference CFA blend-with-original, and CFA DNG export.
+- Add full-image RawNIND Bayer inference, clipped-highlight preservation, post-inference CFA blend-with-original, and CFA DNG export through `RawProcessingPipeline`.
 - Refine Darktable-style preprocessing, tiled inference, gain match, re-mosaic, seam blending, and blend-with-original behavior.
 
 ## Milestone 5: Masks And Local Modules
 
 - Status: Completed
 - Implement raw-space mask representation and nearest-neighbor sampling tests.
-- Add temporary `rawlab test-mask-blend <input.raw> <model.onnx> <output.dng>` command using a synthetic horizontal mask over RawNIND output.
 - Add nearest-neighbor preview-mask-to-raw coordinate mapping tests.
-- Add temporary `rawlab test-preview-mask-blend <input.raw> <model.onnx> <output.dng>` command using a smaller synthetic preview-style mask over RawNIND output.
-- Add temporary split-mask diagnostic commands `test-mask-split` and `test-preview-mask-split` to isolate raw-size blend from preview-mask mapping.
 - Add `RawProcessingPipeline` as the first core skeleton for global RawNIND denoise, optional clipped-highlight preservation, post-inference blend, and local masked CFA composition.
 - Add SAM 2.1 encoder/decoder segmentation from RGB preview PNGs with positive and negative point prompts.
 - Add grayscale mask PNG interchange and stable `process --mask <mask.png>` support.
@@ -94,10 +90,10 @@
 
 ## Milestone 8: CLI And PoC Command Cleanup
 
+- Status: Completed
 - Review all proof-of-concept CLI commands before GUI/user-facing workflows start.
-- Keep stable commands such as `inspect`, `export-cfa-dng`, and future production export commands.
-- Move temporary validation commands under a `debug` namespace or remove them once covered by automated tests.
-- Temporary commands include `write-synthetic-dng`, `inspect-onnx`, `test-rawnind-tile`, `test-mask-blend`, `test-preview-mask-blend`, `test-mask-split`, and `test-preview-mask-split`.
+- Keep the stable commands `inspect`, `process`, and `mask` as the shipped CLI surface.
+- Remove temporary validation commands once their behavior is covered by automated tests.
 - Do not expose PoC/debug commands as final user workflows unless they have clear long-term value.
 
 ## Milestone 9: DNG Size And Compatibility

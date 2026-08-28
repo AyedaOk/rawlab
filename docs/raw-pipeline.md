@@ -50,33 +50,10 @@ The Darktable RawNIND Bayer path uses this contract:
 
 This means RawNIND Bayer is a valid `CfaRestoreModel` backend even though the ONNX output is temporary 3-channel camRGB.
 
-RawLab's first ONNX Runtime proof command is:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab inspect-onnx /path/to/model_bayer.onnx
-```
-
-For the Darktable RawNIND Bayer model, this should report input `[1, 4, 512, 512]` and output `[1, 3, 1024, 1024]`.
-
-The temporary single-tile inference proof command is:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab test-rawnind-tile input.raw model_bayer.onnx output.dng
-```
-
-It crops one red-origin-aligned 1024x1024 CFA tile, packs it to `[1, 4, 512, 512]`, runs RawNIND, gain-matches the output, re-mosaics temporary camRGB back to CFA, and writes a 1024x1024 Bayer CFA DNG.
-
-The current full-image proof command is:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab raw-denoise input.raw model_bayer.onnx output.dng --blend 1.0 --clipped-highlights
-```
-
-It runs RawNIND over the Bayer working area with 512x512 packed tiles, 32 packed-pixel overlap, mirror padding inside the Bayer-aligned working rectangle, per-tile `match_gain`, re-mosaic to CFA, and overlap-weight accumulation into a full-size denoised Bayer CFA buffer. The current seam blending is a first PoC implementation and not Darktable's exact strip-buffer seam algorithm yet.
-
-`--blend` is applied after inference by blending original CFA with denoised CFA in C++. This must remain separate from ONNX inference so changing blend amount later does not require rerunning the model.
-
-Full-image RawNIND denoise and mask composition now live in `rawlab::pipeline::RawProcessingPipeline`; the CLI remains a proof harness around the core raw-domain pipeline.
+The stable CLI uses `inspect` for raw metadata and `process` for end-to-end
+processing. `process --denoise` runs RawNIND through
+`rawlab::pipeline::RawProcessingPipeline`; `--blend` is applied after inference
+by blending original CFA with denoised CFA in C++.
 
 ## End-To-End CLI Prototype
 
@@ -102,28 +79,8 @@ SAM 2.1 mask generation currently accepts an existing RGB preview PNG:
 
 The preview is resized so its longest side is 1024 pixels, zero-padded, ImageNet-normalized, and encoded once. The decoder receives all positive (`label=1`) and negative (`label=0`) points plus the required SAM padding point (`label=-1`). Encoder embeddings and the previous low-resolution mask are retained by `Sam2Segmenter` so a future GUI can rerun only the decoder as points change. The CLI performs one decoder pass using all supplied points and writes a soft 8-bit grayscale mask at preview dimensions.
 
-The temporary local mask proof command is:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab test-mask-blend input.raw model_bayer.onnx output.dng
-./build/dev/src/rawlab_cli/rawlab test-mask-split input.raw model_bayer.onnx output.dng
-```
-
-It runs the full-image RawNIND PoC, creates a synthetic raw-size horizontal gradient or hard vertical split mask, applies masked CFA blending, and writes a Bayer CFA DNG. Masked blending uses:
-
-```text
-alpha = blend_amount * mask(x, y)
-output = original * (1 - alpha) + processed * alpha
-```
-
-The temporary preview-mask proof command is:
-
-```bash
-./build/dev/src/rawlab_cli/rawlab test-preview-mask-blend input.raw model_bayer.onnx output.dng
-./build/dev/src/rawlab_cli/rawlab test-preview-mask-split input.raw model_bayer.onnx output.dng
-```
-
-It creates a quarter-size synthetic horizontal or hard vertical split mask, maps it back to raw pixels with nearest-neighbor lookup, applies the same CFA masked blend, and writes a Bayer CFA DNG. The split commands are diagnostics: left half should remain original/noisy and center/right should be fully denoised.
+Synthetic mask diagnostics were temporary development commands and are no longer
+part of the shipped CLI. Use `process --mask` for production masked processing.
 
 ## Clipped Highlight Handling
 
