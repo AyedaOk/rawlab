@@ -249,6 +249,15 @@ void ModelDownloader::fetchBytes(const QUrl &url, const std::function<void(QByte
     if(completed->error() != QNetworkReply::NoError)
     {
       const QString message = completed->errorString();
+      if(catalogOnly_ && completed->url().path().endsWith(QStringLiteral("/catalog.json"))
+         && loadCachedCatalog())
+      {
+        completed->deleteLater();
+        emit progressChanged(100);
+        emit statusChanged(tr("Using cached model catalog: %1").arg(message));
+        emit finished();
+        return;
+      }
       completed->deleteLater();
       return fail(tr("Download failed: %1").arg(message));
     }

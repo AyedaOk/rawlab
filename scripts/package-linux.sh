@@ -12,6 +12,15 @@ mkdir -p "$tools"
 cmake --install "$root/build/release" --prefix "$root/AppDir/usr"
 cp "$root/packaging/rawlab.desktop" "$root/AppDir/rawlab.desktop"
 
+qmake_bin="${QMAKE:-qmake6}"
+qt_plugins="$($qmake_bin -query QT_INSTALL_PLUGINS)"
+mkdir -p "$root/AppDir/usr/plugins/tls"
+if [[ ! -d "$qt_plugins/tls" ]]; then
+  echo "Qt TLS plugins not found under $qt_plugins" >&2
+  exit 1
+fi
+cp -a "$qt_plugins/tls/"*.so "$root/AppDir/usr/plugins/tls/"
+
 : "${ONNXRUNTIME_LIB_DIR:?ONNXRUNTIME_LIB_DIR must point to the ONNX Runtime lib directory}"
 mkdir -p "$root/AppDir/usr/lib"
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$root/AppDir/usr/lib/"
