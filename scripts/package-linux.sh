@@ -4,8 +4,11 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:=0.1.0}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/dist"
+tools="${TMPDIR:-/tmp}/rawlab-linuxdeploy"
 rm -rf "$out" "$root/AppDir"
+rm -rf "$tools"
 mkdir -p "$out"
+mkdir -p "$tools"
 cmake --install "$root/build/release" --prefix "$root/AppDir/usr"
 cp "$root/packaging/rawlab.desktop" "$root/AppDir/rawlab.desktop"
 
@@ -13,13 +16,13 @@ cp "$root/packaging/rawlab.desktop" "$root/AppDir/rawlab.desktop"
 mkdir -p "$root/AppDir/usr/lib"
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$root/AppDir/usr/lib/"
 
-curl -L --fail --retry 3 -o "$out/linuxdeploy-x86_64.AppImage" \
+curl -L --fail --retry 3 -o "$tools/linuxdeploy-x86_64.AppImage" \
   https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-curl -L --fail --retry 3 -o "$out/linuxdeploy-plugin-qt-x86_64.AppImage" \
+curl -L --fail --retry 3 -o "$tools/linuxdeploy-plugin-qt-x86_64.AppImage" \
   https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-chmod +x "$out"/*.AppImage
+chmod +x "$tools"/*.AppImage
 
-"$out/linuxdeploy-x86_64.AppImage" --appdir "$root/AppDir" \
+"$tools/linuxdeploy-x86_64.AppImage" --appdir "$root/AppDir" \
   --desktop-file "$root/packaging/rawlab.desktop" \
   --icon-file "$root/packaging/rawlab.png" \
   --plugin qt --output appimage

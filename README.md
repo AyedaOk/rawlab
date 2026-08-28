@@ -1,7 +1,7 @@
 # RawLab
 
 RawLab is a desktop RAW photo preprocessing application developed 
-through “vibe coding”. It keeps Bayer CFAdata intact while applying 
+through “vibe coding”. It keeps Bayer CFA data intact while applying 
 AI denoise and sharpening, then exports a non-demosaiced CFA DNG 
 for use in a RAW editor.
 
