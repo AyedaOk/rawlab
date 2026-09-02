@@ -181,10 +181,13 @@ private:
   void startNextMaskEffect();
   void runDenoisePath(const QString &path);
   void queueModel(const QString &modelId);
+  void queueRecipeProcessing();
+  void queuePendingRecipeSharpening();
   void runSelectedModel();
   void refreshModelRunButton();
   bool processingReady() const;
   void queueSharpen(const QString &modelId);
+  void queueSharpenPath(const QString &denoisePath, SharpenMode mode);
   void runSharpenPath(const QString &denoisePath, SharpenMode mode = SharpenMode::Ai);
   QString modelPath(const QString &modelId) const;
   QString sharpenModelPath() const;
@@ -341,6 +344,7 @@ private:
   QString pendingMetadataPath_;
   QSet<QString> thumbnailJobs_;
   QSet<QString> pendingSharpenPaths_;
+  QSet<QString> pendingRecipeSharpenRequests_;
   QSet<int> pendingMaskEffects_;
   QSet<QString> canvasBusyReasons_;
   QStringList thumbnailQueue_;

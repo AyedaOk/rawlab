@@ -1043,6 +1043,7 @@ void MainWindow::connectUi()
     originalPreview_ = result.preview;
     denoisedCache_.clear();
     sharpenedCache_.clear();
+    pendingRecipeSharpenRequests_.clear();
     modelProviders_.clear();
     segmenter_.reset();
     samNeedsReset_ = true;
@@ -1074,7 +1075,11 @@ void MainWindow::connectUi()
     {
       const auto recipe = recipeStore_.load(recipeSourcePath_, originalPreview_.image.width,
                                             originalPreview_.image.height);
-      if(recipe) applyRecipe(*recipe);
+      if(recipe)
+      {
+        applyRecipe(*recipe);
+        queueRecipeProcessing();
+      }
       else
       {
         showError(tr("Apply settings"),
@@ -1111,13 +1116,14 @@ void MainWindow::connectUi()
       denoisedCache_[result.modelPath] = result.image;
       modelProviders_[result.modelPath] = result.executionProvider;
       statusLabel_->setText(tr("Denoise ready on %1").arg(result.executionProvider));
-       if(pendingSharpenPaths_.remove(result.modelPath))
-       {
+        if(pendingSharpenPaths_.remove(result.modelPath))
+        {
          const SharpenMode mode = selectedLayerId() == globalLayerId ? globalSharpenMode_
            : selectedMaskLayer() ? selectedMaskLayer()->sharpenMode : SharpenMode::Off;
-         runSharpenPath(result.modelPath, mode);
-       }
-      else scheduleComposition();
+          runSharpenPath(result.modelPath, mode);
+        }
+        queuePendingRecipeSharpening();
+        scheduleComposition();
     }
     if(!modelQueue_.isEmpty()) runDenoisePath(modelQueue_.takeFirst());
     refreshModelRunButton();
@@ -1133,6 +1139,7 @@ void MainWindow::connectUi()
     {
       sharpenedCache_[result.cacheKey] = result.image;
       statusLabel_->setText(tr("DeepSharpen cached"));
+      queuePendingRecipeSharpening();
       scheduleComposition();
     }
      if(!sharpenQueue_.isEmpty())
@@ -1952,6 +1959,7 @@ QString MainWindow::modelPath(const QString &modelId) const
 
 bool MainWindow::processingReady() const
 {
+  if(!pendingMaskEffects_.isEmpty()) return false;
   const auto ready = [this](const QString &modelId) {
     const QString path = modelPath(modelId);
     return !path.isEmpty() && denoisedCache_.contains(path);
@@ -1994,6 +2002,57 @@ void MainWindow::queueModel(const QString &modelId)
   if(path == runningModelPath_ || modelQueue_.contains(path)) return;
   if(denoiseWatcher_.isRunning()) { modelQueue_.push_back(path); return; }
   runDenoisePath(path);
+}
+
+void MainWindow::queueRecipeProcessing()
+{
+  if(!source_) return;
+  pendingRecipeSharpenRequests_.clear();
+  QSet<QString> modelIds;
+  if(globalEnabled_)
+  {
+    modelIds.insert(globalModelId_);
+    if(globalSharpenMode_ != SharpenMode::Off)
+      pendingRecipeSharpenRequests_.insert(
+        modelPath(globalModelId_) + QChar{0x1e}
+        + QString::number(static_cast<int>(globalSharpenMode_)));
+  }
+  for(const MaskLayer &layer : layers_)
+  {
+    if(!layer.enabled) continue;
+    modelIds.insert(layer.modelId);
+    if(layer.sharpenMode != SharpenMode::Off)
+      pendingRecipeSharpenRequests_.insert(
+        modelPath(layer.modelId) + QChar{0x1e}
+        + QString::number(static_cast<int>(layer.sharpenMode)));
+  }
+  for(const QString &modelId : modelIds) queueModel(modelId);
+  queuePendingRecipeSharpening();
+  scheduleComposition();
+}
+
+void MainWindow::queuePendingRecipeSharpening()
+{
+  const QStringList requests = pendingRecipeSharpenRequests_.values();
+  for(const QString &request : requests)
+  {
+    const int separator = request.lastIndexOf(QChar{0x1e});
+    if(separator < 0)
+    {
+      pendingRecipeSharpenRequests_.remove(request);
+      continue;
+    }
+    const QString denoisePath = request.left(separator);
+    const SharpenMode mode = static_cast<SharpenMode>(request.mid(separator + 1).toInt());
+    const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
+    if(denoisePath.isEmpty() || sharpenPath.isEmpty()) continue;
+    if(sharpenedCache_.contains(sharpenCacheKey(denoisePath, sharpenPath)))
+    {
+      pendingRecipeSharpenRequests_.remove(request);
+      continue;
+    }
+    queueSharpenPath(denoisePath, mode);
+  }
 }
 
 void MainWindow::runSelectedModel()
@@ -2061,6 +2120,14 @@ void MainWindow::queueSharpen(const QString &modelId)
     : selectedMaskLayer() ? selectedMaskLayer()->sharpenMode : SharpenMode::Off;
   const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
   if(denoisePath.isEmpty() || mode == SharpenMode::Off || sharpenPath.isEmpty()) return;
+  queueSharpenPath(denoisePath, mode);
+}
+
+void MainWindow::queueSharpenPath(const QString &denoisePath, const SharpenMode mode)
+{
+  if(!source_ || denoisePath.isEmpty() || mode == SharpenMode::Off) return;
+  const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
+  if(sharpenPath.isEmpty()) return;
   const auto denoised = denoisedCache_.find(denoisePath);
   if(denoised == denoisedCache_.end()) return;
   const QString key = sharpenCacheKey(denoisePath, sharpenPath);
