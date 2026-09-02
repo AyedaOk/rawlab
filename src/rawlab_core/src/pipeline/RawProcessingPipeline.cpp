@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace rawlab::pipeline {
@@ -125,6 +126,43 @@ float seamWeight(const int pos,
 }
 
 } // namespace
+
+raw::RawImage RawProcessingPipeline::runNormalSharpen(const raw::RawImage &source,
+                                                      const float amount,
+                                                      const ProgressCallback &progress) const
+{
+  if(!source.metadata().cfa.isBayer) throw std::invalid_argument{"normal sharpening requires a Bayer CFA source"};
+  const float strength = std::clamp(amount, 0.0f, 1.0f);
+  std::vector<float> output = source.samples();
+  const int total = source.width() * source.height();
+  int completed = 0;
+  for(int y = 0; y < source.height(); ++y)
+  {
+    for(int x = 0; x < source.width(); ++x)
+    {
+      const float center = source.sample(x, y);
+      float sum = 0.0f;
+      int count = 0;
+      for(const auto &[dx, dy] : {std::pair<int, int>{-2, 0}, {2, 0}, {0, -2}, {0, 2}})
+      {
+        const int nx = x + dx;
+        const int ny = y + dy;
+        if(nx < 0 || ny < 0 || nx >= source.width() || ny >= source.height()) continue;
+        if(raw::colorAt(source.metadata().cfa, nx, ny) != raw::colorAt(source.metadata().cfa, x, y)) continue;
+        sum += source.sample(nx, ny);
+        ++count;
+      }
+      const float average = count == 0 ? center : sum / static_cast<float>(count);
+      const float black = cfaBlackLevel(source, x, y);
+      const float value = std::clamp(center + strength * (center - average),
+                                    black, source.metadata().whiteLevel);
+      output[static_cast<std::size_t>(y) * static_cast<std::size_t>(source.width())
+             + static_cast<std::size_t>(x)] = value;
+      if(progress) progress(++completed, total);
+    }
+  }
+  return raw::RawImage{source.width(), source.height(), std::move(output), source.metadata()};
+}
 
 raw::RawImage RawProcessingPipeline::runRawNindDenoise(const raw::RawImage &source,
                                                        const ai::OnnxSession &session,

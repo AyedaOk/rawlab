@@ -113,6 +113,7 @@ int main(int argc, char **argv)
   layer.blur = 0.025f;
   layer.sharpenEnabled = true;
   layer.sharpenStrength = 0.35f;
+  layer.sharpenMode = SharpenMode::Normal;
   layer.prompts.push_back({0.25f, 0.75f, true});
   layer.strokes.push_back({{{0.1, 0.2}, {0.8, 0.9}}, 0.125f, 0.6f, 1.0f});
   layer.baseMask = rawlab::pipeline::Mask{4, 2, {0.0f, 0.25f, 0.75f, 1.0f,
@@ -128,8 +129,9 @@ int main(int argc, char **argv)
   if(loadedLayer.id != 7 || loadedLayer.prompts.size() != 1 || loadedLayer.strokes.size() != 1) return 1;
   if(std::abs(loadedLayer.feather - 0.075f) > 0.0001f
      || std::abs(loadedLayer.blur - 0.025f) > 0.0001f
-     || !loadedLayer.sharpenEnabled
-     || std::abs(loadedLayer.sharpenStrength - 0.35f) > 0.0001f) return 1;
+      || !loadedLayer.sharpenEnabled
+      || loadedLayer.sharpenMode != SharpenMode::Normal
+      || std::abs(loadedLayer.sharpenStrength - 0.35f) > 0.0001f) return 1;
   if(std::abs(loadedLayer.prompts.front().x - 0.25f) > 0.0001f
      || std::abs(loadedLayer.prompts.front().y - 0.75f) > 0.0001f) return 1;
   if(loadedLayer.baseMask->width() != 2 || loadedLayer.baseMask->height() != 4) return 1;

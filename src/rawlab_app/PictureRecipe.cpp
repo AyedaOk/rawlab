@@ -91,14 +91,17 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
     throw std::invalid_argument{"cannot save an empty picture recipe"};
   }
   QJsonObject root;
-  root[QStringLiteral("version")] = 7;
+   root[QStringLiteral("version")] = 8;
   root[QStringLiteral("previewWidth")] = recipe.previewWidth;
   root[QStringLiteral("previewHeight")] = recipe.previewHeight;
   root[QStringLiteral("globalModelId")] = recipe.globalModelId;
   root[QStringLiteral("globalBlend")] = recipe.globalBlend;
   root[QStringLiteral("globalEnabled")] = recipe.globalEnabled;
   root[QStringLiteral("globalSharpenEnabled")] = recipe.globalSharpenEnabled;
-  root[QStringLiteral("globalSharpenStrength")] = recipe.globalSharpenStrength;
+   root[QStringLiteral("globalSharpenStrength")] = recipe.globalSharpenStrength;
+   const SharpenMode globalMode = recipe.globalSharpenMode == SharpenMode::Off
+     && recipe.globalSharpenEnabled ? SharpenMode::Ai : recipe.globalSharpenMode;
+   root[QStringLiteral("globalSharpenMode")] = static_cast<int>(globalMode);
   root[QStringLiteral("preserveClipped")] = recipe.preserveClipped;
 
   const QFileInfo recipeInfo{pathForSource(sourcePath)};
@@ -139,7 +142,10 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
                         {QStringLiteral("modelId"), layer.modelId},
                         {QStringLiteral("blend"), layer.blend},
                         {QStringLiteral("sharpenEnabled"), layer.sharpenEnabled},
-                        {QStringLiteral("sharpenStrength"), layer.sharpenStrength},
+                         {QStringLiteral("sharpenStrength"), layer.sharpenStrength},
+                         {QStringLiteral("sharpenMode"), static_cast<int>(
+                           layer.sharpenMode == SharpenMode::Off && layer.sharpenEnabled
+                             ? SharpenMode::Ai : layer.sharpenMode)},
                        {QStringLiteral("enabled"), layer.enabled},
                        {QStringLiteral("inverted"), layer.inverted},
                         {QStringLiteral("showMask"), layer.showMask},
@@ -191,6 +197,16 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
   if(!file.commit()) throw std::runtime_error{"failed to commit picture recipe"};
 }
 
+void PictureRecipeStore::remove(const QString &sourcePath) const
+{
+  const QString recipePath = pathForSource(sourcePath);
+  const QFileInfo recipeInfo{recipePath};
+  QFile::remove(recipePath);
+  const QStringList masks = recipeInfo.dir().entryList(
+    {recipeInfo.completeBaseName() + QStringLiteral("-layer-*")}, QDir::Files);
+  for(const QString &mask : masks) recipeInfo.dir().remove(mask);
+}
+
 std::optional<PictureRecipe> PictureRecipeStore::load(
   const QString &sourcePath, const int targetWidth, const int targetHeight) const
 {
@@ -199,7 +215,7 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
   const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
   if(root.isEmpty()) return std::nullopt;
   const int version = root.value(QStringLiteral("version")).toInt(1);
-   if(version > 7) return std::nullopt;
+   if(version > 8) return std::nullopt;
   PictureRecipe recipe;
   recipe.previewWidth = targetWidth;
   recipe.previewHeight = targetHeight;
@@ -208,8 +224,12 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
   recipe.globalEnabled = root.value(QStringLiteral("globalEnabled")).toBool(true);
   recipe.globalSharpenEnabled = version >= 6
     && root.value(QStringLiteral("globalSharpenEnabled")).toBool(false);
-  recipe.globalSharpenStrength = clampUnit(
-    root.value(QStringLiteral("globalSharpenStrength")).toDouble(1.0));
+   recipe.globalSharpenStrength = clampUnit(
+     root.value(QStringLiteral("globalSharpenStrength")).toDouble(1.0));
+   if(version >= 8)
+     recipe.globalSharpenMode = static_cast<SharpenMode>(std::clamp(
+       root.value(QStringLiteral("globalSharpenMode")).toInt(0), 0, 2));
+   else if(recipe.globalSharpenEnabled) recipe.globalSharpenMode = SharpenMode::Ai;
   recipe.preserveClipped = version >= 5
     ? root.value(QStringLiteral("preserveClipped")).toBool(true) : true;
   const QFileInfo recipeInfo{file.fileName()};
@@ -226,6 +246,10 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
       && object.value(QStringLiteral("sharpenEnabled")).toBool(false);
     layer.sharpenStrength = clampUnit(
       object.value(QStringLiteral("sharpenStrength")).toDouble(1.0));
+    if(version >= 8)
+      layer.sharpenMode = static_cast<SharpenMode>(std::clamp(
+        object.value(QStringLiteral("sharpenMode")).toInt(0), 0, 2));
+    else if(layer.sharpenEnabled) layer.sharpenMode = SharpenMode::Ai;
     layer.enabled = object.value(QStringLiteral("enabled")).toBool(true);
     layer.inverted = object.value(QStringLiteral("inverted")).toBool(false);
     layer.showMask = object.value(QStringLiteral("showMask")).toBool(true);

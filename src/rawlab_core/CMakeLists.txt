@@ -4,6 +4,7 @@ add_library(rawlab_core STATIC
   src/ai/Sam2Segmenter.cpp
   src/dng/TiffDngWriter.cpp
   src/image/PngImage.cpp
+  src/image/AmazeDemosaic.cpp
   src/image/RawPreview.cpp
   src/pipeline/Mask.cpp
   src/pipeline/LayerComposition.cpp

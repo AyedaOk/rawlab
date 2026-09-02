@@ -28,6 +28,7 @@
 
 class QAction;
 class QCheckBox;
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -47,8 +48,15 @@ class MainWindow final : public QMainWindow
   Q_OBJECT
 
 public:
-  explicit MainWindow(QWidget *parent = nullptr);
+  explicit MainWindow(const QString &externalInputPath = {},
+                      const QString &externalOutputPath = {},
+                      QWidget *parent = nullptr);
   ~MainWindow() override;
+
+  bool externalExportSucceeded() const { return externalExportSucceeded_; }
+
+protected:
+  void closeEvent(QCloseEvent *event) override;
 
 private:
   enum class MaskCategory { Ai, Gradient, Ellipse };
@@ -75,6 +83,7 @@ private:
     float blend = 1.0f;
     bool sharpenEnabled = false;
     float sharpenStrength = 1.0f;
+    SharpenMode sharpenMode = SharpenMode::Off;
     bool enabled = true;
     bool inverted = false;
     bool showMask = true;
@@ -175,7 +184,7 @@ private:
   void refreshModelRunButton();
   bool processingReady() const;
   void queueSharpen(const QString &modelId);
-  void runSharpenPath(const QString &denoisePath);
+  void runSharpenPath(const QString &denoisePath, SharpenMode mode = SharpenMode::Ai);
   QString modelPath(const QString &modelId) const;
   QString sharpenModelPath() const;
   void refreshModelCombo();
@@ -218,10 +227,9 @@ private:
   QListWidget *layerList_ = nullptr;
   QListWidget *filmstrip_ = nullptr;
   QComboBox *modelCombo_ = nullptr;
-  QPushButton *runModelButton_ = nullptr;
   QSlider *blendSlider_ = nullptr;
   QLabel *blendValueLabel_ = nullptr;
-  QCheckBox *sharpenCheck_ = nullptr;
+  QComboBox *sharpenModeCombo_ = nullptr;
   QWidget *sharpenRow_ = nullptr;
   QLabel *sharpenLabel_ = nullptr;
   QSlider *sharpenSlider_ = nullptr;
@@ -283,6 +291,8 @@ private:
   QProgressDialog *batchProgress_ = nullptr;
 
   QString sourcePath_;
+  QString externalInputPath_;
+  QString externalOutputPath_;
   std::shared_ptr<rawlab::raw::RawImage> source_;
   std::shared_ptr<rawlab::raw::RawImage> composed_;
   rawlab::image::RawPreview originalPreview_;
@@ -297,6 +307,7 @@ private:
   bool globalEnabled_ = true;
   bool globalSharpenEnabled_ = false;
   float globalSharpenStrength_ = 1.0f;
+  SharpenMode globalSharpenMode_ = SharpenMode::Off;
   bool preserveClipped_ = true;
   int nextLayerId_ = 1;
   int editingLayerId_ = 0;
@@ -332,6 +343,8 @@ private:
   QSet<QString> canvasBusyReasons_;
   QStringList thumbnailQueue_;
   int activeThumbnailJobs_ = 0;
+  bool externalExportSucceeded_ = false;
+  QSet<QString> deletedRecipePaths_;
 
   QTimer compositionTimer_;
   QFutureWatcher<LoadResult> loadWatcher_;

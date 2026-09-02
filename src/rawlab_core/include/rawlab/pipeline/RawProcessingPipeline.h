@@ -26,6 +26,9 @@ class RawProcessingPipeline
 public:
   using ProgressCallback = std::function<void(int completed, int total)>;
 
+  raw::RawImage runNormalSharpen(const raw::RawImage &source, float amount,
+                                 const ProgressCallback &progress = {}) const;
+
   raw::RawImage runRawNindDenoise(const raw::RawImage &source,
                                   const ai::OnnxSession &session,
                                   const ProgressCallback &progress = {}) const;

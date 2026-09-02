@@ -26,6 +26,7 @@ struct RawMetadata
   std::optional<double> iso;
   std::optional<double> aperture;
   std::optional<double> exposureTimeSeconds;
+  std::optional<double> exposureBiasEv;
   std::optional<double> focalLengthMm;
   std::optional<double> focalLength35mm;
   std::optional<std::int64_t> captureTimestamp;

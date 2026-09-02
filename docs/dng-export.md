@@ -45,7 +45,7 @@ Document required tags, uncertain tags, and reader compatibility findings here a
 
 The first synthetic DNG was validated with `tiffinfo` and `exiftool`; both identify it as a DNG with `PhotometricInterpretation=CFA` and CFA pattern `[Red,Green][Green,Blue]`.
 
-The first ARW-derived DNG from a Sony `ILCE-7CM2` file was validated with `exiftool`; it reports `PhotometricInterpretation=Color Filter Array`, RGGB CFA pattern, source make/model, active area, black/white levels, normalized `AsShotNeutral`, and `ColorMatrix1`. Capture and safe lens metadata are written through a referenced EXIF IFD when available.
+The first ARW-derived DNG from a Sony `ILCE-7CM2` file was validated with `exiftool`; it reports `PhotometricInterpretation=Color Filter Array`, RGGB CFA pattern, source make/model, active area, black/white levels, normalized `AsShotNeutral`, and `ColorMatrix1`. Capture exposure bias and safe lens metadata are written through a referenced EXIF IFD when available.
 
 ## Known Risk
 

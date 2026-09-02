@@ -1,5 +1,7 @@
 #include "rawlab/image/RawPreview.h"
 
+#include "rawlab/image/AmazeDemosaic.h"
+
 #include "rawlab/raw/RawInspectInfo.h"
 
 #include <algorithm>
@@ -13,6 +15,10 @@
 
 namespace rawlab::image {
 namespace {
+
+// Adapted from darktable's PPG Bayer demosaic (src/iop/demosaicing/ppg.c).
+// Copyright (C) 2010-2026 darktable developers. Distributed under the GPLv3.
+// This preview-only adaptation keeps rawlab's CFA and color-management path.
 
 raw::ActiveArea boundedActiveArea(const raw::RawImage &source)
 {
@@ -43,98 +49,150 @@ float normalizedSample(const raw::RawImage &source, const raw::ActiveArea &area,
   return std::clamp((source.sample(sx, sy) - black) / range, 0.0f, 1.5f);
 }
 
-float interpolateColor(const raw::RawImage &source,
-                       const raw::ActiveArea &area,
-                       const int x,
-                       const int y,
-                       const int wantedColor)
-{
-  if(colorIndex(raw::colorAt(source.metadata().cfa, x, y)) == wantedColor)
-  {
-    return normalizedSample(source, area, x, y);
-  }
+using CameraRgb = std::array<float, 3>;
 
-  for(int radius = 1; radius <= 2; ++radius)
-  {
-    float weightedSum = 0.0f;
-    float weightSum = 0.0f;
-    for(int dy = -radius; dy <= radius; ++dy)
+[[maybe_unused]] std::vector<CameraRgb> demosaicPpg(const raw::RawImage &source,
+                                   const raw::ActiveArea &area)
+{
+  const int width = area.width;
+  const int height = area.height;
+  std::vector<float> input(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+  std::vector<CameraRgb> output(input.size());
+  const auto index = [width](const int x, const int y) {
+    return static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
+           + static_cast<std::size_t>(x);
+  };
+  const auto cfa = [&source, &area](const int x, const int y) {
+    return raw::colorAt(source.metadata().cfa, area.left + x, area.top + y);
+  };
+  for(int y = 0; y < height; ++y)
+    for(int x = 0; x < width; ++x)
+      input[index(x, y)] = normalizedSample(source, area, area.left + x, area.top + y);
+
+  // This is the border pass from Darktable PPG. It makes the later 4/6-star
+  // interpolation safe without inventing a second CFA pattern at the edge.
+  for(int y = 0; y < height; ++y)
+    for(int x = 0; x < width; ++x)
     {
-      for(int dx = -radius; dx <= radius; ++dx)
+      float sum[3] = {};
+      int count[3] = {};
+      for(int dy = -1; dy <= 1; ++dy)
+        for(int dx = -1; dx <= 1; ++dx)
+        {
+          const int nx = x + dx;
+          const int ny = y + dy;
+          if(nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          const int channel = colorIndex(cfa(nx, ny));
+          sum[channel] += input[index(nx, ny)];
+          ++count[channel];
+        }
+      const int own = colorIndex(cfa(x, y));
+      for(int channel = 0; channel < 3; ++channel)
+        output[index(x, y)][static_cast<std::size_t>(channel)] =
+          channel == own ? input[index(x, y)] : (count[channel] ? sum[channel] / count[channel] : 0.0f);
+    }
+
+  // PPG stage 1: edge-directed green at red/blue sites, while preserving the
+  // measured primary channel. The 3-pixel guard is the PPG kernel radius.
+  for(int y = 3; y < height - 3; ++y)
+    for(int x = 3; x < width - 3; ++x)
+    {
+      const int channel = colorIndex(cfa(x, y));
+      if(channel != 0 && channel != 2) continue;
+      const float pc = input[index(x, y)];
+      const auto v = [&](const int dx, const int dy) { return input[index(x + dx, y + dy)]; };
+      const float guessX = (v(-1, 0) + pc + v(1, 0)) * 2.0f - v(-2, 0) - v(2, 0);
+      const float diffX = (std::fabs(v(-2, 0) - pc) + std::fabs(v(2, 0) - pc)
+                          + std::fabs(v(-1, 0) - v(1, 0))) * 3.0f
+                         + (std::fabs(v(-3, 0) - v(-1, 0))
+                            + std::fabs(v(3, 0) - v(1, 0))) * 2.0f;
+      const float guessY = (v(0, -1) + pc + v(0, 1)) * 2.0f - v(0, -2) - v(0, 2);
+      const float diffY = (std::fabs(v(0, -2) - pc) + std::fabs(v(0, 2) - pc)
+                          + std::fabs(v(0, -1) - v(0, 1))) * 3.0f
+                         + (std::fabs(v(0, -3) - v(0, -1))
+                            + std::fabs(v(0, 3) - v(0, 1))) * 2.0f;
+      const bool useY = diffX > diffY;
+      const float guess = (useY ? guessY : guessX) * 0.25f;
+      const float lo = std::min(useY ? v(0, -1) : v(-1, 0), useY ? v(0, 1) : v(1, 0));
+      const float hi = std::max(useY ? v(0, -1) : v(-1, 0), useY ? v(0, 1) : v(1, 0));
+      output[index(x, y)][1] = std::clamp(guess, lo, hi);
+    }
+
+  // PPG stage 2: color-difference interpolation from the completed green
+  // buffer. This is deliberately separate from stage 1; doing it per output
+  // pixel was the source of the old low-resolution color bias.
+  for(int y = 1; y < height - 1; ++y)
+    for(int x = 1; x < width - 1; ++x)
+    {
+      const int channel = colorIndex(cfa(x, y));
+      auto &pixel = output[index(x, y)];
+      if(channel == 1)
       {
-        if(dx == 0 && dy == 0) continue;
-        const int sx = std::clamp(x + dx, area.left, area.left + area.width - 1);
-        const int sy = std::clamp(y + dy, area.top, area.top + area.height - 1);
-        if(colorIndex(raw::colorAt(source.metadata().cfa, sx, sy)) != wantedColor) continue;
-        const float weight = 1.0f / static_cast<float>(std::abs(dx) + std::abs(dy));
-        weightedSum += normalizedSample(source, area, sx, sy) * weight;
-        weightSum += weight;
+        const bool redNext = colorIndex(cfa(x + 1, y)) == 0;
+        const auto &top = output[index(x, y - 1)];
+        const auto &bottom = output[index(x, y + 1)];
+        const auto &left = output[index(x - 1, y)];
+        const auto &right = output[index(x + 1, y)];
+        if(redNext)
+        {
+          pixel[2] = (top[2] + bottom[2] + 2.0f * pixel[1] - top[1] - bottom[1]) * 0.5f;
+          pixel[0] = (left[0] + right[0] + 2.0f * pixel[1] - left[1] - right[1]) * 0.5f;
+        }
+        else
+        {
+          pixel[0] = (top[0] + bottom[0] + 2.0f * pixel[1] - top[1] - bottom[1]) * 0.5f;
+          pixel[2] = (left[2] + right[2] + 2.0f * pixel[1] - left[1] - right[1]) * 0.5f;
+        }
+      }
+      else
+      {
+        const auto &tl = output[index(x - 1, y - 1)];
+        const auto &tr = output[index(x + 1, y - 1)];
+        const auto &bl = output[index(x - 1, y + 1)];
+        const auto &br = output[index(x + 1, y + 1)];
+        const int missing = channel == 0 ? 2 : 0;
+        const float d1 = std::fabs(tl[missing] - br[missing])
+                         + std::fabs(tl[1] - pixel[1]) + std::fabs(br[1] - pixel[1]);
+        const float d2 = std::fabs(tr[missing] - bl[missing])
+                         + std::fabs(tr[1] - pixel[1]) + std::fabs(bl[1] - pixel[1]);
+        const float g1 = tl[missing] + br[missing] + 2.0f * pixel[1] - tl[1] - br[1];
+        const float g2 = tr[missing] + bl[missing] + 2.0f * pixel[1] - tr[1] - bl[1];
+        pixel[static_cast<std::size_t>(missing)] =
+          d1 > d2 ? g2 * 0.5f : d1 < d2 ? g1 * 0.5f : (g1 + g2) * 0.25f;
       }
     }
-    if(weightSum > 0.0f) return weightedSum / weightSum;
-  }
-  return 0.0f;
+  for(auto &pixel : output) for(float &channel : pixel) channel = std::max(0.0f, channel);
+  return output;
 }
 
-std::array<float, 3> highQualityCameraRgb(const raw::RawImage &source,
-                                          const raw::ActiveArea &area,
-                                          const int x, const int y)
+CameraRgb demosaicHalfSize(const raw::RawImage &source,
+                           const raw::ActiveArea &area,
+                           const int x, const int y)
 {
-  const auto sample = [&source, &area, x, y](const int dx, const int dy) {
-    return normalizedSample(source, area, x + dx, y + dy);
-  };
-  const float center = sample(0, 0);
-  const auto greenAtRedOrBlue = [&] {
-    return (4.0f * center
-            + 2.0f * (sample(-1, 0) + sample(1, 0) + sample(0, -1) + sample(0, 1))
-            - sample(-2, 0) - sample(2, 0) - sample(0, -2) - sample(0, 2)) / 8.0f;
-  };
-  const auto oppositeAtRedOrBlue = [&] {
-    return (6.0f * center
-            + 2.0f * (sample(-1, -1) + sample(1, -1) + sample(-1, 1) + sample(1, 1))
-            - 1.5f * (sample(-2, 0) + sample(2, 0) + sample(0, -2) + sample(0, 2))) / 8.0f;
-  };
-  const auto atGreen = [&](const bool horizontal) {
-    const float nearAxis = horizontal
-      ? sample(-1, 0) + sample(1, 0) : sample(0, -1) + sample(0, 1);
-    const float farAxis = horizontal
-      ? sample(-2, 0) + sample(2, 0) : sample(0, -2) + sample(0, 2);
-    const float crossFar = horizontal
-      ? sample(0, -2) + sample(0, 2) : sample(-2, 0) + sample(2, 0);
-    const float diagonals = sample(-1, -1) + sample(1, -1)
-                            + sample(-1, 1) + sample(1, 1);
-    return (5.0f * center + 4.0f * nearAxis - farAxis - diagonals + 0.5f * crossFar) / 8.0f;
-  };
+  int left = x - ((x - area.left) & 1);
+  int top = y - ((y - area.top) & 1);
+  left = std::clamp(left, area.left, area.left + area.width - 2);
+  top = std::clamp(top, area.top, area.top + area.height - 2);
 
-  std::array<float, 3> camera{};
-  const raw::CfaColor color = raw::colorAt(source.metadata().cfa, x, y);
-  if(color == raw::CfaColor::Red)
-  {
-    camera = {center, greenAtRedOrBlue(), oppositeAtRedOrBlue()};
-  }
-  else if(color == raw::CfaColor::Blue)
-  {
-    camera = {oppositeAtRedOrBlue(), greenAtRedOrBlue(), center};
-  }
-  else
-  {
-    const bool redHorizontal = raw::colorAt(source.metadata().cfa, x - 1, y)
-                               == raw::CfaColor::Red;
-    camera = redHorizontal
-      ? std::array<float, 3>{atGreen(true), center, atGreen(false)}
-      : std::array<float, 3>{atGreen(false), center, atGreen(true)};
-  }
-  for(float &channel : camera) channel = std::clamp(channel, 0.0f, 1.5f);
-  return camera;
+  CameraRgb result{};
+  for(int dy = 0; dy < 2; ++dy)
+    for(int dx = 0; dx < 2; ++dx)
+    {
+      const int channel = colorIndex(raw::colorAt(source.metadata().cfa, left + dx, top + dy));
+      result[static_cast<std::size_t>(channel)] +=
+        normalizedSample(source, area, left + dx, top + dy);
+    }
+  result[1] *= 0.5f;
+  return result;
 }
 
 std::array<float, 3> cameraToSrgb(const raw::RawMetadata &metadata,
-                                  std::array<float, 3> camera)
+                                   std::array<float, 3> camera,
+                                   const bool alreadyWhiteBalanced)
 {
-  for(std::size_t i = 0; i < camera.size(); ++i)
-  {
-    camera[i] /= std::max(metadata.asShotNeutral[i], 0.0001f);
-  }
+  if(!alreadyWhiteBalanced)
+    for(std::size_t i = 0; i < camera.size(); ++i)
+      camera[i] /= std::max(metadata.asShotNeutral[i], 0.0001f);
 
   const auto &m = metadata.cameraToSrgb;
   std::array<float, 3> rgb{
@@ -154,6 +212,8 @@ std::array<float, 3> cameraToSrgb(const raw::RawMetadata &metadata,
 
 std::uint8_t displayByte(float value)
 {
+  // Roll values above white gently below display white instead of hard-clipping.
+  if(value > 1.0f) value = 1.0f - 0.08f * (value - 1.0f) / value;
   value = std::clamp(value, 0.0f, 1.0f);
   value = value <= 0.0031308f ? 12.92f * value
                              : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
@@ -236,50 +296,47 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
   const int width = std::max(1, static_cast<int>(std::lround(orientedWidth * scale)));
   const int height = std::max(1, static_cast<int>(std::lround(orientedHeight * scale)));
   const PreviewGeometry geometry{area, width, height, source.metadata().flip};
-
+  const std::vector<CameraRgb> amaze = quality == PreviewQuality::High
+    ? demosaicAmaze(source, area) : std::vector<CameraRgb>{};
   std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(width)
                                            * static_cast<std::size_t>(height));
-  constexpr int maximumWorkers = 4;
-  std::array<std::array<int, 1024>, maximumWorkers> workerHistograms{};
   parallelRows(height, linear.size(), [&](const int begin, const int end, const int worker) {
-    auto &histogram = workerHistograms[static_cast<std::size_t>(worker)];
+    (void)worker;
     for(int y = begin; y < end; ++y)
     {
       for(int x = 0; x < width; ++x)
       {
-        const auto [rawXf, rawYf] = geometry.previewToRaw(
-          static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f);
-        const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
-        const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
-        const std::array<float, 3> camera = quality == PreviewQuality::High
-          ? highQualityCameraRgb(source, area, rawX, rawY)
-          : std::array<float, 3>{interpolateColor(source, area, rawX, rawY, 0),
-                                 interpolateColor(source, area, rawX, rawY, 1),
-                                 interpolateColor(source, area, rawX, rawY, 2)};
-        const std::array<float, 3> rgb = cameraToSrgb(source.metadata(), camera);
+        const int samplesPerAxis = quality == PreviewQuality::High && scale < 0.75f ? 2 : 1;
+        std::array<float, 3> rgb{};
+        for(int sampleY = 0; sampleY < samplesPerAxis; ++sampleY)
+        {
+          for(int sampleX = 0; sampleX < samplesPerAxis; ++sampleX)
+          {
+            const float offsetX = (static_cast<float>(sampleX) + 0.5f)
+                                  / static_cast<float>(samplesPerAxis);
+            const float offsetY = (static_cast<float>(sampleY) + 0.5f)
+                                  / static_cast<float>(samplesPerAxis);
+            const auto [rawXf, rawYf] = geometry.previewToRaw(
+              static_cast<float>(x) + offsetX, static_cast<float>(y) + offsetY);
+            const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
+            const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
+            const std::array<float, 3> camera = quality == PreviewQuality::High
+              ? amaze[static_cast<std::size_t>(rawY - area.top) * static_cast<std::size_t>(area.width)
+                      + static_cast<std::size_t>(rawX - area.left)]
+              : demosaicHalfSize(source, area, rawX, rawY);
+            const std::array<float, 3> sample = cameraToSrgb(
+              source.metadata(), camera, quality == PreviewQuality::High);
+            for(std::size_t channel = 0; channel < rgb.size(); ++channel)
+              rgb[channel] += sample[channel];
+          }
+        }
+        const float sampleScale = 1.0f / static_cast<float>(samplesPerAxis * samplesPerAxis);
+        for(float &channel : rgb) channel *= sampleScale;
         linear[static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
                + static_cast<std::size_t>(x)] = rgb;
-        const float peak = std::clamp(std::max({rgb[0], rgb[1], rgb[2]}), 0.0f, 1.0f);
-        ++histogram[static_cast<std::size_t>(std::lround(peak * 1023.0f))];
       }
     }
   });
-  std::array<int, 1024> histogram{};
-  for(const auto &workerHistogram : workerHistograms)
-  {
-    for(std::size_t bin = 0; bin < histogram.size(); ++bin) histogram[bin] += workerHistogram[bin];
-  }
-
-  const std::size_t target = linear.size() * 99 / 100;
-  std::size_t count = 0;
-  int percentileBin = 1023;
-  for(int i = 0; i < 1024; ++i)
-  {
-    count += static_cast<std::size_t>(histogram[static_cast<std::size_t>(i)]);
-    if(count >= target) { percentileBin = i; break; }
-  }
-  const float percentile = static_cast<float>(percentileBin) / 1023.0f;
-  const float gain = percentile > 0.01f ? std::clamp(0.9f / percentile, 0.25f, 8.0f) : 1.0f;
 
   RgbImage preview;
   preview.width = width;
@@ -292,9 +349,22 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
       {
         const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
                               + static_cast<std::size_t>(x);
-        preview.pixels[3 * i] = displayByte(linear[i][0] * gain);
-        preview.pixels[3 * i + 1] = displayByte(linear[i][1] * gain);
-        preview.pixels[3 * i + 2] = displayByte(linear[i][2] * gain);
+        std::array<float, 3> rgb = linear[i];
+        if(x > 0 && y > 0 && x + 1 < width && y + 1 < height)
+        {
+          const auto luma = [&linear, width](const int px, const int py) {
+            const auto &pixel = linear[static_cast<std::size_t>(py) * static_cast<std::size_t>(width)
+                                       + static_cast<std::size_t>(px)];
+            return 0.2126f * pixel[0] + 0.7152f * pixel[1] + 0.0722f * pixel[2];
+          };
+          const float detail = luma(x, y) - (luma(x - 1, y) + luma(x + 1, y)
+                                            + luma(x, y - 1) + luma(x, y + 1)) * 0.25f;
+          const float amount = quality == PreviewQuality::High ? 0.08f : 0.04f;
+          for(float &channel : rgb) channel = std::max(0.0f, channel + amount * detail);
+        }
+        preview.pixels[3 * i] = displayByte(rgb[0]);
+        preview.pixels[3 * i + 1] = displayByte(rgb[1]);
+        preview.pixels[3 * i + 2] = displayByte(rgb[2]);
       }
     }
   });

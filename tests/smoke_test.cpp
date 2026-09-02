@@ -2,10 +2,12 @@
 #include "rawlab/ai/RawForgeAdapter.h"
 #include "rawlab/dng/DngWriter.h"
 #include "rawlab/image/PngImage.h"
+#include "rawlab/image/AmazeDemosaic.h"
 #include "rawlab/image/RawPreview.h"
 #include "rawlab/pipeline/Mask.h"
 #include "rawlab/pipeline/LayerComposition.h"
 #include "rawlab/pipeline/MaskedBlend.h"
+#include "rawlab/pipeline/RawProcessingPipeline.h"
 #include "rawlab/raw/BayerProcessing.h"
 #include "rawlab/raw/RawImage.h"
 #include "rawlab/raw/RawInspectInfo.h"
@@ -49,6 +51,26 @@ rawlab::raw::CfaPattern makeBggr()
   return pattern;
 }
 
+rawlab::raw::CfaPattern makeGrbg()
+{
+  rawlab::raw::CfaPattern pattern = makeRggb();
+  pattern.cells[0][0] = rawlab::raw::CfaColor::Green;
+  pattern.cells[0][1] = rawlab::raw::CfaColor::Red;
+  pattern.cells[1][0] = rawlab::raw::CfaColor::Blue;
+  pattern.cells[1][1] = rawlab::raw::CfaColor::Green;
+  return pattern;
+}
+
+rawlab::raw::CfaPattern makeGbrg()
+{
+  rawlab::raw::CfaPattern pattern = makeRggb();
+  pattern.cells[0][0] = rawlab::raw::CfaColor::Green;
+  pattern.cells[0][1] = rawlab::raw::CfaColor::Blue;
+  pattern.cells[1][0] = rawlab::raw::CfaColor::Red;
+  pattern.cells[1][1] = rawlab::raw::CfaColor::Green;
+  return pattern;
+}
+
 rawlab::raw::RawImage makeSyntheticRggbImage()
 {
   rawlab::raw::RawMetadata metadata;
@@ -59,6 +81,7 @@ rawlab::raw::RawImage makeSyntheticRggbImage()
   metadata.iso = 640.0;
   metadata.aperture = 2.8;
   metadata.exposureTimeSeconds = 1.0 / 125.0;
+  metadata.exposureBiasEv = -0.3;
   metadata.focalLengthMm = 50.0;
   metadata.focalLength35mm = 75.0;
   metadata.captureTimestamp = 1'700'000'000;
@@ -80,6 +103,32 @@ rawlab::raw::RawImage makeSyntheticRggbImage()
     },
     metadata,
   };
+}
+
+rawlab::raw::RawImage makeFlatPreviewImage(
+  const rawlab::raw::CfaPattern &pattern,
+  const std::array<float, 3> asShotNeutral = { 1.0f, 1.0f, 1.0f })
+{
+  rawlab::raw::RawMetadata metadata;
+  metadata.cfa = pattern;
+  metadata.activeArea = { 0, 0, 16, 16 };
+  metadata.blackLevel = { 10.0f, 12.0f, 14.0f, 16.0f };
+  metadata.whiteLevel = 1024.0f;
+  metadata.asShotNeutral = asShotNeutral;
+  metadata.cameraToSrgb = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+  std::vector<float> samples(16 * 16);
+  for(int y = 0; y < 16; ++y)
+    for(int x = 0; x < 16; ++x)
+    {
+      const int site = rawlab::raw::siteIndex(x, y);
+      const float black = metadata.blackLevel[static_cast<std::size_t>(site)];
+       const int channel = pattern.cells[y & 1][x & 1] == rawlab::raw::CfaColor::Red ? 0
+         : pattern.cells[y & 1][x & 1] == rawlab::raw::CfaColor::Green ? 1 : 2;
+       samples[static_cast<std::size_t>(y * 16 + x)] =
+         black + 0.4f * asShotNeutral[static_cast<std::size_t>(channel)]
+                  * (metadata.whiteLevel - black);
+    }
+  return rawlab::raw::RawImage{16, 16, std::move(samples), metadata};
 }
 
 } // namespace
@@ -106,6 +155,29 @@ int main()
   if(!nearlyEqual(rawlab::raw::denormalizeRawSample(0.5f, 2.0f, 10.0f), 6.0f)) return 1;
 
   const rawlab::raw::RawImage image = makeSyntheticRggbImage();
+  // A flat, neutral field must stay neutral after low-resolution Fast PPG.
+  // Per-site black levels make this also exercise normalization before CFA interpolation.
+  for(const rawlab::raw::CfaPattern pattern : { rggb, bggr })
+  {
+    const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(
+      makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::Fast);
+    if(preview.image.width != 8 || preview.image.height != 8) return 1;
+    for(std::size_t i = 0; i < preview.image.pixels.size(); i += 3)
+    {
+      const std::uint8_t red = preview.image.pixels[i];
+      const std::uint8_t green = preview.image.pixels[i + 1];
+      const std::uint8_t blue = preview.image.pixels[i + 2];
+      if(red < 165 || green < 165 || blue < 165) return 1;
+      if(std::abs(static_cast<int>(red) - static_cast<int>(green)) > 1
+         || std::abs(static_cast<int>(green) - static_cast<int>(blue)) > 1) return 1;
+    }
+  }
+  const rawlab::raw::RawImage unchanged =
+    rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(image, 0.0f);
+  if(unchanged.samples() != image.samples()) return 1;
+  const rawlab::raw::RawImage sharpened =
+    rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(image, 1.0f);
+  if(nearlyEqual(sharpened.sample(1, 1), image.sample(1, 1))) return 1;
   const std::filesystem::path exifDngPath = std::filesystem::temp_directory_path()
                                                   / "rawlab-exif-test.dng";
   rawlab::dng::TiffDngWriter{}.writeCfaDng(exifDngPath, image);
@@ -128,6 +200,7 @@ int main()
   }
   std::uint8_t *exifVersion = nullptr;
   float exposureTime = 0.0f;
+  float exposureBias = 0.0f;
   float aperture = 0.0f;
   float focalLength = 0.0f;
   std::uint16_t isoCount = 0;
@@ -140,8 +213,10 @@ int main()
   char *lensSerial = nullptr;
   float *lensSpecification = nullptr;
   const bool hasExifMetadata = TIFFGetField(exifTiff, EXIFTAG_EXIFVERSION, &exifVersion) == 1
-                               && TIFFGetField(exifTiff, EXIFTAG_EXPOSURETIME,
-                                               &exposureTime) == 1
+                                && TIFFGetField(exifTiff, EXIFTAG_EXPOSURETIME,
+                                                &exposureTime) == 1
+                                && TIFFGetField(exifTiff, EXIFTAG_EXPOSUREBIASVALUE,
+                                                &exposureBias) == 1
                                && TIFFGetField(exifTiff, EXIFTAG_FNUMBER, &aperture) == 1
                                && TIFFGetField(exifTiff, EXIFTAG_ISOSPEEDRATINGS,
                                                &isoCount, &iso) == 1
@@ -163,8 +238,9 @@ int main()
                                  && bodySerial && lensMake && lensModel && lensSerial
                                  && lensSpecification
                                  && std::string_view{reinterpret_cast<char *>(exifVersion), 4}
-                                      == "0232"
-                                 && nearlyEqual(exposureTime, 1.0f / 125.0f)
+                                  == "0232"
+                                  && nearlyEqual(exposureTime, 1.0f / 125.0f)
+                                  && nearlyEqual(exposureBias, -0.3f)
                                  && nearlyEqual(aperture, 2.8f) && isoCount == 1 && iso[0] == 640
                                  && std::string_view{captureTime}.size() == 19
                                  && nearlyEqual(focalLength, 50.0f) && focalLength35mm == 75
@@ -367,11 +443,60 @@ int main()
   if(preview.image.pixels.size() != 12) return 1;
   const rawlab::image::RawPreview fastPreview = rawlab::image::renderRawPreview(
     image, 4, rawlab::image::PreviewQuality::Fast);
+  const rawlab::image::RawPreview defaultPreview = rawlab::image::renderRawPreview(image, 4);
+  if(defaultPreview.image.pixels != fastPreview.image.pixels) return 1;
   const rawlab::image::RawPreview highQualityPreview = rawlab::image::renderRawPreview(
     image, 4, rawlab::image::PreviewQuality::High);
   if(highQualityPreview.image.width != fastPreview.image.width
      || highQualityPreview.image.height != fastPreview.image.height
-     || highQualityPreview.image.pixels == fastPreview.image.pixels) return 1;
+      || highQualityPreview.image.pixels == fastPreview.image.pixels) return 1;
+  const rawlab::raw::RawImage bggrPreviewSource = makeFlatPreviewImage(bggr);
+  const std::vector<std::array<float, 3>> amazePixels = rawlab::image::demosaicAmaze(
+    bggrPreviewSource, bggrPreviewSource.metadata().activeArea);
+  if(amazePixels.size() != 16U * 16U) return 1;
+  for(const auto &pixel : amazePixels)
+    for(const float channel : pixel)
+      if(!std::isfinite(channel) || std::fabs(channel - 0.4f) > 0.01f) return 1;
+  // AMaZE must produce neutral camera RGB before the color matrix even when
+  // the source field requires a non-neutral camera white balance.
+  const std::array<float, 3> nonNeutralWb{ 0.55f, 1.0f, 0.32f };
+  const rawlab::raw::CfaPattern grbg = makeGrbg();
+  const rawlab::raw::CfaPattern gbrg = makeGbrg();
+  for(const rawlab::raw::CfaPattern pattern : { rggb, bggr, grbg, gbrg })
+  {
+    const rawlab::raw::RawImage flat = makeFlatPreviewImage(pattern, nonNeutralWb);
+    const std::vector<std::array<float, 3>> pixels = rawlab::image::demosaicAmaze(
+      flat, flat.metadata().activeArea);
+    for(const auto &pixel : pixels)
+      for(const float channel : pixel)
+        if(!std::isfinite(channel) || std::fabs(channel - 0.4f) > 0.01f) return 1;
+
+    const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(
+      flat, 8, rawlab::image::PreviewQuality::High);
+    for(std::size_t i = 0; i < preview.image.pixels.size(); i += 3)
+    {
+      const int red = preview.image.pixels[i];
+      const int green = preview.image.pixels[i + 1];
+      const int blue = preview.image.pixels[i + 2];
+      if(std::abs(red - green) > 1 || std::abs(green - blue) > 1) return 1;
+    }
+  }
+  // A row-varying field exercises AMaZE's complete eight-row filter encoding.
+  rawlab::raw::RawMetadata rowPatternMetadata = image.metadata();
+  rowPatternMetadata.activeArea = { 0, 0, 32, 32 };
+  std::vector<float> rowPatternSamples(32 * 32, 0.0f);
+  for(int y = 0; y < 32; ++y)
+    for(int x = 0; x < 32; ++x)
+    {
+      const int channel = rawlab::raw::colorAt(rggb, x, y) == rawlab::raw::CfaColor::Red ? 0
+        : rawlab::raw::colorAt(rggb, x, y) == rawlab::raw::CfaColor::Green ? 1 : 2;
+      rowPatternSamples[static_cast<std::size_t>(y * 32 + x)] =
+        4.0f + static_cast<float>(channel) + 0.01f * static_cast<float>(y);
+    }
+  const rawlab::raw::RawImage rowPattern{32, 32, std::move(rowPatternSamples), rowPatternMetadata};
+  const auto rowPatternPixels = rawlab::image::demosaicAmaze(rowPattern, rowPatternMetadata.activeArea);
+  for(const auto &pixel : rowPatternPixels)
+    if(!std::isfinite(pixel[0]) || !std::isfinite(pixel[1]) || !std::isfinite(pixel[2])) return 1;
   rawlab::raw::RawMetadata largePreviewMetadata = image.metadata();
   largePreviewMetadata.activeArea = {0, 0, 16, 8};
   largePreviewMetadata.whiteLevel = 128.0f;

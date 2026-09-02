@@ -32,6 +32,13 @@ set_tests_properties(rawlab_app_smoke PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+add_test(NAME rawlab_app_external_requires_output
+  COMMAND $<TARGET_FILE:rawlab_app> --external-edit unused.raw)
+set_tests_properties(rawlab_app_external_requires_output PROPERTIES
+  WILL_FAIL TRUE
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 add_executable(rawlab_app_state_test
   app_state_test.cpp
   ${CMAKE_SOURCE_DIR}/src/rawlab_app/ApplicationSettings.cpp

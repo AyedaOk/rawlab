@@ -108,8 +108,9 @@ std::optional<std::array<char, 20>> exifDateTime(const std::optional<std::int64_
 bool hasExifMetadata(const raw::RawMetadata &metadata)
 {
   return validPositive(metadata.iso) || validPositive(metadata.aperture)
-         || validPositive(metadata.exposureTimeSeconds) || validPositive(metadata.focalLengthMm)
-         || validPositive(metadata.focalLength35mm) || exifDateTime(metadata.captureTimestamp)
+          || validPositive(metadata.exposureTimeSeconds) || validPositive(metadata.focalLengthMm)
+          || (metadata.exposureBiasEv && std::isfinite(*metadata.exposureBiasEv))
+          || validPositive(metadata.focalLength35mm) || exifDateTime(metadata.captureTimestamp)
          || !metadata.bodySerial.empty() || !metadata.lensMake.empty()
          || !metadata.lensModel.empty() || !metadata.lensSerial.empty()
          || validLensSpecification(metadata.lensSpecification);
@@ -132,6 +133,12 @@ toff_t writeExifDirectory(TIFF *tif, const raw::RawMetadata &metadata)
      && TIFFSetField(tif, EXIFTAG_EXPOSURETIME, *metadata.exposureTimeSeconds) != 1)
   {
     throw std::runtime_error{"Could not write DNG exposure time"};
+  }
+  if(metadata.exposureBiasEv && std::isfinite(*metadata.exposureBiasEv)
+     && TIFFSetField(tif, EXIFTAG_EXPOSUREBIASVALUE,
+                     static_cast<float>(*metadata.exposureBiasEv)) != 1)
+  {
+    throw std::runtime_error{"Could not write DNG exposure bias"};
   }
   if(validPositive(metadata.aperture)
      && TIFFSetField(tif, EXIFTAG_FNUMBER, *metadata.aperture) != 1)

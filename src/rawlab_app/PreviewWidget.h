@@ -2,6 +2,8 @@
 
 #include <QImage>
 #include <QPointF>
+#include <QPushButton>
+#include <QString>
 #include <QTimer>
 #include <QVector>
 #include <QWidget>
@@ -31,6 +33,7 @@ public:
   void setPromptMode(PromptMode mode);
   void setBrushRadius(float radius);
   void setProcessing(bool processing);
+  void setUpdateAvailable(bool available, QString message = {});
   bool hasImage() const { return !image_.isNull(); }
   double imageScale() const;
   void fitImage();
@@ -45,6 +48,7 @@ signals:
   void brushStrokeFinished();
   void shapeRequested(QPointF from, QPointF to, bool gradient, bool foreground);
   void zoomChanged(double imageScale);
+  void updateRequested();
 
 protected:
   void paintEvent(QPaintEvent *event) override;
@@ -61,6 +65,7 @@ private:
   bool dividerHit(const QPointF &position) const;
   void updateDivider(const QPointF &position);
   void updateCursor(const QPointF &position);
+  QRectF updateBannerRect() const;
 
   QImage image_;
   QImage beforeImage_;
@@ -73,6 +78,8 @@ private:
   QPointF panStart_;
   bool dragging_ = false;
   bool brushing_ = false;
+  QVector<QPointF> activeBrushPoints_;
+  bool activeBrushPaint_ = true;
   bool comparisonEnabled_ = false;
   bool comparisonReversed_ = false;
   bool dividerDragging_ = false;
@@ -85,5 +92,8 @@ private:
   float brushRadius_ = 30.0f;
   QTimer processingTimer_;
   bool processing_ = false;
+  bool updateAvailable_ = false;
+  QString updateMessage_;
+  QPushButton *updateButton_ = nullptr;
   int processingAngle_ = 0;
 };

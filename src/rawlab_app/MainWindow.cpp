@@ -21,8 +21,10 @@
 #include <QActionGroup>
 #include <QBuffer>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -64,7 +66,16 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <system_error>
 #include <utility>
+
+#if defined(__linux__)
+#include <cerrno>
+#include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -103,6 +114,11 @@ QString activeSamPath(const ApplicationSettingsData &settings, const QString &fi
 QString sharpenCacheKey(const QString &denoisePath, const QString &sharpenPath)
 {
   return denoisePath + QChar{0x1f} + sharpenPath;
+}
+
+QString normalSharpenPath()
+{
+  return QStringLiteral("<normal-sharpen>");
 }
 
 rawlab::ai::OnnxSessionOptions onnxOptions(const ApplicationSettingsData &settings)
@@ -175,10 +191,35 @@ QIcon themedIcon(QWidget *widget, const QString &name, const QStyle::StandardPix
   return themed.isNull() ? widget->style()->standardIcon(fallback) : themed;
 }
 
+void publishNoReplace(const std::filesystem::path &temporary,
+                      const std::filesystem::path &destination)
+{
+#if defined(__linux__) && defined(SYS_renameat2)
+  if(::syscall(SYS_renameat2, AT_FDCWD, temporary.c_str(), AT_FDCWD,
+               destination.c_str(), RENAME_NOREPLACE) == 0) return;
+  if(errno != ENOSYS && errno != EINVAL)
+  {
+    throw std::runtime_error{"could not publish DNG without overwriting: "
+                             + std::error_code{errno, std::generic_category()}.message()};
+  }
+#endif
+  std::error_code publishError;
+  std::filesystem::create_hard_link(temporary, destination, publishError);
+  if(publishError)
+  {
+    throw std::runtime_error{"could not publish DNG without overwriting: "
+                             + publishError.message()};
+  }
+  std::filesystem::remove(temporary);
+}
+
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent)
-  : QMainWindow{parent}, catalogDownloader_{this}
+MainWindow::MainWindow(const QString &externalInputPath,
+                       const QString &externalOutputPath,
+                       QWidget *parent)
+  : QMainWindow{parent}, externalInputPath_{externalInputPath},
+    externalOutputPath_{externalOutputPath}, catalogDownloader_{this}
 {
   appSettings_ = settingsStore_.load();
   if(!appSettings_.denoiseModels.isEmpty()) globalModelId_ = appSettings_.denoiseModels.front().id;
@@ -188,6 +229,7 @@ MainWindow::MainWindow(QWidget *parent)
   refreshLibrary();
   showLibrary();
   catalogDownloader_.refreshCatalog();
+  if(!externalInputPath_.isEmpty()) openRawPath(externalInputPath_);
 }
 
 MainWindow::~MainWindow()
@@ -204,6 +246,17 @@ MainWindow::~MainWindow()
   exportWatcher_.future().waitForFinished();
   metadataWatcher_.future().waitForFinished();
   maskEffectWatcher_.future().waitForFinished();
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+  if(!externalOutputPath_.isEmpty() && exportWatcher_.isRunning())
+  {
+    statusLabel_->setText(tr("Wait for the DNG export to finish"));
+    event->ignore();
+    return;
+  }
+  QMainWindow::closeEvent(event);
 }
 
 void MainWindow::buildUi()
@@ -237,7 +290,12 @@ void MainWindow::buildUi()
     "QCheckBox::indicator:checked{background:#4e91b9;border-color:#72b6dc;}"
     "QSlider::groove:horizontal{height:4px;border-radius:2px;background:#424a55;}"
     "QSlider::sub-page:horizontal{background:#4f8eaf;border-radius:2px;}"
-    "QSlider::handle:horizontal{width:15px;margin:-6px 0;background:#83c3e5;border:2px solid #1b1e24;border-radius:8px;}"
+     "QSlider::handle:horizontal{width:15px;margin:-6px 0;background:#83c3e5;border:2px solid #1b1e24;border-radius:8px;}"
+     "QSlider::groove:horizontal:disabled{background:#2b3037;}"
+     "QSlider::sub-page:horizontal:disabled{background:#343a42;}"
+     "QSlider::handle:horizontal:disabled{background:#59616c;border-color:#1b1e24;}"
+     "QCheckBox:disabled{color:#707782;}"
+     "QCheckBox::indicator:disabled{background:#242930;border-color:#424a55;}"
     "QProgressBar{background:#15181d;border:1px solid #39414b;border-radius:6px;text-align:center;}"
     "QProgressBar::chunk{background:#4f8eaf;border-radius:5px;}"
     "QStatusBar{background:#15181d;color:#9da6b2;}"
@@ -319,7 +377,7 @@ void MainWindow::buildUi()
                                          QStyle::SP_FileDialogContentsView));
   highQualityAction_->setToolTip(tr("Use high-quality preview rendering"));
   highQualityAction_->setCheckable(true);
-  highQualityAction_->setChecked(true);
+   highQualityAction_->setChecked(false);
   beforeAfterAction_ = previewToolbar_->addAction(tr("Before / After"));
   beforeAfterAction_->setIcon(themedIcon(this, QStringLiteral("view-split-left-right"), QStyle::SP_FileDialogContentsView));
   beforeAfterAction_->setCheckable(true);
@@ -390,19 +448,13 @@ void MainWindow::buildUi()
   layerButtons->addWidget(deleteLayerButton_);
   panelLayout->addLayout(layerButtons);
 
-  auto *settingsGroup = new QGroupBox{tr("Selected Layer"), panel};
+  auto *settingsGroup = new QGroupBox{tr("Denoise && Sharpen"), panel};
   auto *settingsLayout = new QFormLayout{settingsGroup};
   auto *modelRow = new QWidget{settingsGroup};
   auto *modelLayout = new QHBoxLayout{modelRow};
   modelLayout->setContentsMargins(0, 0, 0, 0);
   modelCombo_ = new QComboBox{modelRow};
-  runModelButton_ = new QPushButton{tr("Run"), modelRow};
-  runModelButton_->setObjectName(QStringLiteral("runModelButton"));
-  runModelButton_->setIcon(themedIcon(this, QStringLiteral("media-playback-start"), QStyle::SP_MediaPlay));
-  runModelButton_->setToolTip(tr("Run the selected denoise model"));
-  runModelButton_->setMinimumWidth(96);
   modelLayout->addWidget(modelCombo_, 1);
-  modelLayout->addWidget(runModelButton_);
   settingsLayout->addRow(tr("Model"), modelRow);
 
   auto *blendRow = new QWidget{settingsGroup};
@@ -417,8 +469,11 @@ void MainWindow::buildUi()
   blendLayout->addWidget(blendValueLabel_);
   settingsLayout->addRow(tr("Blend"), blendRow);
 
-  sharpenCheck_ = new QCheckBox{tr("DeepSharpen"), settingsGroup};
-  settingsLayout->addRow(QString{}, sharpenCheck_);
+  sharpenModeCombo_ = new QComboBox{settingsGroup};
+  sharpenModeCombo_->addItems({tr("Off"), tr("Normal"), tr("AI")});
+  sharpenModeCombo_->setCurrentIndex(static_cast<int>(SharpenMode::Off));
+  sharpenModeCombo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  settingsLayout->addRow(tr("Sharpening"), sharpenModeCombo_);
   sharpenRow_ = new QWidget{settingsGroup};
   sharpenRow_->setObjectName(QStringLiteral("sharpenStrengthRow"));
   auto *sharpenLayout = new QHBoxLayout{sharpenRow_};
@@ -430,16 +485,22 @@ void MainWindow::buildUi()
   sharpenValueLabel_->setMinimumWidth(42);
   sharpenLayout->addWidget(sharpenSlider_, 1);
   sharpenLayout->addWidget(sharpenValueLabel_);
-  sharpenLabel_ = new QLabel{tr("Sharpness"), settingsGroup};
+  sharpenLabel_ = new QLabel{tr("Strength"), settingsGroup};
   sharpenLabel_->setObjectName(QStringLiteral("sharpenStrengthLabel"));
   settingsLayout->addRow(sharpenLabel_, sharpenRow_);
 
-  const auto addRadiusControl = [settingsGroup, settingsLayout](const QString &name,
-                                                                QWidget *&row,
-                                                                QLabel *&rowLabel,
-                                                                QSlider *&slider,
-                                                                QLabel *&valueLabel) {
-    row = new QWidget{settingsGroup};
+  clippedCheck_ = new QCheckBox{tr("Preserve clipped highlights"), settingsGroup};
+  settingsLayout->addRow(clippedCheck_);
+  panelLayout->addWidget(settingsGroup);
+
+  auto *maskingGroup = new QGroupBox{tr("Masking"), panel};
+  auto *maskingLayout = new QVBoxLayout{maskingGroup};
+  const auto addRadiusControl = [maskingGroup, maskingLayout](const QString &name,
+                                                               QWidget *&row,
+                                                               QLabel *&rowLabel,
+                                                               QSlider *&slider,
+                                                               QLabel *&valueLabel) {
+    row = new QWidget{maskingGroup};
     auto *layout = new QHBoxLayout{row};
     layout->setContentsMargins(0, 0, 0, 0);
     slider = new QSlider{Qt::Horizontal, row};
@@ -448,24 +509,25 @@ void MainWindow::buildUi()
     valueLabel->setMinimumWidth(52);
     layout->addWidget(slider, 1);
     layout->addWidget(valueLabel);
-    rowLabel = new QLabel{name, settingsGroup};
-    settingsLayout->addRow(rowLabel, row);
+    rowLabel = new QLabel{name, maskingGroup};
+    auto *rowLayout = new QHBoxLayout;
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->addWidget(rowLabel);
+    rowLayout->addWidget(row, 1);
+    maskingLayout->addLayout(rowLayout);
   };
-  addRadiusControl(tr("Feather"), featherRow_, featherLabel_,
-                   featherSlider_, featherValueLabel_);
+  addRadiusControl(tr("Feather"), featherRow_, featherLabel_, featherSlider_, featherValueLabel_);
   addRadiusControl(tr("Blur"), blurRow_, blurLabel_, blurSlider_, blurValueLabel_);
-
-  invertCheck_ = new QCheckBox{tr("Invert mask"), settingsGroup};
-  showMaskCheck_ = new QCheckBox{tr("Show mask"), settingsGroup};
-  clippedCheck_ = new QCheckBox{tr("Preserve clipped highlights"), settingsGroup};
-  settingsLayout->addRow(QString{}, invertCheck_);
-  settingsLayout->addRow(QString{}, showMaskCheck_);
-  settingsLayout->addRow(QString{}, clippedCheck_);
-  editMaskButton_ = new QPushButton{tr("Edit Mask"), settingsGroup};
+  invertCheck_ = new QCheckBox{tr("Invert mask"), maskingGroup};
+  showMaskCheck_ = new QCheckBox{tr("Show mask"), maskingGroup};
+  editMaskButton_ = new QPushButton{tr("Edit Mask"), maskingGroup};
+  editMaskButton_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
   editMaskButton_->setIcon(themedIcon(this, QStringLiteral("draw-brush"), QStyle::SP_DialogApplyButton));
   editMaskButton_->setToolTip(tr("Edit the selected mask"));
-  settingsLayout->addRow(editMaskButton_);
-  panelLayout->addWidget(settingsGroup);
+  maskingLayout->addWidget(invertCheck_);
+  maskingLayout->addWidget(showMaskCheck_);
+  maskingLayout->addWidget(editMaskButton_);
+  panelLayout->addWidget(maskingGroup);
 
   auto *exportGroup = new QGroupBox{tr("Export"), panel};
   auto *exportLayout = new QVBoxLayout{exportGroup};
@@ -655,6 +717,15 @@ void MainWindow::connectUi()
     openRawPath(paths.front());
   });
   connect(libraryPage_, &LibraryPage::removeRequested, this, [this](const QStringList &paths) {
+    const QString currentPath = PictureLibraryStore::normalizedPath(sourcePath_);
+    for(const QString &path : paths)
+      if(PictureLibraryStore::normalizedPath(path) == currentPath) saveCurrentRecipe();
+    for(const QString &path : paths)
+    {
+      const QString normalized = PictureLibraryStore::normalizedPath(path);
+      deletedRecipePaths_.insert(normalized);
+      recipeStore_.remove(path);
+    }
     libraryStore_.removeFiles(paths);
     refreshLibrary();
   });
@@ -670,7 +741,7 @@ void MainWindow::connectUi()
     if(id == globalLayerId)
     {
       globalEnabled_ = enabled;
-      if(enabled && globalSharpenEnabled_) queueSharpen(globalModelId_);
+      if(enabled && globalSharpenMode_ != SharpenMode::Off) queueSharpen(globalModelId_);
     }
     else
     {
@@ -696,9 +767,15 @@ void MainWindow::connectUi()
   });
   connect(editMaskButton_, &QPushButton::clicked, this, &MainWindow::beginMaskEdit);
   connect(modelCombo_, &QComboBox::currentIndexChanged, this, [this](const int index) {
-    if(index >= 0) refreshModelRunButton();
+    if(index < 0) return;
+    const QString id = modelCombo_->itemData(index).toString();
+    if(selectedLayerId() == globalLayerId) globalModelId_ = id;
+    else if(MaskLayer *layer = selectedMaskLayer()) layer->modelId = id;
+    compositionValid_ = false;
+    beforeAfterAction_->setChecked(false);
+    refreshModelRunButton();
   });
-  connect(runModelButton_, &QPushButton::clicked, this, &MainWindow::runSelectedModel);
+  connect(previewWidget_, &PreviewWidget::updateRequested, this, &MainWindow::runSelectedModel);
   connect(beforeAfterAction_, &QAction::toggled,
           previewWidget_, &PreviewWidget::setComparisonEnabled);
   connect(beforeAfterAction_, &QAction::toggled, this, [this](const bool enabled) {
@@ -712,15 +789,14 @@ void MainWindow::connectUi()
     else if(MaskLayer *layer = selectedMaskLayer()) layer->blend = static_cast<float>(value) / 100.0f;
     scheduleComposition();
   });
-  connect(sharpenCheck_, &QCheckBox::toggled, this, [this](const bool checked) {
+  connect(sharpenModeCombo_, &QComboBox::currentIndexChanged, this, [this](const int index) {
+    const SharpenMode mode = static_cast<SharpenMode>(std::clamp(index, 0, 2));
     const bool global = selectedLayerId() == globalLayerId;
-    if(global) globalSharpenEnabled_ = checked;
-    else if(MaskLayer *layer = selectedMaskLayer()) layer->sharpenEnabled = checked;
-    if(checked)
+    if(global) { globalSharpenMode_ = mode; globalSharpenEnabled_ = mode != SharpenMode::Off; }
+    else if(MaskLayer *layer = selectedMaskLayer())
     {
-      const QString modelId = global ? globalModelId_
-                                     : selectedMaskLayer() ? selectedMaskLayer()->modelId : QString{};
-      queueSharpen(modelId);
+      layer->sharpenMode = mode;
+      layer->sharpenEnabled = mode != SharpenMode::Off;
     }
     refreshLayerControls();
     scheduleComposition();
@@ -930,28 +1006,19 @@ void MainWindow::connectUi()
              if(!category.mask)
                category.mask = rawlab::pipeline::filledMask(originalPreview_.image.width,
                                                              originalPreview_.image.height);
-             category.mask->paintSegment(static_cast<float>(point.x()), static_cast<float>(point.y()),
-                                       static_cast<float>(point.x()), static_cast<float>(point.y()),
-                                       stroke.radius, stroke.hardness, stroke.value);
-             rebuildLayerMask(*layer);
-            refreshOverlay();
+             refreshOverlay();
           });
   connect(previewWidget_, &PreviewWidget::brushStrokeContinued, this,
-             [this](const QPointF from, const QPointF to) {
+              [this](const QPointF, const QPointF to) {
              MaskLayer *layer = selectedMaskLayer();
              if(!layer || layer->id != editingLayerId_) return;
              auto &category = layer->categories[static_cast<std::size_t>(maskCategoryIndex())];
              if(category.brushStrokes.empty() || !category.mask) return;
              MaskLayer::BrushStroke &stroke = category.brushStrokes.back();
-            stroke.points.push_back(to);
-             category.mask->paintSegment(static_cast<float>(from.x()), static_cast<float>(from.y()),
-                                      static_cast<float>(to.x()), static_cast<float>(to.y()),
-                                      stroke.radius, stroke.hardness, stroke.value);
-             rebuildLayerMask(*layer);
-            refreshOverlay();
-          });
+             stroke.points.push_back(to);
+           });
   connect(previewWidget_, &PreviewWidget::brushStrokeFinished, this, [this] {
-    if(MaskLayer *layer = selectedMaskLayer()) requestMaskEffects(*layer);
+    if(MaskLayer *layer = selectedMaskLayer()) rebuildLayerMask(*layer);
   });
 
   connect(&loadWatcher_, &QFutureWatcher<LoadResult>::finished, this, [this] {
@@ -985,6 +1052,7 @@ void MainWindow::connectUi()
     globalBlend_ = 1.0f;
     globalEnabled_ = true;
     globalSharpenEnabled_ = false;
+    globalSharpenMode_ = SharpenMode::Off;
     globalSharpenStrength_ = 1.0f;
     preserveClipped_ = true;
     compositionValid_ = false;
@@ -1027,7 +1095,12 @@ void MainWindow::connectUi()
       denoisedCache_[result.modelPath] = result.image;
       modelProviders_[result.modelPath] = result.executionProvider;
       statusLabel_->setText(tr("Denoise ready on %1").arg(result.executionProvider));
-      if(pendingSharpenPaths_.remove(result.modelPath)) runSharpenPath(result.modelPath);
+       if(pendingSharpenPaths_.remove(result.modelPath))
+       {
+         const SharpenMode mode = selectedLayerId() == globalLayerId ? globalSharpenMode_
+           : selectedMaskLayer() ? selectedMaskLayer()->sharpenMode : SharpenMode::Off;
+         runSharpenPath(result.modelPath, mode);
+       }
       else scheduleComposition();
     }
     if(!modelQueue_.isEmpty()) runDenoisePath(modelQueue_.takeFirst());
@@ -1046,7 +1119,14 @@ void MainWindow::connectUi()
       statusLabel_->setText(tr("DeepSharpen cached"));
       scheduleComposition();
     }
-    if(!sharpenQueue_.isEmpty()) runSharpenPath(sharpenQueue_.takeFirst());
+     if(!sharpenQueue_.isEmpty())
+     {
+       const QString queued = sharpenQueue_.takeFirst();
+       const int separator = queued.lastIndexOf(QChar{0x1e});
+       runSharpenPath(separator < 0 ? queued : queued.left(separator),
+                      separator < 0 ? SharpenMode::Ai
+                                    : static_cast<SharpenMode>(queued.mid(separator + 1).toInt()));
+     }
     refreshModelRunButton();
   });
 
@@ -1058,10 +1138,11 @@ void MainWindow::connectUi()
     {
       composed_ = result.image;
       compositionValid_ = processingReady();
-      currentPreviewImage_ = toQImage(result.preview.image);
-      previewWidget_->setImage(currentPreviewImage_);
-      refreshOverlay();
-      statusLabel_->setText(tr("Preview updated"));
+       currentPreviewImage_ = toQImage(result.preview.image);
+       previewWidget_->setImage(currentPreviewImage_);
+       refreshOverlay();
+       refreshModelRunButton();
+       statusLabel_->setText(tr("Preview updated"));
       refreshActionState();
     }
     if(result.generation == documentGeneration_
@@ -1108,7 +1189,15 @@ void MainWindow::connectUi()
     const ExportResult result = exportWatcher_.result();
     setBusy(QString{}, false);
     if(!result.error.isEmpty()) showError(tr("Export DNG"), result.error);
-    else statusLabel_->setText(tr("DNG export complete"));
+    else
+    {
+      statusLabel_->setText(tr("DNG export complete"));
+      if(!externalOutputPath_.isEmpty())
+      {
+        externalExportSucceeded_ = true;
+        QCoreApplication::exit(0);
+      }
+    }
   });
 
   connect(&batchWatcher_, &QFutureWatcher<BatchResult>::finished, this, [this] {
@@ -1209,6 +1298,7 @@ bool MainWindow::openRawPath(const QString &path)
     return false;
   }
   saveCurrentRecipe();
+  deletedRecipePaths_.remove(PictureLibraryStore::normalizedPath(path));
   batchAction_->setEnabled(false);
   thumbnailQueue_.removeAll(path);
   compositionTimer_.stop();
@@ -1249,16 +1339,32 @@ void MainWindow::exportDng()
   if(!composed_ || loadWatcher_.isRunning() || denoiseWatcher_.isRunning() || sharpenWatcher_.isRunning()
      || composeWatcher_.isRunning() || samWatcher_.isRunning() || exportWatcher_.isRunning()
      || batchWatcher_.isRunning() || !canvasBusyReasons_.isEmpty()) return;
-  const QString suggested = sourcePath_.isEmpty()
-    ? QStringLiteral("output.dng")
-    : QFileInfo{sourcePath_}.absolutePath() + QLatin1Char('/')
-        + QFileInfo{sourcePath_}.completeBaseName() + QStringLiteral("-rawlab.dng");
-  const QString path = QFileDialog::getSaveFileName(this, tr("Export Bayer CFA DNG"), suggested,
-                                                     tr("Digital Negative (*.dng)"));
+  QString path = externalOutputPath_;
+  if(path.isEmpty())
+  {
+    const QString suggested = sourcePath_.isEmpty()
+      ? QStringLiteral("output.dng")
+      : QFileInfo{sourcePath_}.absolutePath() + QLatin1Char('/')
+          + QFileInfo{sourcePath_}.completeBaseName() + QStringLiteral("-rawlab.dng");
+    path = QFileDialog::getSaveFileName(this, tr("Export Bayer CFA DNG"), suggested,
+                                        tr("Digital Negative (*.dng)"));
+  }
   if(path.isEmpty()) return;
   if(PictureLibraryStore::normalizedPath(path) == PictureLibraryStore::normalizedPath(sourcePath_))
   {
     showError(tr("Export DNG"), tr("The export path cannot replace the source image."));
+    return;
+  }
+  if(!externalInputPath_.isEmpty()
+     && PictureLibraryStore::normalizedPath(sourcePath_)
+          != PictureLibraryStore::normalizedPath(externalInputPath_))
+  {
+    showError(tr("Export DNG"), tr("Return to the image opened by Darktable before exporting."));
+    return;
+  }
+  if(!externalOutputPath_.isEmpty() && QFileInfo::exists(path))
+  {
+    showError(tr("Export DNG"), tr("The integration output already exists."));
     return;
   }
   const auto image = composed_;
@@ -1270,17 +1376,19 @@ void MainWindow::exportDng()
     return;
   }
   setBusy(tr("Exporting DNG..."), true);
-  exportWatcher_.setFuture(QtConcurrent::run([path, image, previews = std::move(previews)] {
+  const bool noClobber = !externalOutputPath_.isEmpty();
+  exportWatcher_.setFuture(QtConcurrent::run([path, image, previews = std::move(previews), noClobber] {
     ExportResult result;
     const std::filesystem::path destination{path.toStdString()};
     std::filesystem::path temporary = destination;
-    temporary += ".rawlab-tmp";
+    temporary += ".rawlab-" + QUuid::createUuid().toString(QUuid::Id128).toStdString();
     try
     {
       std::error_code error;
       std::filesystem::remove(temporary, error);
       rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary, *image, &previews);
-      std::filesystem::rename(temporary, destination);
+      if(noClobber) publishNoReplace(temporary, destination);
+      else std::filesystem::rename(temporary, destination);
     }
     catch(const std::exception &e)
     {
@@ -1401,15 +1509,30 @@ void MainWindow::exportSelectedBatch()
             denoised[modelPath] = std::make_shared<rawlab::raw::RawImage>(std::move(image));
           }
 
-          std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> sharpened;
-          if(!settings.sharpenModels.isEmpty())
-          {
-            QSet<QString> sharpenPaths;
-            if(targetRecipe.globalEnabled && targetRecipe.globalSharpenEnabled)
-              sharpenPaths.insert(modelPathForId(targetRecipe.globalModelId));
-            for(const PictureRecipeLayer &layer : targetRecipe.layers)
-              if(layer.enabled && layer.sharpenEnabled) sharpenPaths.insert(modelPathForId(layer.modelId));
-            if(!sharpenPaths.isEmpty())
+           std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> sharpened;
+           const QString aiSharpenPath = settings.sharpenModels.isEmpty()
+             ? QString{} : settings.sharpenModels.front().path;
+           {
+             QSet<QString> normalPaths;
+             QSet<QString> sharpenPaths;
+             if(targetRecipe.globalEnabled && targetRecipe.globalSharpenMode == SharpenMode::Normal)
+               normalPaths.insert(modelPathForId(targetRecipe.globalModelId));
+             else if(targetRecipe.globalEnabled && targetRecipe.globalSharpenMode == SharpenMode::Ai)
+               sharpenPaths.insert(modelPathForId(targetRecipe.globalModelId));
+             for(const PictureRecipeLayer &layer : targetRecipe.layers)
+             {
+               if(!layer.enabled || layer.sharpenMode == SharpenMode::Off) continue;
+               (layer.sharpenMode == SharpenMode::Normal ? normalPaths : sharpenPaths)
+                 .insert(modelPathForId(layer.modelId));
+             }
+             rawlab::pipeline::RawProcessingPipeline pipeline;
+             for(const QString &denoisePath : normalPaths)
+             {
+               const auto input = denoised.find(denoisePath);
+               if(input != denoised.end()) sharpened[sharpenCacheKey(denoisePath, normalSharpenPath())] =
+                 std::make_shared<rawlab::raw::RawImage>(pipeline.runNormalSharpen(*input->second, 1.0f));
+             }
+             if(!sharpenPaths.isEmpty() && !aiSharpenPath.isEmpty())
             {
               rawlab::ai::OnnxSession sharpenSession{
                 std::filesystem::path{settings.sharpenModels.front().path.toStdString()},
@@ -1418,13 +1541,13 @@ void MainWindow::exportSelectedBatch()
               {
                 const auto input = denoised.find(denoisePath);
                 if(input == denoised.end()) continue;
-                sharpened[denoisePath] = std::make_shared<rawlab::raw::RawImage>(
+                sharpened[sharpenCacheKey(denoisePath, aiSharpenPath)] = std::make_shared<rawlab::raw::RawImage>(
                   rawlab::ai::RawForgeAdapter{}.run(*input->second, sharpenSession,
                     static_cast<float>(source.metadata().iso.value_or(100.0)), false,
                     [cancelled](int, int) {
                       if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
                     }));
-              }
+           }
             }
           }
 
@@ -1433,9 +1556,10 @@ void MainWindow::exportSelectedBatch()
           std::optional<rawlab::raw::RawImage> preservedGlobal;
           std::optional<rawlab::raw::RawImage> sharpenMixedGlobal;
           const rawlab::raw::RawImage *globalImage = global == denoised.end() ? nullptr : global->second.get();
-          if(globalImage && targetRecipe.globalSharpenEnabled)
+           if(globalImage && targetRecipe.globalSharpenMode != SharpenMode::Off)
           {
-            const auto sharpenedIt = sharpened.find(globalPath);
+             const auto sharpenedIt = sharpened.find(sharpenCacheKey(globalPath,
+                targetRecipe.globalSharpenMode == SharpenMode::Normal ? normalSharpenPath() : aiSharpenPath));
             if(sharpenedIt != sharpened.end())
             {
               sharpenMixedGlobal = rawlab::raw::blendWithOriginal(
@@ -1460,9 +1584,10 @@ void MainWindow::exportSelectedBatch()
             const auto denoisedIt = denoised.find(modelPathForId(it->modelId));
             if(denoisedIt == denoised.end()) continue;
             const rawlab::raw::RawImage *localImage = denoisedIt->second.get();
-            if(it->sharpenEnabled)
-            {
-              const auto sharpenedIt = sharpened.find(modelPathForId(it->modelId));
+           if(it->sharpenMode != SharpenMode::Off)
+           {
+             const auto sharpenedIt = sharpened.find(sharpenCacheKey(modelPathForId(it->modelId),
+                it->sharpenMode == SharpenMode::Normal ? normalSharpenPath() : aiSharpenPath));
               if(sharpenedIt != sharpened.end())
               {
                 sharpenMixedLocals.push_back(rawlab::raw::blendWithOriginal(
@@ -1607,12 +1732,26 @@ void MainWindow::refreshMaskCategoryTools()
   const bool ai = maskCategory_ == MaskCategory::Ai;
   const bool gradient = maskCategory_ == MaskCategory::Gradient;
   const bool ellipse = maskCategory_ == MaskCategory::Ellipse;
+  const QList<QAction *> toolActions{positiveAction_, negativeAction_, brushPaintAction_, brushEraseAction_,
+                                     gradientAddAction_, gradientSubtractAction_, ellipseAddAction_, ellipseSubtractAction_};
+  for(QAction *action : toolActions) maskToolbar_->removeAction(action);
+  QAction *anchor = nullptr;
+  for(QAction *action : maskToolbar_->actions())
+    if(maskToolbar_->widgetForAction(action) == brushSizeSlider_) { anchor = action; break; }
+  const QList<QAction *> ordered = ai
+    ? QList<QAction *>{positiveAction_, negativeAction_, brushPaintAction_, brushEraseAction_}
+    : gradient
+      ? QList<QAction *>{gradientAddAction_, gradientSubtractAction_, brushPaintAction_, brushEraseAction_}
+      : QList<QAction *>{ellipseAddAction_, ellipseSubtractAction_, brushPaintAction_, brushEraseAction_};
+  for(QAction *action : ordered) maskToolbar_->insertAction(anchor, action);
   positiveAction_->setVisible(ai);
   negativeAction_->setVisible(ai);
   gradientAddAction_->setVisible(gradient);
   gradientSubtractAction_->setVisible(gradient);
   ellipseAddAction_->setVisible(ellipse);
   ellipseSubtractAction_->setVisible(ellipse);
+  brushPaintAction_->setVisible(true);
+  brushEraseAction_->setVisible(true);
 }
 
 int MainWindow::maskCategoryIndex() const
@@ -1797,9 +1936,10 @@ bool MainWindow::processingReady() const
     return !path.isEmpty() && denoisedCache_.contains(path);
   };
   if(globalEnabled_ && !ready(globalModelId_)) return false;
-  if(globalEnabled_ && globalSharpenEnabled_)
+  if(globalEnabled_ && globalSharpenMode_ != SharpenMode::Off)
   {
-    const QString sharpenPath = sharpenModelPath();
+    const QString sharpenPath = globalSharpenMode_ == SharpenMode::Normal
+      ? normalSharpenPath() : sharpenModelPath();
     const QString denoisePath = modelPath(globalModelId_);
     if(sharpenPath.isEmpty()
        || !sharpenedCache_.contains(sharpenCacheKey(denoisePath, sharpenPath))) return false;
@@ -1808,9 +1948,10 @@ bool MainWindow::processingReady() const
   {
     if(!layer.enabled) continue;
     if(!ready(layer.modelId)) return false;
-    if(layer.sharpenEnabled)
+    if(layer.sharpenMode != SharpenMode::Off)
     {
-      const QString sharpenPath = sharpenModelPath();
+      const QString sharpenPath = layer.sharpenMode == SharpenMode::Normal
+        ? normalSharpenPath() : sharpenModelPath();
       const QString denoisePath = modelPath(layer.modelId);
       if(sharpenPath.isEmpty()
          || !sharpenedCache_.contains(sharpenCacheKey(denoisePath, sharpenPath))) return false;
@@ -1849,17 +1990,18 @@ void MainWindow::runSelectedModel()
   if(denoisedCache_.contains(path))
   {
     const MaskLayer *layer = selectedMaskLayer();
-    const bool needsSharpen = (selectedLayerId() == globalLayerId
-      ? globalSharpenEnabled_ : layer && layer->sharpenEnabled)
-      && !sharpenModelPath().isEmpty()
-      && !sharpenedCache_.contains(sharpenCacheKey(path, sharpenModelPath()));
+     const SharpenMode mode = selectedLayerId() == globalLayerId
+       ? globalSharpenMode_ : layer ? layer->sharpenMode : SharpenMode::Off;
+     const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
+     const bool needsSharpen = mode != SharpenMode::Off && !sharpenPath.isEmpty()
+       && !sharpenedCache_.contains(sharpenCacheKey(path, sharpenPath));
     if(needsSharpen) queueSharpen(id);
     else scheduleComposition();
   }
   else
   {
-    if((selectedLayerId() == globalLayerId && globalSharpenEnabled_)
-       || (selectedMaskLayer() && selectedMaskLayer()->sharpenEnabled))
+     if((selectedLayerId() == globalLayerId && globalSharpenMode_ != SharpenMode::Off)
+        || (selectedMaskLayer() && selectedMaskLayer()->sharpenMode != SharpenMode::Off))
       pendingSharpenPaths_.insert(path);
     queueModel(id);
   }
@@ -1868,51 +2010,20 @@ void MainWindow::runSelectedModel()
 
 void MainWindow::refreshModelRunButton()
 {
-  if(!runModelButton_ || !modelCombo_) return;
+  if(!modelCombo_ || !previewWidget_) return;
   const QString selectedId = modelCombo_->currentData().toString();
-  const QString appliedId = selectedLayerId() == globalLayerId
-    ? globalModelId_ : selectedMaskLayer() ? selectedMaskLayer()->modelId : QString{};
   const QString path = modelPath(selectedId);
-  QString text = tr("Run");
-  bool enabled = source_ && !path.isEmpty();
-  if(path == runningModelPath_)
+  bool update = source_ && !path.isEmpty() && !denoisedCache_.contains(path);
+  const MaskLayer *layer = selectedMaskLayer();
+  const SharpenMode mode = selectedLayerId() == globalLayerId
+    ? globalSharpenMode_ : layer ? layer->sharpenMode : SharpenMode::Off;
+  if(!update && mode != SharpenMode::Off)
   {
-    text = denoiseProgressPercent_ > 0 ? tr("Running %1%").arg(denoiseProgressPercent_)
-                                      : tr("Running...");
-    enabled = false;
+    const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
+    update = !sharpenPath.isEmpty()
+      && !sharpenedCache_.contains(sharpenCacheKey(path, sharpenPath));
   }
-  else if(modelQueue_.contains(path))
-  {
-    text = tr("Queued");
-    enabled = false;
-  }
-  else if(path == failedModelPath_) text = tr("Retry");
-  else if(selectedId == appliedId && denoisedCache_.contains(path))
-  {
-    const MaskLayer *layer = selectedMaskLayer();
-    if(layer && layer->sharpenEnabled && !sharpenModelPath().isEmpty())
-    {
-      const QString key = sharpenCacheKey(path, sharpenModelPath());
-      if(runningSharpenKey_ == key) { text = tr("Sharpening..."); enabled = false; }
-      else if(!sharpenedCache_.contains(key)) text = tr("Run");
-      else
-      {
-        const auto provider = modelProviders_.find(path);
-        text = provider == modelProviders_.end() ? tr("Applied")
-                                                 : tr("Applied (%1)").arg(provider->second);
-        enabled = false;
-      }
-    }
-    else
-    {
-      const auto provider = modelProviders_.find(path);
-      text = provider == modelProviders_.end() ? tr("Applied")
-                                               : tr("Applied (%1)").arg(provider->second);
-      enabled = false;
-    }
-  }
-  runModelButton_->setText(text);
-  runModelButton_->setEnabled(enabled);
+  previewWidget_->setUpdateAvailable(update, tr("Preview needs updating"));
 }
 
 QString MainWindow::sharpenModelPath() const
@@ -1924,20 +2035,24 @@ void MainWindow::queueSharpen(const QString &modelId)
 {
   if(!source_) return;
   const QString denoisePath = modelPath(modelId);
-  const QString sharpenPath = sharpenModelPath();
-  if(denoisePath.isEmpty() || sharpenPath.isEmpty()) return;
+  const bool global = selectedLayerId() == globalLayerId;
+  const SharpenMode mode = global ? globalSharpenMode_
+    : selectedMaskLayer() ? selectedMaskLayer()->sharpenMode : SharpenMode::Off;
+  const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
+  if(denoisePath.isEmpty() || mode == SharpenMode::Off || sharpenPath.isEmpty()) return;
   const auto denoised = denoisedCache_.find(denoisePath);
   if(denoised == denoisedCache_.end()) return;
   const QString key = sharpenCacheKey(denoisePath, sharpenPath);
   if(sharpenedCache_.contains(key)) { scheduleComposition(); return; }
-  if(runningSharpenKey_ == key || sharpenQueue_.contains(denoisePath)) return;
-  if(sharpenWatcher_.isRunning()) { sharpenQueue_.push_back(denoisePath); return; }
-  runSharpenPath(denoisePath);
+  const QString queued = denoisePath + QChar{0x1e} + QString::number(static_cast<int>(mode));
+  if(runningSharpenKey_ == key || sharpenQueue_.contains(queued)) return;
+  if(sharpenWatcher_.isRunning()) { sharpenQueue_.push_back(queued); return; }
+  runSharpenPath(denoisePath, mode);
 }
 
-void MainWindow::runSharpenPath(const QString &denoisePath)
+void MainWindow::runSharpenPath(const QString &denoisePath, const SharpenMode mode)
 {
-  const QString sharpenPath = sharpenModelPath();
+  const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
   const auto denoised = denoisedCache_.find(denoisePath);
   if(sharpenPath.isEmpty() || denoised == denoisedCache_.end() || sharpenWatcher_.isRunning()) return;
   const QString key = sharpenCacheKey(denoisePath, sharpenPath);
@@ -1947,16 +2062,23 @@ void MainWindow::runSharpenPath(const QString &denoisePath)
   const auto execution = onnxOptions(appSettings_);
   const float iso = source_ && source_->metadata().iso
     ? static_cast<float>(*source_->metadata().iso) : 100.0f;
-  setBusy(tr("Running DeepSharpen..."), true);
+  setBusy(mode == SharpenMode::Normal ? tr("Running sharpening...") : tr("Running DeepSharpen..."), true);
   setCanvasBusy(QStringLiteral("sharpen"), true);
   progressBar_->setRange(0, 0);
-  sharpenWatcher_.setFuture(QtConcurrent::run([this, input, sharpenPath, key, iso, execution] {
+  sharpenWatcher_.setFuture(QtConcurrent::run([this, input, sharpenPath, key, iso, execution, mode] {
     SharpenResult result;
     result.cacheKey = key;
     try
     {
-      rawlab::ai::OnnxSession session{std::filesystem::path{sharpenPath.toStdString()}, execution};
-      result.image = std::make_shared<rawlab::raw::RawImage>(rawlab::ai::RawForgeAdapter{}.run(
+      if(mode == SharpenMode::Normal)
+      {
+        result.image = std::make_shared<rawlab::raw::RawImage>(
+          rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*input, 1.0f));
+      }
+      else
+      {
+        rawlab::ai::OnnxSession session{std::filesystem::path{sharpenPath.toStdString()}, execution};
+        result.image = std::make_shared<rawlab::raw::RawImage>(rawlab::ai::RawForgeAdapter{}.run(
         *input, session, iso, false, [this](const int completed, const int total) {
           QMetaObject::invokeMethod(this, [this, completed, total] {
             progressBar_->setRange(0, total);
@@ -1964,6 +2086,7 @@ void MainWindow::runSharpenPath(const QString &denoisePath)
             statusLabel_->setText(tr("DeepSharpen tile %1 of %2").arg(completed).arg(total));
           }, Qt::QueuedConnection);
         }));
+      }
     }
     catch(const std::exception &e) { result.error = QString::fromUtf8(e.what()); }
     return result;
@@ -2033,12 +2156,7 @@ void MainWindow::refreshModelCombo()
     modelCombo_->addItem(model.name, model.id);
     modelCombo_->setItemData(modelCombo_->count() - 1, model.path, Qt::ToolTipRole);
   }
-  int index = modelCombo_->findData(selectedId);
-  if(index < 0 && !selectedId.isEmpty())
-  {
-    modelCombo_->addItem(tr("Missing model"), selectedId);
-    index = modelCombo_->count() - 1;
-  }
+  const int index = modelCombo_->findData(selectedId);
   modelCombo_->setCurrentIndex(index);
   refreshModelRunButton();
 }
@@ -2318,6 +2436,7 @@ PictureRecipe MainWindow::currentRecipe()
   recipe.globalEnabled = globalEnabled_;
   recipe.globalSharpenEnabled = globalSharpenEnabled_;
   recipe.globalSharpenStrength = globalSharpenStrength_;
+  recipe.globalSharpenMode = globalSharpenMode_;
   recipe.preserveClipped = preserveClipped_;
   const float width = static_cast<float>(std::max(1, recipe.previewWidth));
   const float height = static_cast<float>(std::max(1, recipe.previewHeight));
@@ -2331,6 +2450,7 @@ PictureRecipe MainWindow::currentRecipe()
     saved.blend = layer.blend;
     saved.sharpenEnabled = layer.sharpenEnabled;
     saved.sharpenStrength = layer.sharpenStrength;
+    saved.sharpenMode = layer.sharpenMode;
     saved.enabled = layer.enabled;
     saved.inverted = layer.inverted;
     saved.showMask = layer.showMask;
@@ -2377,6 +2497,7 @@ PictureRecipe MainWindow::currentRecipe()
 void MainWindow::saveCurrentRecipe()
 {
   if(sourcePath_.isEmpty() || !source_) return;
+  if(deletedRecipePaths_.contains(PictureLibraryStore::normalizedPath(sourcePath_))) return;
   try { recipeStore_.save(sourcePath_, currentRecipe()); }
   catch(const std::exception &) {}
 }
@@ -2402,6 +2523,7 @@ void MainWindow::applyRecipe(const PictureRecipe &recipe)
   globalEnabled_ = recipe.globalEnabled;
   globalSharpenEnabled_ = recipe.globalSharpenEnabled;
   globalSharpenStrength_ = recipe.globalSharpenStrength;
+  globalSharpenMode_ = recipe.globalSharpenMode;
   preserveClipped_ = recipe.preserveClipped;
   layerList_->item(0)->setData(ProcessingEnabledRole, globalEnabled_);
   const float width = static_cast<float>(std::max(1, originalPreview_.image.width));
@@ -2417,6 +2539,7 @@ void MainWindow::applyRecipe(const PictureRecipe &recipe)
     layer.blend = saved.blend;
     layer.sharpenEnabled = saved.sharpenEnabled;
     layer.sharpenStrength = saved.sharpenStrength;
+    layer.sharpenMode = saved.sharpenMode;
     layer.enabled = saved.enabled;
     layer.inverted = saved.inverted;
     layer.showMask = saved.showMask;
@@ -2489,6 +2612,11 @@ void MainWindow::startComposition()
 {
   if(!source_) return;
   if(composeWatcher_.isRunning()) { compositionPending_ = true; return; }
+  if(!processingReady())
+  {
+    refreshModelRunButton();
+    return;
+  }
   syncLayerOrder();
   const int generation = documentGeneration_;
   const int revision = compositionRevision_;
@@ -2498,11 +2626,11 @@ void MainWindow::startComposition()
   const auto layers = layers_;
   const auto models = appSettings_.denoiseModels;
   const QString sharpenPath = sharpenModelPath();
+  const SharpenMode globalSharpenMode = globalSharpenMode_;
   const auto geometry = originalPreview_.geometry;
   const QString globalModelId = globalModelId_;
   const float globalBlend = globalBlend_;
   const bool globalEnabled = globalEnabled_;
-  const bool globalSharpenEnabled = globalSharpenEnabled_;
   const float globalSharpenStrength = globalSharpenStrength_;
   const bool preserveClipped = preserveClipped_;
   const auto quality = highQualityAction_->isChecked()
@@ -2511,8 +2639,9 @@ void MainWindow::startComposition()
   setCanvasBusy(QStringLiteral("compose"), true);
 
   composeWatcher_.setFuture(QtConcurrent::run(
-    [generation, revision, source, cache, sharpenCache, layers, models, sharpenPath, geometry,
-     globalModelId, globalBlend, globalEnabled, globalSharpenEnabled, globalSharpenStrength,
+     [generation, revision, source, cache, sharpenCache, layers, models, sharpenPath, geometry,
+      globalModelId, globalBlend, globalEnabled, globalSharpenMode,
+      globalSharpenStrength,
       preserveClipped, quality] {
       ComposeResult result;
       result.generation = generation;
@@ -2528,9 +2657,10 @@ void MainWindow::startComposition()
         std::optional<rawlab::raw::RawImage> sharpenMixedGlobal;
         const rawlab::raw::RawImage *globalImage = nullptr;
         if(global != cache.end()) globalImage = global->second.get();
-        if(globalImage && globalSharpenEnabled && !sharpenPath.isEmpty())
-        {
-          const auto sharpened = sharpenCache.find(sharpenCacheKey(pathForId(globalModelId), sharpenPath));
+         if(globalImage && globalSharpenMode != SharpenMode::Off)
+         {
+           const auto sharpened = sharpenCache.find(sharpenCacheKey(pathForId(globalModelId),
+             globalSharpenMode == SharpenMode::Normal ? normalSharpenPath() : sharpenPath));
           if(sharpened != sharpenCache.end())
           {
             sharpenMixedGlobal = rawlab::raw::blendWithOriginal(
@@ -2556,9 +2686,10 @@ void MainWindow::startComposition()
           const auto denoised = cache.find(denoisePath);
           if(denoised == cache.end()) continue;
           const rawlab::raw::RawImage *localImage = denoised->second.get();
-          if(it->sharpenEnabled && !sharpenPath.isEmpty())
-          {
-            const auto sharpened = sharpenCache.find(sharpenCacheKey(denoisePath, sharpenPath));
+           if(it->sharpenMode != SharpenMode::Off)
+           {
+             const auto sharpened = sharpenCache.find(sharpenCacheKey(denoisePath,
+               it->sharpenMode == SharpenMode::Normal ? normalSharpenPath() : sharpenPath));
             if(sharpened != sharpenCache.end())
             {
               sharpenMixedLocals.push_back(rawlab::raw::blendWithOriginal(
@@ -2596,7 +2727,7 @@ void MainWindow::refreshLayerControls()
   const QSignalBlocker clippedBlocker{clippedCheck_};
   const QSignalBlocker featherBlocker{featherSlider_};
   const QSignalBlocker blurBlocker{blurSlider_};
-  const QSignalBlocker sharpenCheckBlocker{sharpenCheck_};
+  const QSignalBlocker sharpenModeBlocker{sharpenModeCombo_};
   const QSignalBlocker sharpenSliderBlocker{sharpenSlider_};
   refreshModelCombo();
   const int blend = static_cast<int>((global ? globalBlend_ : layer ? layer->blend : 0.0f) * 100.0f + 0.5f);
@@ -2610,32 +2741,28 @@ void MainWindow::refreshLayerControls()
   blurValueLabel_->setText(tr("%1 px").arg(blur));
   const int sharpen = global ? static_cast<int>(std::lround(globalSharpenStrength_ * 100.0f))
                              : layer ? static_cast<int>(std::lround(layer->sharpenStrength * 100.0f)) : 100;
-  const QString sharpenPath = sharpenModelPath();
-  const bool sharpenAvailable = !sharpenPath.isEmpty() && QFileInfo::exists(sharpenPath);
-  const bool sharpenEnabled = global ? globalSharpenEnabled_ : layer && layer->sharpenEnabled;
-  sharpenCheck_->setChecked(sharpenEnabled && sharpenAvailable);
-  const QString sharpenName = appSettings_.sharpenModels.isEmpty()
-    ? QStringLiteral("DeepSharpen") : appSettings_.sharpenModels.front().name;
-  sharpenCheck_->setText(sharpenAvailable ? sharpenName
-                                          : tr("%1 (not installed)").arg(sharpenName));
-  sharpenCheck_->setEnabled((global || layer != nullptr) && sharpenAvailable);
+  const SharpenMode mode = global ? globalSharpenMode_ : layer ? layer->sharpenMode : SharpenMode::Off;
+  const bool sharpenEnabled = mode != SharpenMode::Off;
+  sharpenModeCombo_->setCurrentIndex(static_cast<int>(mode));
+  sharpenModeCombo_->setEnabled(global || layer != nullptr);
   sharpenSlider_->setValue(sharpen);
-  sharpenSlider_->setEnabled((global || layer != nullptr) && sharpenEnabled && sharpenAvailable);
-  const bool showSharpenStrength = (global || layer) && sharpenEnabled && sharpenAvailable;
+  sharpenSlider_->setEnabled((global || layer != nullptr) && sharpenEnabled);
+  const bool showSharpenStrength = global || layer;
   sharpenRow_->setVisible(showSharpenStrength);
   sharpenLabel_->setVisible(showSharpenStrength);
   sharpenValueLabel_->setText(QString::number(sharpen) + QStringLiteral("%"));
+  sharpenLabel_->setText(mode == SharpenMode::Ai ? tr("Blend") : tr("Strength"));
   featherSlider_->setEnabled(layer != nullptr);
   blurSlider_->setEnabled(layer != nullptr);
-  featherRow_->setVisible(layer != nullptr);
-  featherLabel_->setVisible(layer != nullptr);
-  blurRow_->setVisible(layer != nullptr);
-  blurLabel_->setVisible(layer != nullptr);
+  featherRow_->setVisible(true);
+  featherLabel_->setVisible(true);
+  blurRow_->setVisible(true);
+  blurLabel_->setVisible(true);
   invertCheck_->setChecked(layer && layer->inverted);
   invertCheck_->setEnabled(layer != nullptr);
   showMaskCheck_->setChecked(layer && layer->showMask);
   showMaskCheck_->setEnabled(layer != nullptr);
-  showMaskCheck_->setVisible(!global);
+  showMaskCheck_->setVisible(true);
   clippedCheck_->setChecked(preserveClipped_);
   clippedCheck_->setVisible(global);
   refreshModelRunButton();
@@ -2720,7 +2847,8 @@ void MainWindow::refreshActionState()
                           || exportWatcher_.isRunning() || batchWatcher_.isRunning()
                           || compositionTimer_.isActive() || compositionPending_
                           || !canvasBusyReasons_.isEmpty();
-  exportAction_->setText(batchPaths_.size() > 1 ? tr("Export Selected...") : tr("Export DNG..."));
+  exportAction_->setText(!externalOutputPath_.isEmpty() ? tr("Export and Return to Darktable")
+    : batchPaths_.size() > 1 ? tr("Export Selected...") : tr("Export DNG..."));
   exportAction_->setEnabled(!processing && (batchPaths_.size() > 1
     ? source_ != nullptr : composed_ != nullptr && compositionValid_));
   batchAction_->setEnabled(!processing && source_ != nullptr && batchPaths_.size() > 1);

@@ -25,6 +25,21 @@ LibRaw orientation mapping so SAM masks map back to matching sensor
 coordinates. The DNG writer preserves source orientation while leaving CFA
 samples in sensor order.
 
+## Preview Demosaicing
+
+`PreviewQuality::Fast` uses direct half-size 2x2 Bayer-block demosaicing. `PreviewQuality::High`
+uses the complete standalone AMaZE (Aliasing Minimization and Zipper Elimination)
+algorithm adapted from Darktable's `src/iop/demosaicing/amaze.cc`. The adaptation
+is GPLv3-compatible and retains the original Darktable and Emil Martinec/Ingo
+Weyrich attribution in `AmazeDemosaic.cpp`; it does not include Darktable
+headers or runtime internals. RawLab supplies AMaZE with active-area samples
+normalized per CFA site from black/white levels, camera-WB-adjusted, and an
+encoded arbitrary Bayer phase. This matches Darktable's rawprepare output
+followed by its AMaZE input contract. Its WB-adjusted three-channel camera-RGB
+result then goes through the camera matrix, highlight rolloff, display
+transfer, and preview sharpening stages. Fast PPG retains its existing
+post-demosaic WB path.
+
 The first mask proof-of-concept uses masks whose dimensions directly match raw pixels. Pixel `(x, y)` samples mask value `(x, y)` with nearest-neighbor lookup.
 
 Preview-sized masks map raw pixels back to mask pixels explicitly with nearest-neighbor sampling:

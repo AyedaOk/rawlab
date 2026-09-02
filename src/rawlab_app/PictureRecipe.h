@@ -9,6 +9,8 @@
 #include <optional>
 #include <vector>
 
+enum class SharpenMode { Off, Normal, Ai };
+
 struct PictureRecipePrompt
 {
   float x = 0.0f;
@@ -32,6 +34,7 @@ struct PictureRecipeLayer
   float blend = 1.0f;
   bool sharpenEnabled = false;
   float sharpenStrength = 1.0f;
+  SharpenMode sharpenMode = SharpenMode::Off;
   bool enabled = true;
   bool inverted = false;
   bool showMask = true;
@@ -53,6 +56,7 @@ struct PictureRecipe
   bool globalEnabled = true;
   bool globalSharpenEnabled = false;
   float globalSharpenStrength = 1.0f;
+  SharpenMode globalSharpenMode = SharpenMode::Off;
   bool preserveClipped = true;
   std::vector<PictureRecipeLayer> layers;
 };
@@ -63,6 +67,7 @@ public:
   std::optional<PictureRecipe> load(const QString &sourcePath,
                                     int targetWidth, int targetHeight) const;
   void save(const QString &sourcePath, const PictureRecipe &recipe) const;
+  void remove(const QString &sourcePath) const;
 
   static QString pathForSource(const QString &sourcePath);
   static rawlab::pipeline::Mask resizeMask(const rawlab::pipeline::Mask &source,

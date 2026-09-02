@@ -3,10 +3,12 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QCursor>
+#include <QFontMetrics>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 PreviewWidget::PreviewWidget(QWidget *parent)
   : QWidget{parent}
@@ -14,6 +16,14 @@ PreviewWidget::PreviewWidget(QWidget *parent)
   setMinimumSize(480, 320);
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
+  updateButton_ = new QPushButton{tr("Update"), this};
+  updateButton_->setCursor(Qt::PointingHandCursor);
+  updateButton_->setVisible(false);
+  updateButton_->setStyleSheet(QStringLiteral(
+    "QPushButton{background:#4f8eaf;border:1px solid #83c3e5;border-radius:6px;"
+    "padding:5px 12px;color:white;font-weight:600;}"
+    "QPushButton:hover{background:#65a7c9;}"));
+  connect(updateButton_, &QPushButton::clicked, this, &PreviewWidget::updateRequested);
   processingTimer_.setInterval(40);
   connect(&processingTimer_, &QTimer::timeout, this, [this] {
     processingAngle_ = (processingAngle_ + 12) % 360;
@@ -81,8 +91,21 @@ void PreviewWidget::setProcessing(const bool processing)
 {
   if(processing_ == processing) return;
   processing_ = processing;
+  updateButton_->setVisible(updateAvailable_ && !processing_);
   if(processing_) processingTimer_.start();
   else processingTimer_.stop();
+  update();
+}
+
+void PreviewWidget::setUpdateAvailable(const bool available, QString message)
+{
+  updateAvailable_ = available;
+  updateMessage_ = message.isEmpty() ? tr("Preview needs updating") : std::move(message);
+  updateButton_->setVisible(available && !processing_);
+  updateButton_->adjustSize();
+  const QRectF banner = updateBannerRect();
+  updateButton_->move(static_cast<int>(banner.right() - updateButton_->width() - 10),
+                      static_cast<int>(banner.top() + (banner.height() - updateButton_->height()) / 2.0));
   update();
 }
 
@@ -191,6 +214,8 @@ void PreviewWidget::paintEvent(QPaintEvent *)
   else
   {
     const QRectF target = imageRect();
+    const double scaleX = target.width() / image_.width();
+    const double scaleY = target.height() / image_.height();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.drawImage(target, image_);
     if(comparisonEnabled_ && !beforeImage_.isNull())
@@ -211,8 +236,28 @@ void PreviewWidget::paintEvent(QPaintEvent *)
     }
     if(!mask_.isNull()) painter.drawImage(target, mask_);
 
-    const double scaleX = target.width() / image_.width();
-    const double scaleY = target.height() / image_.height();
+    if(activeBrushPoints_.size() > 0)
+    {
+      painter.save();
+      painter.setPen(QPen{activeBrushPaint_ ? QColor{73, 220, 140, 150}
+                                           : QColor{245, 87, 87, 150},
+                           std::max(1.0, brushRadius_ * 2.0 * scaleX),
+                           Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin});
+      for(int i = 0; i < activeBrushPoints_.size(); ++i)
+      {
+        const QPointF point{target.left() + activeBrushPoints_[i].x() * scaleX,
+                            target.top() + activeBrushPoints_[i].y() * scaleY};
+        if(i == 0) painter.drawPoint(point);
+        else
+        {
+          const QPointF previous{target.left() + activeBrushPoints_[i - 1].x() * scaleX,
+                                 target.top() + activeBrushPoints_[i - 1].y() * scaleY};
+          painter.drawLine(previous, point);
+        }
+      }
+      painter.restore();
+    }
+
     painter.setRenderHint(QPainter::Antialiasing, true);
     if(shaping_)
     {
@@ -274,6 +319,17 @@ void PreviewWidget::paintEvent(QPaintEvent *)
     painter.setPen(QPen{QColor{105, 167, 208}, 6.0, Qt::SolidLine, Qt::RoundCap});
     painter.drawArc(spinnerRect, -processingAngle_ * 16, 105 * 16);
   }
+  else if(updateAvailable_ && !image_.isNull())
+  {
+    const QRectF banner = updateBannerRect();
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor{21, 24, 29, 225});
+    painter.drawRoundedRect(banner, 8.0, 8.0);
+    painter.setPen(QColor{232, 234, 237});
+    painter.drawText(QRectF{banner.left() + 14.0, banner.top(),
+                            banner.width() - updateButton_->width() - 34.0, banner.height()},
+                     Qt::AlignVCenter, updateMessage_);
+  }
 }
 
 void PreviewWidget::wheelEvent(QWheelEvent *event)
@@ -311,6 +367,8 @@ void PreviewWidget::mousePressEvent(QMouseEvent *event)
     {
       brushing_ = true;
       lastBrushPoint_ = point;
+      activeBrushPaint_ = promptMode_ == PromptMode::BrushPaint;
+      activeBrushPoints_ = {point};
       emit brushStrokeStarted(point, promptMode_ == PromptMode::BrushPaint);
     }
     return;
@@ -356,8 +414,14 @@ void PreviewWidget::mouseMoveEvent(QMouseEvent *event)
     QPointF point = widgetToImage(event->position());
     point.setX(std::clamp(point.x(), 0.0, static_cast<double>(image_.width())));
     point.setY(std::clamp(point.y(), 0.0, static_cast<double>(image_.height())));
+    const double minimumDistance = 1.5 / std::max(imageScale(), 0.01);
+    const QPointF delta = point - lastBrushPoint_;
+    if(delta.x() * delta.x() + delta.y() * delta.y() < minimumDistance * minimumDistance)
+      return;
     emit brushStrokeContinued(lastBrushPoint_, point);
+    activeBrushPoints_.push_back(point);
     lastBrushPoint_ = point;
+    update();
     return;
   }
   if(shaping_)
@@ -388,6 +452,8 @@ void PreviewWidget::mouseReleaseEvent(QMouseEvent *event)
   {
     brushing_ = false;
     emit brushStrokeFinished();
+    activeBrushPoints_.clear();
+    update();
   }
   if(shaping_ && event->button() == Qt::LeftButton)
   {
@@ -412,5 +478,21 @@ void PreviewWidget::resizeEvent(QResizeEvent *event)
                                 static_cast<double>(height()) / image_.height());
     if(fit > 0.0) zoom_ = 1.0 / fit;
   }
+  if(updateButton_)
+  {
+    const QRectF banner = updateBannerRect();
+    updateButton_->move(static_cast<int>(banner.right() - updateButton_->width() - 10),
+                        static_cast<int>(banner.top() + (banner.height() - updateButton_->height()) / 2.0));
+  }
   emit zoomChanged(imageScale());
+}
+
+QRectF PreviewWidget::updateBannerRect() const
+{
+  const QFontMetrics metrics{font()};
+  const int textWidth = metrics.horizontalAdvance(updateMessage_);
+  const int height = std::max(48, updateButton_ ? updateButton_->height() + 16 : 48);
+  const int bannerWidth = textWidth + (updateButton_ ? updateButton_->width() : 70) + 44;
+  return {std::max(12.0, (static_cast<double>(this->width()) - bannerWidth) / 2.0), 12.0,
+          static_cast<double>(std::min(bannerWidth, std::max(0, this->width() - 24))), static_cast<double>(height)};
 }

@@ -1,6 +1,7 @@
 #include "rawlab/raw/LibRawDecoder.h"
 
 #include <libraw/libraw.h>
+#include <tiffio.h>
 
 #include <algorithm>
 #include <array>
@@ -61,6 +62,35 @@ std::string boundedString(const char (&value)[Size])
   return std::string{value, end};
 }
 
+std::optional<double> readExposureBias(const std::filesystem::path &path)
+{
+  TIFF *tif = TIFFOpen(path.string().c_str(), "r");
+  if(!tif) return std::nullopt;
+
+  std::optional<double> result;
+  do
+  {
+    const tdir_t imageDirectory = TIFFCurrentDirectory(tif);
+    toff_t exifDirectory = 0;
+    if(TIFFGetField(tif, TIFFTAG_EXIFIFD, &exifDirectory) == 1
+       && exifDirectory != 0 && TIFFReadEXIFDirectory(tif, exifDirectory) == 1)
+    {
+      float bias = 0.0f;
+      if(TIFFGetField(tif, EXIFTAG_EXPOSUREBIASVALUE, &bias) == 1
+         && std::isfinite(bias))
+      {
+        result = static_cast<double>(bias);
+        break;
+      }
+    }
+    // EXIF directories are metadata-only and do not have ImageLength.
+    // Restore the image directory before continuing the IFD scan.
+    TIFFSetDirectory(tif, imageDirectory);
+  } while(TIFFReadDirectory(tif) == 1);
+  TIFFClose(tif);
+  return result;
+}
+
 void throwOnLibRawError(const int error, const char *operation)
 {
   if(error == LIBRAW_SUCCESS) return;
@@ -68,7 +98,7 @@ void throwOnLibRawError(const int error, const char *operation)
                            + libraw_strerror(error));
 }
 
-RawMetadata metadataFromLibRaw(LibRaw &processor)
+RawMetadata metadataFromLibRaw(LibRaw &processor, const std::filesystem::path &path)
 {
   const libraw_iparams_t &id = processor.imgdata.idata;
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
@@ -87,6 +117,7 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
   metadata.iso = positiveValue(other.iso_speed);
   metadata.aperture = positiveValue(other.aperture);
   metadata.exposureTimeSeconds = positiveValue(other.shutter);
+  metadata.exposureBiasEv = readExposureBias(path);
   metadata.focalLengthMm = positiveValue(other.focal_len);
   metadata.focalLength35mm = positiveValue(static_cast<float>(lens.FocalLengthIn35mmFormat));
   if(other.timestamp > 0) metadata.captureTimestamp = static_cast<std::int64_t>(other.timestamp);
@@ -172,7 +203,7 @@ RawMetadata metadataFromLibRaw(LibRaw &processor)
   return metadata;
 }
 
-RawImage rawImageFromLibRaw(LibRaw &processor)
+RawImage rawImageFromLibRaw(LibRaw &processor, const std::filesystem::path &path)
 {
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
   const libraw_rawdata_t &rawdata = processor.imgdata.rawdata;
@@ -198,7 +229,8 @@ RawImage rawImageFromLibRaw(LibRaw &processor)
     for(int x = 0; x < sizes.raw_width; ++x) samples.push_back(static_cast<float>(row[x]));
   }
 
-  return RawImage{sizes.raw_width, sizes.raw_height, std::move(samples), metadataFromLibRaw(processor)};
+  return RawImage{sizes.raw_width, sizes.raw_height, std::move(samples),
+                  metadataFromLibRaw(processor, path)};
 }
 
 } // namespace
@@ -220,10 +252,11 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
   info.model = id.model;
   info.normalizedMake = id.normalized_make;
   info.normalizedModel = id.normalized_model;
-  const RawMetadata metadata = metadataFromLibRaw(processor);
+  const RawMetadata metadata = metadataFromLibRaw(processor, path);
   info.iso = metadata.iso;
   info.aperture = metadata.aperture;
   info.exposureTimeSeconds = metadata.exposureTimeSeconds;
+  info.exposureBiasEv = metadata.exposureBiasEv;
   info.focalLengthMm = metadata.focalLengthMm;
   info.captureTimestamp = metadata.captureTimestamp;
   info.rawWidth = sizes.raw_width;
@@ -258,7 +291,7 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
 
   if(info.hasRawImage)
   {
-    const RawImage rawImage = rawImageFromLibRaw(processor);
+    const RawImage rawImage = rawImageFromLibRaw(processor, path);
     const auto [minIt, maxIt] = std::minmax_element(rawImage.samples().begin(), rawImage.samples().end());
     info.rawImageConverted = true;
     info.rawSampleMin = *minIt;
@@ -279,7 +312,7 @@ RawFileMetadata LibRawDecoder::readMetadata(const std::filesystem::path &path) c
 {
   LibRaw processor;
   throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
-  return {metadataFromLibRaw(processor), processor.imgdata.sizes.raw_width,
+  return {metadataFromLibRaw(processor, path), processor.imgdata.sizes.raw_width,
           processor.imgdata.sizes.raw_height};
 }
 
@@ -288,7 +321,7 @@ RawImage LibRawDecoder::decodeRawImage(const std::filesystem::path &path) const
   LibRaw processor;
   throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
   throwOnLibRawError(processor.unpack(), "LibRaw unpack");
-  return rawImageFromLibRaw(processor);
+  return rawImageFromLibRaw(processor, path);
 }
 
 }
