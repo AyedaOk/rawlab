@@ -50,6 +50,7 @@ class MainWindow final : public QMainWindow
 public:
   explicit MainWindow(const QString &externalInputPath = {},
                       const QString &externalOutputPath = {},
+                      const QString &recipeSourcePath = {},
                       QWidget *parent = nullptr);
   ~MainWindow() override;
 
@@ -293,6 +294,7 @@ private:
   QString sourcePath_;
   QString externalInputPath_;
   QString externalOutputPath_;
+  QString recipeSourcePath_;
   std::shared_ptr<rawlab::raw::RawImage> source_;
   std::shared_ptr<rawlab::raw::RawImage> composed_;
   rawlab::image::RawPreview originalPreview_;
@@ -344,6 +346,8 @@ private:
   QStringList thumbnailQueue_;
   int activeThumbnailJobs_ = 0;
   bool externalExportSucceeded_ = false;
+  bool externalExportStarted_ = false;
+  bool externalAutoExport_ = false;
   QSet<QString> deletedRecipePaths_;
 
   QTimer compositionTimer_;

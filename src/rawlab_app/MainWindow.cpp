@@ -217,10 +217,13 @@ void publishNoReplace(const std::filesystem::path &temporary,
 
 MainWindow::MainWindow(const QString &externalInputPath,
                        const QString &externalOutputPath,
+                       const QString &recipeSourcePath,
                        QWidget *parent)
   : QMainWindow{parent}, externalInputPath_{externalInputPath},
-    externalOutputPath_{externalOutputPath}, catalogDownloader_{this}
+    externalOutputPath_{externalOutputPath}, recipeSourcePath_{recipeSourcePath},
+    catalogDownloader_{this}
 {
+  externalAutoExport_ = !recipeSourcePath_.isEmpty();
   appSettings_ = settingsStore_.load();
   if(!appSettings_.denoiseModels.isEmpty()) globalModelId_ = appSettings_.denoiseModels.front().id;
   buildUi();
@@ -1066,7 +1069,20 @@ void MainWindow::connectUi()
     previewWidget_->setBeforeImage(displayImage);
     previewWidget_->setMask({});
     previewWidget_->setPrompts({});
-    loadCurrentRecipe();
+    if(recipeSourcePath_.isEmpty()) loadCurrentRecipe();
+    else
+    {
+      const auto recipe = recipeStore_.load(recipeSourcePath_, originalPreview_.image.width,
+                                            originalPreview_.image.height);
+      if(recipe) applyRecipe(*recipe);
+      else
+      {
+        showError(tr("Apply settings"),
+                  tr("No saved RawLab settings were found for %1.")
+                    .arg(QFileInfo{recipeSourcePath_}.fileName()));
+        QTimer::singleShot(0, qApp, [] { QCoreApplication::exit(4); });
+      }
+    }
     pages_->setCurrentWidget(editorPage_);
     statusLabel_->setText(tr("Loaded %1 x %2 CFA").arg(source_->width()).arg(source_->height()));
     refreshMetadata();
@@ -1143,7 +1159,12 @@ void MainWindow::connectUi()
        refreshOverlay();
        refreshModelRunButton();
        statusLabel_->setText(tr("Preview updated"));
-      refreshActionState();
+       refreshActionState();
+       if(externalAutoExport_ && !externalExportStarted_)
+       {
+         externalExportStarted_ = true;
+         QTimer::singleShot(0, this, &MainWindow::exportDng);
+       }
     }
     if(result.generation == documentGeneration_
        && (compositionPending_ || result.revision != compositionRevision_))

@@ -29,9 +29,13 @@ int main(int argc, char **argv)
   const QCommandLineOption outputOption{QStringLiteral("output"),
     QStringLiteral("Write external-editor output to this new DNG path"),
     QStringLiteral("path")};
+  const QCommandLineOption recipeSourceOption{QStringLiteral("apply-settings-from"),
+    QStringLiteral("Apply settings saved for this RAW file"),
+    QStringLiteral("input")};
   parser.addOption(smokeTestOption);
   parser.addOption(externalEditOption);
   parser.addOption(outputOption);
+  parser.addOption(recipeSourceOption);
   parser.process(application);
 
   const bool smokeTest = parser.isSet(smokeTestOption);
@@ -39,7 +43,9 @@ int main(int argc, char **argv)
   application.setWindowIcon(QIcon{QStringLiteral(":/icons/rawlab.png")});
   const bool hasExternalInput = parser.isSet(externalEditOption);
   const bool hasExternalOutput = parser.isSet(outputOption);
-  if(hasExternalInput != hasExternalOutput || (smokeTest && hasExternalInput))
+  const bool hasRecipeSource = parser.isSet(recipeSourceOption);
+  if(hasExternalInput != hasExternalOutput || (smokeTest && hasExternalInput)
+     || (hasRecipeSource && !hasExternalInput))
   {
     QTextStream{stderr} << "--external-edit and --output must be used together\n";
     return 2;
@@ -47,6 +53,7 @@ int main(int argc, char **argv)
 
   QString inputPath;
   QString outputPath;
+  QString recipeSourcePath;
   if(hasExternalInput)
   {
     inputPath = QFileInfo{parser.value(externalEditOption)}.absoluteFilePath();
@@ -68,9 +75,18 @@ int main(int argc, char **argv)
       QTextStream{stderr} << "Invalid external-edit output path: " << outputPath << '\n';
       return 2;
     }
+    if(hasRecipeSource)
+    {
+      recipeSourcePath = QFileInfo{parser.value(recipeSourceOption)}.absoluteFilePath();
+      if(!QFileInfo{recipeSourcePath}.isFile())
+      {
+        QTextStream{stderr} << "Settings source is not a file: " << recipeSourcePath << '\n';
+        return 2;
+      }
+    }
   }
 
-  MainWindow window{inputPath, outputPath};
+  MainWindow window{inputPath, outputPath, recipeSourcePath};
   window.show();
   if(smokeTest)
   {

@@ -7,7 +7,6 @@ for use in a RAW editor.
 
 ## Features
 
-- RAW photo library that references your original files
 - Global and local denoise layers
 - SAM 2.1 masks with point prompts and manual masking
 - Normal or RawForge's DeepSharpen sharpening after denoising
@@ -46,17 +45,14 @@ The desktop application is `build/release/src/rawlab_app/rawlab-app`.
 
 1. Import RAW files or a folder in the Library.
 2. Open a picture and choose a denoise model.
-3. Press **Run** to generate the denoised preview.
-4. Adjust blend, highlights and sharpening. Choose Normal for the built-in
-   strength slider or DeepSharpen AI for the model-based blend slider.
+3. Press **Update** to generate the denoised preview.
+4. Adjust blend and sharpening. 
 5. Add mask layers if needed.
 6. Export a CFA DNG.
 
 For batch processing, select several pictures before opening them. The batch export
 uses the settings from the picture currently being edited and applies them to every
-selected picture. It copies the global denoise model and blend, enabled/disabled
-layers, local masks, mask inversion and blend, feather and blur, DeepSharpen settings,
-and clipped-highlight setting.
+selected picture. 
 
 ## Models
 
@@ -78,18 +74,7 @@ RawLab exports non-demosaiced Bayer CFA DNG files. The editor preview is a
 display-only RGB view. Output files can be opened by RAW applications that
  support CFA DNG workflows.
 
-Preview rendering is Fast by default. Fast uses direct 2x2 Bayer-block
-demosaicing; High Quality is an opt-in, slower standalone AMaZE preview path
-adapted from Darktable. The
-adaptation supplies active-area, rawprepare-style normalized and WB-adjusted
-CFA samples without depending on Darktable's internal image buffers or runtime.
-Both modes use black/white normalization,
-camera white balance and color matrix data, protect over-white highlights for
-display, and apply only modest display-only luminance sharpening. Preview
-changes never alter CFA export. The PPG adaptation is GPLv3 code attributed to
-the Darktable developers in `RawPreview.cpp`.
-
-Original files are never copied or modified. RawLab stores library references,
+Original files are never modified. RawLab stores library references,
 thumbnails, recipes, and downloaded models in its application data directory.
 
 ## CLI
@@ -113,9 +98,7 @@ RawLab.AppImage --external-edit /absolute/input.ARW --output /absolute/input-raw
 
 RawLab opens the original sensor RAW for interactive editing. In this mode,
 **Export and Return to Darktable** writes the requested DNG without overwriting
-an existing file and exits only after a successful export. Closing RawLab
-without exporting returns a nonzero status, so Darktable does not import an
-incomplete result.
+an existing file and exits only after a successful export. 
 
 ## Acknowledgments
 
@@ -125,8 +108,6 @@ RawLab builds on and uses work from:
 - [Raw Natural Image Noise Dataset](https://doi.org/10.14428/DVN/DEQCIM), by Benoit Brummer and Christophe De Vleeschouwer.
 - [NAFNet: Simple Baselines for Image Restoration](https://doi.org/10.48550/arXiv.2208.04677), by Liangyu Chen and contributors.
 - [darktable](https://darktable.org/).
-
-Please review the relevant licenses and attribution requirements before redistributing model files.
 
 ## License
 
