@@ -36,6 +36,8 @@ int main(int argc, char **argv)
   parser.addOption(externalEditOption);
   parser.addOption(outputOption);
   parser.addOption(recipeSourceOption);
+  const QCommandLineOption externalBatchOption{"external-batch", "Edit first image and run a Darktable batch request (v1)", "request"};
+  parser.addOption(externalBatchOption);
   parser.process(application);
 
   const bool smokeTest = parser.isSet(smokeTestOption);
@@ -44,6 +46,12 @@ int main(int argc, char **argv)
   const bool hasExternalInput = parser.isSet(externalEditOption);
   const bool hasExternalOutput = parser.isSet(outputOption);
   const bool hasRecipeSource = parser.isSet(recipeSourceOption);
+  const bool hasExternalBatch = parser.isSet(externalBatchOption);
+  if(hasExternalBatch && (hasExternalInput || hasExternalOutput || hasRecipeSource || smokeTest))
+  {
+    QTextStream{stderr} << "--external-batch must be used on its own\n";
+    return 2;
+  }
   if(hasExternalInput != hasExternalOutput || (smokeTest && hasExternalInput)
      || (hasRecipeSource && !hasExternalInput))
   {
@@ -86,8 +94,9 @@ int main(int argc, char **argv)
     }
   }
 
-  MainWindow window{inputPath, outputPath, recipeSourcePath};
-  window.show();
+  MainWindow window{inputPath, outputPath, recipeSourcePath, nullptr, hasExternalBatch};
+  if(hasExternalBatch && !window.configureExternalBatch(QFileInfo{parser.value(externalBatchOption)}.absoluteFilePath())) return 2;
+  if(!hasRecipeSource) window.show();
   if(smokeTest)
   {
     QTimer::singleShot(0, &application, &QCoreApplication::quit);

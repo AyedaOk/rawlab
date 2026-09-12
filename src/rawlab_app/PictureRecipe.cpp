@@ -104,17 +104,21 @@ PictureRecipe PictureRecipeStore::scaled(
 
 void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &recipe) const
 {
+  if(sourcePath.isEmpty()) throw std::invalid_argument{"cannot save a recipe without a source"};
   saveAtPath(pathForSource(sourcePath), recipe);
 }
 
-void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &recipe)
+void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &recipe,
+                                  const QString &presetName)
 {
   if(path.isEmpty() || recipe.previewWidth <= 0 || recipe.previewHeight <= 0)
   {
     throw std::invalid_argument{"cannot save an empty picture recipe"};
   }
   QJsonObject root;
-   root[QStringLiteral("version")] = 8;
+   root[QStringLiteral("version")] = 9;
+  if(!presetName.isEmpty()) root[QStringLiteral("presetName")] = presetName;
+  root[QStringLiteral("sharpenModelId")] = recipe.sharpenModelId;
   root[QStringLiteral("previewWidth")] = recipe.previewWidth;
   root[QStringLiteral("previewHeight")] = recipe.previewHeight;
   root[QStringLiteral("globalModelId")] = recipe.globalModelId;
@@ -216,7 +220,8 @@ void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &re
 
   QSaveFile file{recipeInfo.filePath()};
   if(!file.open(QIODevice::WriteOnly)) throw std::runtime_error{"failed to open picture recipe"};
-  file.write(QJsonDocument{root}.toJson(QJsonDocument::Indented));
+  const QByteArray json = QJsonDocument{root}.toJson(QJsonDocument::Indented);
+  if(file.write(json) != json.size()) throw std::runtime_error{"failed to write picture recipe"};
   if(!file.commit()) throw std::runtime_error{"failed to commit picture recipe"};
 }
 
@@ -249,31 +254,23 @@ QStringList PictureRecipeStore::presetNames() const
 std::optional<PictureRecipe> PictureRecipeStore::loadPreset(
   const QString &name, const int targetWidth, const int targetHeight) const
 {
-  return loadAtPath(presetPath(name), targetWidth, targetHeight);
+  return loadAtPath(presetPath(name), targetWidth, targetHeight, true);
 }
 
 void PictureRecipeStore::savePreset(const QString &name, const PictureRecipe &recipe) const
 {
-  const QString path = presetPath(name);
-  saveAtPath(path, recipe);
-  QFile file{path};
-  if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"failed to reopen preset"};
-  QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-  file.close();
-  root[QStringLiteral("presetName")] = name.trimmed();
-  QSaveFile output{path};
-  if(!output.open(QIODevice::WriteOnly) || !output.write(QJsonDocument{root}.toJson(QJsonDocument::Indented))
-     || !output.commit()) throw std::runtime_error{"failed to save preset name"};
+  saveAtPath(presetPath(name), recipe, name.trimmed());
 }
 
 void PictureRecipeStore::removePreset(const QString &name) const
 {
   const QString path = presetPath(name);
   const QFileInfo info{path};
-  QFile::remove(path);
+  if(!QFile::remove(path)) throw std::runtime_error{"failed to delete preset"};
   const QStringList masks = info.dir().entryList(
     {info.completeBaseName() + QStringLiteral("-layer-*")}, QDir::Files);
-  for(const QString &mask : masks) info.dir().remove(mask);
+  for(const QString &mask : masks)
+    if(!info.dir().remove(mask)) throw std::runtime_error{"failed to delete preset mask"};
 }
 
 std::optional<PictureRecipe> PictureRecipeStore::load(
@@ -283,18 +280,19 @@ std::optional<PictureRecipe> PictureRecipeStore::load(
 }
 
 std::optional<PictureRecipe> PictureRecipeStore::loadAtPath(
-  const QString &path, const int targetWidth, const int targetHeight)
+  const QString &path, const int targetWidth, const int targetHeight, const bool strict)
 {
   QFile file{path};
   if(!file.open(QIODevice::ReadOnly)) return std::nullopt;
   const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
   if(root.isEmpty()) return std::nullopt;
   const int version = root.value(QStringLiteral("version")).toInt(1);
-   if(version > 8) return std::nullopt;
+   if(version > 9) return std::nullopt;
   PictureRecipe recipe;
   recipe.previewWidth = targetWidth;
   recipe.previewHeight = targetHeight;
   recipe.globalModelId = root.value(QStringLiteral("globalModelId")).toString();
+  recipe.sharpenModelId = root.value(QStringLiteral("sharpenModelId")).toString();
   recipe.globalBlend = static_cast<float>(root.value(QStringLiteral("globalBlend")).toDouble(1.0));
   recipe.globalEnabled = root.value(QStringLiteral("globalEnabled")).toBool(true);
   recipe.globalSharpenEnabled = version >= 6
@@ -341,7 +339,7 @@ std::optional<PictureRecipe> PictureRecipeStore::loadAtPath(
           recipeInfo.dir().filePath(maskName).toStdString());
         layer.baseMask = resizeMask(mask, targetWidth, targetHeight);
       }
-      catch(const std::exception &) {}
+      catch(const std::exception &) { if(strict) throw; }
     }
     int sourceWidth = root.value(QStringLiteral("previewWidth")).toInt();
     int sourceHeight = root.value(QStringLiteral("previewHeight")).toInt();
@@ -411,7 +409,7 @@ std::optional<PictureRecipe> PictureRecipeStore::loadAtPath(
               rawlab::image::readMaskPng(recipeInfo.dir().filePath(categoryMaskName).toStdString()),
               targetWidth, targetHeight);
           }
-          catch(const std::exception &) {}
+          catch(const std::exception &) { if(strict) throw; }
         }
         const QJsonArray strokes = category < categoryStrokes.size()
           ? categoryStrokes[category].toArray() : QJsonArray{};

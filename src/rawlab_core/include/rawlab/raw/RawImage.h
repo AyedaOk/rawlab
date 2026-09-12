@@ -27,6 +27,8 @@ struct RawMetadata
   std::optional<double> aperture;
   std::optional<double> exposureTimeSeconds;
   std::optional<double> exposureBiasEv;
+  // DNG rendering calibration; independent of the camera's EXIF exposure bias.
+  std::optional<double> baselineExposureEv;
   std::optional<double> focalLengthMm;
   std::optional<double> focalLength35mm;
   std::optional<std::int64_t> captureTimestamp;
@@ -61,6 +63,7 @@ struct RawMetadata
     0.0f, 0.0f, 1.0f,
   };
   bool colorMatrix1Valid = true;
+  std::uint16_t calibrationIlluminant1 = 21;
 };
 
 class RawImage

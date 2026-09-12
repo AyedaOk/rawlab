@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "BatchQueueStore.h"
+#include <QLockFile>
 
 #include "LayerItemDelegate.h"
 #include "LibraryPage.h"
@@ -54,6 +56,7 @@
 #include <QStyle>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTextStream>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -120,6 +123,14 @@ QString sharpenCacheKey(const QString &denoisePath, const QString &sharpenPath)
 QString normalSharpenPath()
 {
   return QStringLiteral("<normal-sharpen>");
+}
+
+QString recipeSharpenPath(const ApplicationSettingsData &settings, const QString &id)
+{
+  // Recipes predating named sharpening models used the first configured model.
+  if(id.isEmpty()) return settings.sharpenModels.isEmpty() ? QString{} : settings.sharpenModels.front().path;
+  for(const auto &model : settings.sharpenModels) if(model.id == id) return model.path;
+  return {};
 }
 
 rawlab::ai::OnnxSessionOptions onnxOptions(const ApplicationSettingsData &settings)
@@ -219,7 +230,7 @@ void publishNoReplace(const std::filesystem::path &temporary,
 MainWindow::MainWindow(const QString &externalInputPath,
                        const QString &externalOutputPath,
                        const QString &recipeSourcePath,
-                       QWidget *parent)
+                       QWidget *parent, bool temporaryBatch)
   : QMainWindow{parent}, externalInputPath_{externalInputPath},
     externalOutputPath_{externalOutputPath}, recipeSourcePath_{recipeSourcePath},
     catalogDownloader_{this}
@@ -232,8 +243,29 @@ MainWindow::MainWindow(const QString &externalInputPath,
   refreshLayerControls();
   refreshLibrary();
   showLibrary();
-  catalogDownloader_.refreshCatalog();
+  if(!externalAutoExport_) catalogDownloader_.refreshCatalog();
   if(!externalInputPath_.isEmpty()) openRawPath(externalInputPath_);
+  if(externalInputPath_.isEmpty() && !temporaryBatch)
+  {
+    try
+    {
+      batchRecoveryLock_ = std::make_unique<QLockFile>(BatchQueueStore::directory() + "/queue.lock");
+      batchRecoveryLock_->setStaleLockTime(0);
+      if(batchRecoveryLock_->tryLock(0))
+      {
+        batchQueue_ = BatchQueueStore::load();
+        if(batchQueue_ && batchQueue_->remaining())
+          statusLabel_->setText(tr("Recovered %1 unfinished batch pictures. Use File > Resume / Retry Batch.")
+                                 .arg(batchQueue_->remaining()));
+        refreshActionState();
+      }
+    }
+    catch(const std::exception &error)
+    {
+      const QString message = QString::fromUtf8(error.what());
+      QTimer::singleShot(0, this, [this, message] { showError(tr("Batch recovery"), message); });
+    }
+  }
 }
 
 MainWindow::~MainWindow()
@@ -250,6 +282,37 @@ MainWindow::~MainWindow()
   exportWatcher_.future().waitForFinished();
   metadataWatcher_.future().waitForFinished();
   maskEffectWatcher_.future().waitForFinished();
+}
+
+bool MainWindow::configureExternalBatch(const QString &request)
+{
+  try
+  {
+    externalBatchJobs_ = ExternalBatch::read(request);
+    externalBatchRequest_ = request;
+    const QString receipt = request + ".results";
+      for(const auto &job : externalBatchJobs_)
+        if(!QFileInfo{job.source}.isFile() || !QFileInfo{job.output}.dir().exists()
+           || QFileInfo::exists(job.output) || QFileInfo::exists(job.output + ".xmp"))
+          throw std::runtime_error{"Batch input is missing or its reserved output already exists"};
+      if(!openRawPath(externalBatchJobs_.front().source)) return false;
+      setWindowTitle(tr("RawLab — Edit first picture for Darktable batch"));
+      refreshActionState();
+    auto *cancelTimer = new QTimer{this};
+    cancelTimer->setInterval(250);
+    connect(cancelTimer, &QTimer::timeout, this, [this, receipt] {
+      if(!QFileInfo::exists(receipt + ".cancel")) return;
+      if(batchCancelled_) batchCancelled_->store(true);
+      else QCoreApplication::exit(3);
+    });
+    cancelTimer->start();
+    return true;
+  }
+  catch(const std::exception &error)
+  {
+    QTextStream{stderr} << "Darktable batch: " << error.what() << '\n';
+    return false;
+  }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -317,6 +380,9 @@ void MainWindow::buildUi()
   exportAction_->setEnabled(false);
   batchAction_ = new QAction{tr("Export Selected..."), this};
   batchAction_->setEnabled(false);
+  resumeBatchAction_ = fileMenu->addAction(tr("Resume / Retry Batch"));
+  resumeBatchAction_->setEnabled(false);
+  connect(resumeBatchAction_, &QAction::triggered, this, &MainWindow::startBatchQueue);
   fileMenu->addSeparator();
   QAction *importPicturesAction = fileMenu->addAction(tr("&Import Pictures..."));
   importPicturesAction->setIcon(themedIcon(this, QStringLiteral("list-add"), QStyle::SP_FileDialogNewFolder));
@@ -327,6 +393,13 @@ void MainWindow::buildUi()
   quitAction->setShortcut(QKeySequence::Quit);
 
   auto *viewMenu = menuBar()->addMenu(tr("&View"));
+  auto *editMenu = menuBar()->addMenu(tr("&Edit"));
+  undoAction_ = editMenu->addAction(tr("Undo"));
+  redoAction_ = editMenu->addAction(tr("Redo"));
+  undoAction_->setShortcut(QKeySequence::Undo);
+  redoAction_->setShortcut(QKeySequence::Redo);
+  connect(undoAction_, &QAction::triggered, this, [this] { restoreEdit(false); });
+  connect(redoAction_, &QAction::triggered, this, [this] { restoreEdit(true); });
   libraryAction_ = viewMenu->addAction(tr("&Library"));
   libraryAction_->setIcon(themedIcon(this, QStringLiteral("folder-pictures"), QStyle::SP_DirHomeIcon));
   editorAction_ = viewMenu->addAction(tr("&Edit"));
@@ -683,7 +756,7 @@ void MainWindow::buildUi()
 
   connect(openAction, &QAction::triggered, this, &MainWindow::openRaw);
   connect(exportAction_, &QAction::triggered, this, [this] {
-    if(batchPaths_.size() > 1) exportSelectedBatch();
+    if(!externalBatchRequest_.isEmpty() || batchPaths_.size() > 1) exportSelectedBatch();
     else exportDng();
   });
   connect(batchAction_, &QAction::triggered, this, &MainWindow::exportSelectedBatch);
@@ -760,6 +833,7 @@ void MainWindow::connectUi()
     const bool enabled = item->data(ProcessingEnabledRole).toBool();
     if(id == globalLayerId)
     {
+      if(globalEnabled_ != enabled) rememberEdit(tr("Layer visibility"));
       globalEnabled_ = enabled;
       if(enabled && globalSharpenMode_ != SharpenMode::Off) queueSharpen(globalModelId_);
     }
@@ -770,6 +844,9 @@ void MainWindow::connectUi()
       });
       if(found != layers_.end())
       {
+        const QString proposedName = item->text().trimmed();
+        if(found->enabled != enabled || (!proposedName.isEmpty() && found->name != proposedName))
+          rememberEdit(found->enabled != enabled ? tr("Layer visibility") : tr("Rename layer"));
         found->enabled = enabled;
         const QString name = item->text().trimmed();
         if(name.isEmpty()) item->setText(found->name);
@@ -780,7 +857,7 @@ void MainWindow::connectUi()
     scheduleComposition();
   });
   connect(layerList_->model(), &QAbstractItemModel::rowsMoved, this,
-          [this] { syncLayerOrder(); scheduleComposition(); });
+          [this] { rememberEdit(tr("Reorder layers")); syncLayerOrder(); scheduleComposition(); });
   connect(deleteLayerButton_, &QPushButton::clicked, this, &MainWindow::deleteSelectedLayer);
   connect(renameLayerButton_, &QPushButton::clicked, this, [this] {
     if(selectedLayerId() != globalLayerId && layerList_->currentItem()) layerList_->editItem(layerList_->currentItem());
@@ -788,6 +865,7 @@ void MainWindow::connectUi()
   connect(editMaskButton_, &QPushButton::clicked, this, &MainWindow::beginMaskEdit);
   connect(modelCombo_, &QComboBox::currentIndexChanged, this, [this](const int index) {
     if(index < 0) return;
+    rememberEdit(tr("Denoise model"));
     const QString id = modelCombo_->itemData(index).toString();
     if(selectedLayerId() == globalLayerId) globalModelId_ = id;
     else if(MaskLayer *layer = selectedMaskLayer()) layer->modelId = id;
@@ -804,12 +882,14 @@ void MainWindow::connectUi()
   connect(swapComparisonAction_, &QAction::toggled,
           previewWidget_, &PreviewWidget::setComparisonReversed);
   connect(blendSlider_, &QSlider::valueChanged, this, [this](const int value) {
+    rememberEdit(tr("Blend"));
     blendValueLabel_->setText(QString::number(value) + QStringLiteral("%"));
     if(selectedLayerId() == globalLayerId) globalBlend_ = static_cast<float>(value) / 100.0f;
     else if(MaskLayer *layer = selectedMaskLayer()) layer->blend = static_cast<float>(value) / 100.0f;
     scheduleComposition();
   });
   connect(sharpenModeCombo_, &QComboBox::currentIndexChanged, this, [this](const int index) {
+    rememberEdit(tr("Sharpening mode"));
     const SharpenMode mode = static_cast<SharpenMode>(std::clamp(index, 0, 2));
     const bool global = selectedLayerId() == globalLayerId;
     if(global) { globalSharpenMode_ = mode; globalSharpenEnabled_ = mode != SharpenMode::Off; }
@@ -822,6 +902,7 @@ void MainWindow::connectUi()
     scheduleComposition();
   });
   connect(sharpenSlider_, &QSlider::valueChanged, this, [this](const int value) {
+    rememberEdit(tr("Sharpening strength"));
     sharpenValueLabel_->setText(QString::number(value) + QStringLiteral("%"));
     if(selectedLayerId() == globalLayerId) globalSharpenStrength_ = static_cast<float>(value) / 100.0f;
     else if(MaskLayer *layer = selectedMaskLayer())
@@ -829,6 +910,7 @@ void MainWindow::connectUi()
     scheduleComposition();
   });
   connect(featherSlider_, &QSlider::valueChanged, this, [this](const int value) {
+    rememberEdit(tr("Mask feather"));
     featherValueLabel_->setText(tr("%1 px").arg(value));
     if(MaskLayer *layer = selectedMaskLayer())
     {
@@ -837,6 +919,7 @@ void MainWindow::connectUi()
     }
   });
   connect(blurSlider_, &QSlider::valueChanged, this, [this](const int value) {
+    rememberEdit(tr("Mask blur"));
     blurValueLabel_->setText(tr("%1 px").arg(value));
     if(MaskLayer *layer = selectedMaskLayer())
     {
@@ -845,18 +928,29 @@ void MainWindow::connectUi()
     }
   });
   connect(invertCheck_, &QCheckBox::toggled, this, [this](const bool checked) {
+    rememberEdit(tr("Invert mask"));
     if(MaskLayer *layer = selectedMaskLayer()) layer->inverted = checked;
     refreshOverlay();
     scheduleComposition();
   });
   connect(showMaskCheck_, &QCheckBox::toggled, this, [this](const bool checked) {
+    rememberEdit(tr("Show mask"));
     if(MaskLayer *layer = selectedMaskLayer()) layer->showMask = checked;
     refreshOverlay();
   });
   connect(clippedCheck_, &QCheckBox::toggled, this, [this](const bool checked) {
+    rememberEdit(tr("Preserve highlights"));
     preserveClipped_ = checked;
     scheduleComposition();
   });
+  for(QSlider *slider : {blendSlider_, sharpenSlider_, featherSlider_, blurSlider_})
+  {
+    connect(slider, &QSlider::sliderPressed, this, [this] { sliderEditRecorded_ = false; });
+    connect(slider, &QSlider::sliderReleased, this, [this] {
+      sliderEditRecorded_ = false;
+      refreshActionState();
+    });
+  }
   connect(positiveAction_, &QAction::triggered, this, [this] {
     maskCategory_ = MaskCategory::Ai;
     maskCategoryCombo_->setCurrentIndex(0);
@@ -930,6 +1024,7 @@ void MainWindow::connectUi()
           [this](const QPointF from, const QPointF to, const bool gradient, const bool foreground) {
     MaskLayer *layer = selectedMaskLayer();
     if(!layer || originalPreview_.image.width <= 0 || originalPreview_.image.height <= 0) return;
+    rememberEdit(gradient ? tr("Gradient mask") : tr("Ellipse mask"));
     const int width = originalPreview_.image.width;
     const int height = originalPreview_.image.height;
     const int categoryIndex = gradient ? 1 : 2;
@@ -961,6 +1056,7 @@ void MainWindow::connectUi()
     auto &category = layer->categories[static_cast<std::size_t>(maskCategoryIndex())];
     if(brushMode && !category.brushStrokes.empty())
     {
+      rememberEdit(tr("Remove mask stroke"));
       layer->categories[static_cast<std::size_t>(maskCategoryIndex())].brushStrokes.pop_back();
       rebuildLayerMask(*layer);
       refreshOverlay();
@@ -968,6 +1064,7 @@ void MainWindow::connectUi()
     }
     else if(maskCategory_ == MaskCategory::Ai && !layer->points.empty())
     {
+      rememberEdit(tr("Remove mask point"));
       layer->points.pop_back();
       samNeedsReset_ = true;
       ++samRevision_;
@@ -985,6 +1082,7 @@ void MainWindow::connectUi()
   connect(clearPointsAction_, &QAction::triggered, this, [this] {
     MaskLayer *layer = selectedMaskLayer();
     if(!layer) return;
+    rememberEdit(tr("Clear mask"));
     const int categoryIndex = maskCategoryIndex();
     layer->categories[static_cast<std::size_t>(categoryIndex)].mask.reset();
     layer->categories[static_cast<std::size_t>(categoryIndex)].brushStrokes.clear();
@@ -1003,8 +1101,9 @@ void MainWindow::connectUi()
   connect(previewWidget_, &PreviewWidget::pointRequested, this,
           [this](const QPointF position, const bool foreground) {
             MaskLayer *layer = selectedMaskLayer();
-            if(!layer || layer->id != editingLayerId_) return;
-            layer->points.push_back({static_cast<float>(position.x()),
+             if(!layer || layer->id != editingLayerId_) return;
+             rememberEdit(tr("Mask point"));
+             layer->points.push_back({static_cast<float>(position.x()),
                                      static_cast<float>(position.y()), foreground});
             ++samRevision_;
             refreshOverlay();
@@ -1013,8 +1112,11 @@ void MainWindow::connectUi()
   connect(previewWidget_, &PreviewWidget::brushStrokeStarted, this,
           [this](const QPointF point, const bool paint) {
             MaskLayer *layer = selectedMaskLayer();
-            if(!layer || layer->id != editingLayerId_) return;
-            ++layer->effectRevision;
+             if(!layer || layer->id != editingLayerId_) return;
+             rememberEdit(paint ? tr("Paint mask") : tr("Erase mask"));
+             maskStrokeActive_ = true;
+             refreshActionState();
+             ++layer->effectRevision;
             pendingMaskEffects_.remove(layer->id);
             MaskLayer::BrushStroke stroke;
             stroke.points.push_back(point);
@@ -1038,7 +1140,9 @@ void MainWindow::connectUi()
              stroke.points.push_back(to);
            });
   connect(previewWidget_, &PreviewWidget::brushStrokeFinished, this, [this] {
+    maskStrokeActive_ = false;
     if(MaskLayer *layer = selectedMaskLayer()) rebuildLayerMask(*layer);
+    refreshActionState();
   });
 
   connect(&loadWatcher_, &QFutureWatcher<LoadResult>::finished, this, [this] {
@@ -1054,12 +1158,15 @@ void MainWindow::connectUi()
       return;
     }
     source_ = result.source;
+    undoEdits_.clear();
+    redoEdits_.clear();
     sourcePath_ = result.sourcePath;
     refreshFilmstrip();
     composed_ = source_;
     originalPreview_ = result.preview;
     denoisedCache_.clear();
     sharpenedCache_.clear();
+    presetAwaitingUpdate_ = false;
     pendingRecipeSharpenRequests_.clear();
     modelProviders_.clear();
     segmenter_.reset();
@@ -1070,6 +1177,7 @@ void MainWindow::connectUi()
     editingLayerId_ = 0;
     globalModelId_ = appSettings_.denoiseModels.isEmpty()
       ? QString{} : appSettings_.denoiseModels.front().id;
+    recipeSharpenModelId_.clear();
     globalBlend_ = 1.0f;
     globalEnabled_ = true;
     globalSharpenEnabled_ = false;
@@ -1080,6 +1188,8 @@ void MainWindow::connectUi()
     while(layerList_->count() > 1) delete layerList_->takeItem(1);
     layerList_->item(0)->setData(ProcessingEnabledRole, true);
     const QImage displayImage = toQImage(result.preview.image);
+    originalPreviewCache_ = {};
+    originalPreviewCache_[result.highQuality ? 1 : 0] = displayImage;
     currentPreviewImage_ = displayImage;
     beforeAfterAction_->setChecked(false);
     previewWidget_->setImage(displayImage, true);
@@ -1155,23 +1265,25 @@ void MainWindow::connectUi()
     {
       sharpenedCache_[result.cacheKey] = result.image;
       statusLabel_->setText(tr("DeepSharpen cached"));
-      queuePendingRecipeSharpening();
       scheduleComposition();
     }
-     if(!sharpenQueue_.isEmpty())
-     {
-       const QString queued = sharpenQueue_.takeFirst();
-       const int separator = queued.lastIndexOf(QChar{0x1e});
-       runSharpenPath(separator < 0 ? queued : queued.left(separator),
-                      separator < 0 ? SharpenMode::Ai
-                                    : static_cast<SharpenMode>(queued.mid(separator + 1).toInt()));
-     }
+    if(!sharpenQueue_.isEmpty())
+    {
+      const QString queued = sharpenQueue_.takeFirst();
+      const int separator = queued.lastIndexOf(QChar{0x1e});
+      runSharpenPath(separator < 0 ? queued : queued.left(separator),
+                     separator < 0 ? SharpenMode::Ai
+                                   : static_cast<SharpenMode>(queued.mid(separator + 1).toInt()));
+    }
+    if(result.error.isEmpty()) queuePendingRecipeSharpening();
     refreshModelRunButton();
   });
 
   connect(&composeWatcher_, &QFutureWatcher<ComposeResult>::finished, this, [this] {
     const ComposeResult result = composeWatcher_.result();
     setCanvasBusy(QStringLiteral("compose"), false);
+    if(result.generation == documentGeneration_ && !result.before.isNull())
+      originalPreviewCache_[result.highQuality ? 1 : 0] = result.before;
     if(!result.error.isEmpty()) showError(tr("Preview"), result.error);
     else if(result.generation == documentGeneration_ && result.revision == compositionRevision_)
     {
@@ -1179,15 +1291,11 @@ void MainWindow::connectUi()
       compositionValid_ = processingReady();
        currentPreviewImage_ = toQImage(result.preview.image);
        previewWidget_->setImage(currentPreviewImage_);
+       previewWidget_->setBeforeImage(result.before);
        refreshOverlay();
        refreshModelRunButton();
        statusLabel_->setText(tr("Preview updated"));
        refreshActionState();
-       if(externalAutoExport_ && !externalExportStarted_)
-       {
-         externalExportStarted_ = true;
-         QTimer::singleShot(0, this, &MainWindow::exportDng);
-       }
     }
     if(result.generation == documentGeneration_
        && (compositionPending_ || result.revision != compositionRevision_))
@@ -1246,6 +1354,7 @@ void MainWindow::connectUi()
 
   connect(&batchWatcher_, &QFutureWatcher<BatchResult>::finished, this, [this] {
     const BatchResult result = batchWatcher_.result();
+    batchQueue_ = result.queue;
     centralWidget()->setEnabled(true);
     if(batchProgress_)
     {
@@ -1255,12 +1364,27 @@ void MainWindow::connectUi()
     }
     batchCancelled_.reset();
     refreshActionState();
-    QString summary = tr("Exported %1 picture(s).").arg(result.succeeded);
-    if(result.cancelled) summary += tr("\nBatch cancelled.");
+    QString summary = tr("Completed %1 of %2 pictures.").arg(batchQueue_->completed()).arg(batchQueue_->jobs.size());
+    if(result.cancelled) summary += tr("\nBatch stopped. Unfinished pictures can be resumed.");
     if(!result.skipped.isEmpty()) summary += tr("\n\nSkipped:\n%1").arg(result.skipped.join(QLatin1Char('\n')));
     if(!result.errors.isEmpty()) summary += tr("\n\nFailed:\n%1").arg(result.errors.join(QLatin1Char('\n')));
     statusLabel_->setText(summary.section(QLatin1Char('\n'), 0, 0));
-    if(result.errors.isEmpty()) QMessageBox::information(this, tr("Batch export"), summary);
+    if(!externalBatchRequest_.isEmpty())
+    {
+      QTextStream{stderr} << summary << '\n';
+      QCoreApplication::exit(batchQueue_->remaining() || !result.errors.isEmpty() ? 3 : 0);
+      return;
+    }
+    if(batchQueue_->remaining())
+    {
+      summary += tr("\n\n%1 picture(s) remaining. Resume / Retry uses the original batch settings.")
+                   .arg(batchQueue_->remaining());
+      QMessageBox message{QMessageBox::Information, tr("Batch export"), summary, QMessageBox::Close, this};
+      auto *retry = message.addButton(tr("Resume / Retry"), QMessageBox::AcceptRole);
+      message.exec();
+      if(message.clickedButton() == retry) startBatchQueue();
+    }
+    else if(result.errors.isEmpty()) QMessageBox::information(this, tr("Batch export"), summary);
     else QMessageBox::warning(this, tr("Batch export"), summary);
   });
 
@@ -1301,7 +1425,7 @@ void MainWindow::connectUi()
         refreshOverlay();
         scheduleComposition();
       }
-      else statusLabel_->setText(tr("Could not update mask effects: %1").arg(result.error));
+      else showError(tr("Mask effects"), tr("Could not update mask effects: %1").arg(result.error));
     }
     startNextMaskEffect();
     if(!maskEffectWatcher_.isRunning() && pendingMaskEffects_.isEmpty())
@@ -1371,6 +1495,7 @@ bool MainWindow::openRawPath(const QString &path)
         decoder.decodeRawImage(std::filesystem::path{path.toStdString()}));
       result.preview = rawlab::image::renderRawPreview(
         *result.source, editorPreviewMaxDimension, quality);
+      result.highQuality = quality == rawlab::image::PreviewQuality::High;
     }
     catch(const std::exception &e) { result.error = QString::fromUtf8(e.what()); }
     return result;
@@ -1380,6 +1505,8 @@ bool MainWindow::openRawPath(const QString &path)
 
 void MainWindow::exportDng()
 {
+  if(!compositionValid_ || presetAwaitingUpdate_ || !processingReady()
+     || compositionTimer_.isActive() || compositionPending_) return;
   if(!composed_ || loadWatcher_.isRunning() || denoiseWatcher_.isRunning() || sharpenWatcher_.isRunning()
      || composeWatcher_.isRunning() || samWatcher_.isRunning() || exportWatcher_.isRunning()
      || batchWatcher_.isRunning() || !canvasBusyReasons_.isEmpty()) return;
@@ -1413,13 +1540,18 @@ void MainWindow::exportDng()
   }
   const auto image = composed_;
   rawlab::dng::DngPreviews previews;
-  try { previews = encodeDngPreviews(currentPreviewImage_); }
+  try
+  {
+    if(!externalOutputPath_.isEmpty()) recipeStore_.save(sourcePath_, currentRecipe());
+    previews = encodeDngPreviews(currentPreviewImage_);
+  }
   catch(const std::exception &error)
   {
     showError(tr("Export DNG"), QString::fromUtf8(error.what()));
     return;
   }
   setBusy(tr("Exporting DNG..."), true);
+  externalExportStarted_ = true;
   const bool noClobber = !externalOutputPath_.isEmpty();
   exportWatcher_.setFuture(QtConcurrent::run([path, image, previews = std::move(previews), noClobber] {
     ExportResult result;
@@ -1446,38 +1578,107 @@ void MainWindow::exportDng()
 
 void MainWindow::exportSelectedBatch()
 {
-  if(batchPaths_.isEmpty() || !source_ || batchWatcher_.isRunning()) return;
-  const QString outputDirectory = QFileDialog::getExistingDirectory(this, tr("Choose batch DNG folder"));
-  if(outputDirectory.isEmpty()) return;
+  const bool external = !externalBatchRequest_.isEmpty();
+  if((!external && batchPaths_.isEmpty()) || !source_ || batchWatcher_.isRunning()) return;
+  if(!external && (!batchRecoveryLock_ || !batchRecoveryLock_->isLocked()))
+  {
+    showError(tr("Batch export"), tr("Batch recovery is in use by another RawLab window. Use that window or close it and restart RawLab."));
+    return;
+  }
+  if(batchQueue_ && batchQueue_->remaining()
+     && QMessageBox::question(this, tr("New batch"),
+         tr("Replace the unfinished batch? Completed DNGs will be kept.")) != QMessageBox::Yes) return;
+  const QString outputDirectory = external ? QString{} : QFileDialog::getExistingDirectory(this, tr("Choose batch DNG folder"));
+  if(!external && outputDirectory.isEmpty()) return;
+  if(external && PictureLibraryStore::normalizedPath(sourcePath_)
+       != PictureLibraryStore::normalizedPath(externalBatchJobs_.front().source))
+  {
+    showError(tr("Batch export"), tr("Return to the first picture selected in Darktable before starting the batch."));
+    return;
+  }
 
   saveCurrentRecipe();
   PictureRecipe recipe = currentRecipe();
+  QString modelError;
+  if(!recipeModelsAvailable(recipe, &modelError))
+  {
+    showError(tr("Batch export"), modelError);
+    return;
+  }
   for(std::size_t index = 0; index < recipe.layers.size() && index < layers_.size(); ++index)
   {
     // A flattened soft mask preserves the exact tuned result across differing image dimensions.
     recipe.layers[index].baseMask = layers_[index].mask;
     recipe.layers[index].strokes.clear();
   }
-  const QStringList paths = batchPaths_;
-  const ApplicationSettingsData settings = appSettings_;
+  if(external)
+  {
+    BatchQueue queue;
+    queue.recipe = std::move(recipe);
+    queue.settings = appSettings_;
+    queue.jobs = externalBatchJobs_;
+    queue.receiptPath = externalBatchRequest_ + ".results";
+    queue.temporary = true;
+    batchQueue_ = std::move(queue);
+  }
+  else batchQueue_ = BatchQueue::create(batchPaths_, outputDirectory, std::move(recipe), appSettings_);
+  startBatchQueue();
+}
+
+void MainWindow::startBatchQueue()
+{
+  if(!batchQueue_ || !batchQueue_->remaining() || batchWatcher_.isRunning()
+     || loadWatcher_.isRunning() || denoiseWatcher_.isRunning() || sharpenWatcher_.isRunning()
+     || composeWatcher_.isRunning() || samWatcher_.isRunning() || maskEffectWatcher_.isRunning()
+     || exportWatcher_.isRunning()) return;
+  if(!batchQueue_->temporary && (!batchRecoveryLock_ || !batchRecoveryLock_->isLocked())) return;
+  if(externalBatchRequest_.isEmpty() && !batchQueue_->receiptPath.isEmpty())
+    QFile::remove(batchQueue_->receiptPath + ".cancel");
+  try { BatchQueueStore::save(*batchQueue_); }
+  catch(const std::exception &error)
+  {
+    showError(tr("Batch recovery"), QString::fromUtf8(error.what()));
+    return;
+  }
+  compositionTimer_.stop();
   batchCancelled_ = std::make_shared<std::atomic_bool>(false);
   const auto cancelled = batchCancelled_;
 
   batchProgress_ = new QProgressDialog{tr("Preparing batch export..."), tr("Cancel"),
-                                       0, static_cast<int>(paths.size()), this};
+                                       0, static_cast<int>(batchQueue_->jobs.size()), this};
+  batchProgress_->setAutoClose(false);
+  batchProgress_->setAutoReset(false);
+  batchProgress_->setValue(batchQueue_->completed());
   batchProgress_->setWindowTitle(tr("Batch export"));
-  batchProgress_->setWindowModality(Qt::WindowModal);
+  // Editor/actions are disabled separately. Modal QProgressDialog::setValue
+  // pumps a nested event loop and can be deleted by completion mid-update.
+  batchProgress_->setWindowModality(Qt::NonModal);
   batchProgress_->setMinimumDuration(0);
-  connect(batchProgress_, &QProgressDialog::canceled, this, [cancelled] { cancelled->store(true); });
+  connect(batchProgress_, &QProgressDialog::canceled, this, [this, cancelled] {
+    cancelled->store(true);
+    statusLabel_->setText(tr("Stopping batch at the next processing checkpoint..."));
+  });
   centralWidget()->setEnabled(false);
   exportAction_->setEnabled(false);
   batchAction_->setEnabled(false);
+  resumeBatchAction_->setEnabled(false);
 
   batchWatcher_.setFuture(QtConcurrent::run(
-    [this, paths, outputDirectory, recipe, settings, cancelled] {
+    [this, queue = *batchQueue_, cancelled]() mutable {
       BatchResult result;
+      const QString cancelPath = queue.receiptPath.isEmpty() ? QString{} : queue.receiptPath + ".cancel";
+      const auto checkCancelled = [cancelled, cancelPath] {
+        if(!cancelPath.isEmpty() && QFileInfo::exists(cancelPath)) cancelled->store(true);
+        return cancelled->load();
+      };
+      bool checkpointFailed = false;
+      const auto checkpoint = [&queue, &checkpointFailed] {
+        try { BatchQueueStore::save(queue); }
+        catch(...) { checkpointFailed = true; throw; }
+      };
+      const auto &recipe = queue.recipe;
+      const auto &settings = queue.settings;
       std::map<QString, std::unique_ptr<rawlab::ai::OnnxSession>> sessions;
-      QSet<QString> destinations;
       const auto modelPathForId = [&settings](const QString &id) {
         return ApplicationSettingsStore::modelById(settings, id).path;
       };
@@ -1485,33 +1686,37 @@ void MainWindow::exportSelectedBatch()
         return ApplicationSettingsStore::modelById(settings, id);
       };
 
-      for(int fileIndex = 0; fileIndex < paths.size(); ++fileIndex)
+      for(std::size_t fileIndex = 0; fileIndex < queue.jobs.size(); ++fileIndex)
       {
-        if(cancelled->load()) { result.cancelled = true; break; }
-        const QString sourcePath = paths[fileIndex];
+        auto &job = queue.jobs[fileIndex];
+        if(!job.retryable()) continue;
+        if(checkCancelled()) { result.cancelled = true; break; }
+        job.state = BatchQueue::State::Running;
+        job.message.clear();
+        const QString sourcePath = job.source;
         const QFileInfo sourceInfo{sourcePath};
-        const QString outputName = sourceInfo.completeBaseName() + QStringLiteral("-rawlab.dng");
-        const QString outputPath = QDir{outputDirectory}.filePath(outputName);
-        QMetaObject::invokeMethod(this, [this, fileIndex, paths, sourceInfo] {
+        const QString outputPath = job.output;
+        const auto report = [this, checkCancelled, name = sourceInfo.fileName(), fileIndex,
+                             total = queue.jobs.size(), completed = queue.completed()](const QString &stage) {
+          if(checkCancelled()) throw std::runtime_error{"batch cancelled"};
+          QMetaObject::invokeMethod(this, [this, name, fileIndex, total, completed, stage] {
           if(batchProgress_)
           {
-            batchProgress_->setValue(fileIndex);
-            batchProgress_->setLabelText(tr("Processing %1 (%2 of %3)")
-              .arg(sourceInfo.fileName()).arg(fileIndex + 1).arg(paths.size()));
+            batchProgress_->setLabelText(tr("%1 (%2 of %3)\n%4")
+              .arg(name).arg(fileIndex + 1).arg(total).arg(stage));
+            batchProgress_->setValue(completed);
           }
-        }, Qt::QueuedConnection);
-
-        if(destinations.contains(outputName) || QFileInfo::exists(outputPath))
-        {
-          result.skipped.push_back(tr("%1: output already exists or name is duplicated").arg(sourceInfo.fileName()));
-          continue;
-        }
-        destinations.insert(outputName);
+          }, Qt::QueuedConnection);
+        };
         try
         {
+          checkpoint();
+          if(QFileInfo::exists(outputPath)) throw std::runtime_error{"reserved output already exists; it will not be overwritten"};
+          report(tr("Decoding RAW"));
           rawlab::raw::LibRawDecoder decoder;
           rawlab::raw::RawImage source = decoder.decodeRawImage(
             std::filesystem::path{sourcePath.toStdString()});
+          report(tr("Preparing masks"));
           const rawlab::image::RawPreview targetPreview = rawlab::image::renderRawPreview(
             source, editorPreviewMaxDimension);
           PictureRecipe targetRecipe = PictureRecipeStore::scaled(
@@ -1536,8 +1741,8 @@ void MainWindow::exportSelectedBatch()
               session = std::make_unique<rawlab::ai::OnnxSession>(
                 std::filesystem::path{modelPath.toStdString()}, onnxOptions(settings));
             }
-            const auto progress = [cancelled](int, int) {
-              if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
+            const auto progress = [report](int done, int total) {
+              report(tr("Denoise: tile %1 of %2").arg(done).arg(total));
             };
             rawlab::raw::RawImage image;
             if(definition.adapter == QStringLiteral("rawforge-rgb-v1"))
@@ -1554,8 +1759,7 @@ void MainWindow::exportSelectedBatch()
           }
 
            std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> sharpened;
-           const QString aiSharpenPath = settings.sharpenModels.isEmpty()
-             ? QString{} : settings.sharpenModels.front().path;
+           const QString aiSharpenPath = recipeSharpenPath(settings, targetRecipe.sharpenModelId);
            {
              QSet<QString> normalPaths;
              QSet<QString> sharpenPaths;
@@ -1570,16 +1774,19 @@ void MainWindow::exportSelectedBatch()
                  .insert(modelPathForId(layer.modelId));
              }
              rawlab::pipeline::RawProcessingPipeline pipeline;
-             for(const QString &denoisePath : normalPaths)
-             {
+              for(const QString &denoisePath : normalPaths)
+              {
+                report(tr("Normal sharpening"));
                const auto input = denoised.find(denoisePath);
                if(input != denoised.end()) sharpened[sharpenCacheKey(denoisePath, normalSharpenPath())] =
                  std::make_shared<rawlab::raw::RawImage>(pipeline.runNormalSharpen(*input->second, 1.0f));
              }
-             if(!sharpenPaths.isEmpty() && !aiSharpenPath.isEmpty())
+              if(!sharpenPaths.isEmpty() && aiSharpenPath.isEmpty())
+                throw std::runtime_error{"recipe references a missing sharpening model"};
+              if(!sharpenPaths.isEmpty() && !aiSharpenPath.isEmpty())
             {
               rawlab::ai::OnnxSession sharpenSession{
-                std::filesystem::path{settings.sharpenModels.front().path.toStdString()},
+                 std::filesystem::path{aiSharpenPath.toStdString()},
                 onnxOptions(settings)};
               for(const QString &denoisePath : sharpenPaths)
               {
@@ -1588,13 +1795,14 @@ void MainWindow::exportSelectedBatch()
                 sharpened[sharpenCacheKey(denoisePath, aiSharpenPath)] = std::make_shared<rawlab::raw::RawImage>(
                   rawlab::ai::RawForgeAdapter{}.run(*input->second, sharpenSession,
                     static_cast<float>(source.metadata().iso.value_or(100.0)), false,
-                    [cancelled](int, int) {
-                      if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
+                    [report](int done, int total) {
+                      report(tr("AI sharpening: tile %1 of %2").arg(done).arg(total));
                     }));
            }
             }
           }
 
+          report(tr("Composing layers"));
           const QString globalPath = modelPathForId(targetRecipe.globalModelId);
           const auto global = denoised.find(globalPath);
           std::optional<rawlab::raw::RawImage> preservedGlobal;
@@ -1660,12 +1868,13 @@ void MainWindow::exportSelectedBatch()
           rawlab::raw::RawImage composed = rawlab::pipeline::composeDenoiseLayers(
             source, {globalImage, targetRecipe.globalBlend, targetRecipe.globalEnabled},
             localInputs, targetPreview.geometry);
+          report(tr("Generating DNG thumbnail and preview"));
           const rawlab::image::RawPreview displayPreview = rawlab::image::renderRawPreview(
             composed, editorPreviewMaxDimension, rawlab::image::PreviewQuality::High);
           const rawlab::dng::DngPreviews previews = encodeDngPreviews(
             qImageCopy(displayPreview.image));
 
-          if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
+          report(tr("Writing DNG"));
 
           const QString temporaryPath = outputPath + QStringLiteral(".rawlab-")
                                         + QUuid::createUuid().toString(QUuid::Id128);
@@ -1673,6 +1882,9 @@ void MainWindow::exportSelectedBatch()
           try
           {
             rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary, composed, &previews);
+            if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
+            job.publishedHash = BatchQueueStore::hashFile(temporaryPath);
+            checkpoint();
             if(cancelled->load()) throw std::runtime_error{"batch cancelled"};
             std::error_code publishError;
             std::filesystem::create_hard_link(temporary,
@@ -1688,7 +1900,7 @@ void MainWindow::exportSelectedBatch()
             throw;
           }
           ++result.succeeded;
-          if(fileIndex > 0)
+          job.state = BatchQueue::State::Completed;
           {
             try { PictureRecipeStore{}.save(sourcePath, targetRecipe); }
             catch(const std::exception &error)
@@ -1701,20 +1913,39 @@ void MainWindow::exportSelectedBatch()
         }
         catch(const std::exception &error)
         {
-          if(cancelled->load()) { result.cancelled = true; break; }
+          if(cancelled->load())
+          {
+            job.state = BatchQueue::State::Cancelled;
+            result.cancelled = true;
+            break;
+          }
+          job.state = BatchQueue::State::Failed;
+          job.message = QString::fromUtf8(error.what());
           result.errors.push_back(sourceInfo.fileName() + QStringLiteral(": ")
                                   + QString::fromUtf8(error.what()));
         }
+        if(checkpointFailed) break;
+        try { checkpoint(); }
+        catch(const std::exception &error)
+        {
+          result.errors.push_back(QString::fromUtf8(error.what()));
+          break;
+        }
       }
-      QMetaObject::invokeMethod(this, [this, paths] {
-        if(batchProgress_) batchProgress_->setValue(static_cast<int>(paths.size()));
-      }, Qt::QueuedConnection);
+      if(!checkpointFailed)
+      {
+        try { checkpoint(); }
+        catch(const std::exception &error) { result.errors.push_back(QString::fromUtf8(error.what())); }
+      }
+      result.queue = std::move(queue);
       return result;
     }));
+  refreshActionState();
 }
 
 void MainWindow::addMaskLayer()
 {
+  rememberEdit(tr("Add mask layer"));
   MaskLayer layer;
   layer.id = nextLayerId_++;
   layer.name = tr("Mask %1").arg(layer.id);
@@ -1736,12 +1967,14 @@ void MainWindow::addMaskLayer()
   layerList_->insertItem(1, item);
   layerList_->setCurrentItem(item);
   refreshLayerControls();
+  scheduleComposition();
 }
 
 void MainWindow::deleteSelectedLayer()
 {
   const int id = selectedLayerId();
   if(id == globalLayerId) return;
+  rememberEdit(tr("Delete mask layer"));
   if(editingLayerId_ == id) endMaskEdit();
   pendingMaskEffects_.remove(id);
   layers_.erase(std::remove_if(layers_.begin(), layers_.end(), [id](const MaskLayer &layer) {
@@ -1975,7 +2208,7 @@ QString MainWindow::modelPath(const QString &modelId) const
 
 bool MainWindow::processingReady() const
 {
-  if(!pendingMaskEffects_.isEmpty()) return false;
+  if(maskEffectWatcher_.isRunning() || !pendingMaskEffects_.isEmpty()) return false;
   const auto ready = [this](const QString &modelId) {
     const QString path = modelPath(modelId);
     return !path.isEmpty() && denoisedCache_.contains(path);
@@ -2074,15 +2307,13 @@ void MainWindow::queuePendingRecipeSharpening()
 void MainWindow::runSelectedModel()
 {
   if(!source_) return;
-  if(modelCombo_->currentIndex() >= 0)
+  QString error;
+  if(!recipeModelsAvailable(currentRecipe(), &error))
   {
-    const QString id = modelCombo_->currentData().toString();
-    if(!id.isEmpty())
-    {
-      if(selectedLayerId() == globalLayerId) globalModelId_ = id;
-      else if(MaskLayer *layer = selectedMaskLayer()) layer->modelId = id;
-    }
+    showError(tr("Update Preview"), error);
+    return;
   }
+  presetAwaitingUpdate_ = false;
   compositionValid_ = false;
   beforeAfterAction_->setChecked(false);
   refreshActionState();
@@ -2094,29 +2325,18 @@ void MainWindow::runSelectedModel()
 void MainWindow::refreshModelRunButton()
 {
   if(!modelCombo_ || !previewWidget_) return;
-  const QString selectedId = modelCombo_->currentData().toString();
-  const QString path = modelPath(selectedId);
-  bool update = source_ && !path.isEmpty() && !denoisedCache_.contains(path);
-  const MaskLayer *layer = selectedMaskLayer();
-  const SharpenMode mode = selectedLayerId() == globalLayerId
-    ? globalSharpenMode_ : layer ? layer->sharpenMode : SharpenMode::Off;
-  if(!update && mode != SharpenMode::Off)
-  {
-    const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
-    update = !sharpenPath.isEmpty()
-      && !sharpenedCache_.contains(sharpenCacheKey(path, sharpenPath));
-  }
+  const bool update = source_ && (presetAwaitingUpdate_ || !compositionValid_ || !processingReady());
   previewWidget_->setUpdateAvailable(update, tr("Preview needs updating"));
 }
 
 QString MainWindow::sharpenModelPath() const
 {
-  return appSettings_.sharpenModels.isEmpty() ? QString{} : appSettings_.sharpenModels.front().path;
+  return recipeSharpenPath(appSettings_, recipeSharpenModelId_);
 }
 
 void MainWindow::queueSharpen(const QString &modelId)
 {
-  if(!source_) return;
+  if(!source_ || presetAwaitingUpdate_) return;
   const QString denoisePath = modelPath(modelId);
   const bool global = selectedLayerId() == globalLayerId;
   const SharpenMode mode = global ? globalSharpenMode_
@@ -2518,11 +2738,14 @@ void MainWindow::startLibraryThumbnail(const QString &path)
 
 PictureRecipe MainWindow::currentRecipe()
 {
-  syncLayerOrder();
+  // layers_ is synchronized by the rowsMoved handler. Keep snapshot capture
+  // read-only: rebuilding this vector here invalidates active stroke references.
   PictureRecipe recipe;
   recipe.previewWidth = originalPreview_.image.width;
   recipe.previewHeight = originalPreview_.image.height;
   recipe.globalModelId = globalModelId_;
+  recipe.sharpenModelId = recipeSharpenModelId_.isEmpty() && !appSettings_.sharpenModels.isEmpty()
+    ? appSettings_.sharpenModels.front().id : recipeSharpenModelId_;
   recipe.globalBlend = globalBlend_;
   recipe.globalEnabled = globalEnabled_;
   recipe.globalSharpenEnabled = globalSharpenEnabled_;
@@ -2587,10 +2810,16 @@ PictureRecipe MainWindow::currentRecipe()
 
 void MainWindow::saveCurrentRecipe()
 {
+  if(externalProcessingFailed_) return;
   if(sourcePath_.isEmpty() || !source_) return;
   if(deletedRecipePaths_.contains(PictureLibraryStore::normalizedPath(sourcePath_))) return;
   try { recipeStore_.save(sourcePath_, currentRecipe()); }
-  catch(const std::exception &) {}
+  catch(const std::exception &error)
+  {
+    const QString message = tr("Could not save image settings: %1").arg(QString::fromUtf8(error.what()));
+    statusLabel_->setText(message);
+    QTextStream{stderr} << message << '\n';
+  }
 }
 
 void MainWindow::loadCurrentRecipe()
@@ -2619,8 +2848,7 @@ bool MainWindow::recipeModelsAvailable(const PictureRecipe &recipe, QString *err
   {
     checkDenoise(recipe.globalModelId);
     if(recipe.globalSharpenMode == SharpenMode::Ai
-       && (appSettings_.sharpenModels.isEmpty()
-           || !QFileInfo{appSettings_.sharpenModels.front().path}.isFile()))
+       && !QFileInfo{recipeSharpenPath(appSettings_, recipe.sharpenModelId)}.isFile())
       missing.push_back(tr("DeepSharpen model"));
   }
   for(const PictureRecipeLayer &layer : recipe.layers)
@@ -2628,8 +2856,7 @@ bool MainWindow::recipeModelsAvailable(const PictureRecipe &recipe, QString *err
     if(!layer.enabled) continue;
     checkDenoise(layer.modelId);
     if(layer.sharpenMode == SharpenMode::Ai
-       && (appSettings_.sharpenModels.isEmpty()
-           || !QFileInfo{appSettings_.sharpenModels.front().path}.isFile()))
+       && !QFileInfo{recipeSharpenPath(appSettings_, recipe.sharpenModelId)}.isFile())
       missing.push_back(tr("DeepSharpen model"));
   }
   missing.removeDuplicates();
@@ -2651,11 +2878,61 @@ void MainWindow::refreshPresetCombo()
   deletePresetButton_->setEnabled(presetCombo_->currentIndex() > 0);
 }
 
+void MainWindow::rememberEdit(const QString &label)
+{
+  if(!source_ || externalAutoExport_) return;
+  const bool dragging = blendSlider_->isSliderDown() || sharpenSlider_->isSliderDown()
+                        || featherSlider_->isSliderDown() || blurSlider_->isSliderDown();
+  if(dragging && sliderEditRecorded_) return;
+  sliderEditRecorded_ = dragging;
+  // Bound snapshot history: masks can be large. Model/CFA caches are not copied.
+  if(undoEdits_.size() >= 20) undoEdits_.erase(undoEdits_.begin());
+  undoEdits_.push_back({currentRecipe(), label, selectedLayerId()});
+  redoEdits_.clear();
+  refreshActionState();
+}
+
+void MainWindow::restoreEdit(const bool redo)
+{
+  if(!source_ || !(redo ? redoAction_ : undoAction_)->isEnabled()) return;
+  auto &from = redo ? redoEdits_ : undoEdits_;
+  auto &to = redo ? undoEdits_ : redoEdits_;
+  if(from.empty()) return;
+  EditSnapshot snapshot = std::move(from.back());
+  from.pop_back();
+  to.push_back({currentRecipe(), snapshot.label, selectedLayerId()});
+  endMaskEdit();
+  compositionTimer_.stop();
+  compositionPending_ = false;
+  compositionValid_ = false;
+  presetAwaitingUpdate_ = true;
+  segmenter_.reset();
+  samNeedsReset_ = true;
+  lastSegmentLayerId_ = 0;
+  const QSignalBlocker blocker{layerList_};
+  layers_.clear();
+  pendingMaskEffects_.clear();
+  while(layerList_->count() > 1) delete layerList_->takeItem(1);
+  nextLayerId_ = 1;
+  applyRecipe(snapshot.recipe);
+  for(int row = 0; row < layerList_->count(); ++row)
+    if(layerList_->item(row)->data(Qt::UserRole).toInt() == snapshot.selectedLayer)
+      layerList_->setCurrentRow(row);
+  const QSignalBlocker presetBlocker{presetCombo_};
+  presetCombo_->setCurrentIndex(0);
+  refreshLayerControls();
+  refreshOverlay();
+  refreshActionState();
+  statusLabel_->setText(tr("Settings restored. Press Update Preview."));
+}
+
 void MainWindow::applySelectedPreset(const int index)
 {
+  refreshActionState();
   if(index <= 0 || !source_) return;
   if(loadWatcher_.isRunning() || denoiseWatcher_.isRunning() || sharpenWatcher_.isRunning()
-     || composeWatcher_.isRunning() || maskEffectWatcher_.isRunning())
+     || composeWatcher_.isRunning() || maskEffectWatcher_.isRunning()
+     || samWatcher_.isRunning() || exportWatcher_.isRunning() || batchWatcher_.isRunning())
   {
     statusLabel_->setText(tr("Wait for the current operation to finish before applying a preset"));
     return;
@@ -2677,6 +2954,15 @@ void MainWindow::applySelectedPreset(const int index)
       return;
     }
     saveCurrentRecipe();
+    endMaskEdit();
+    rememberEdit(tr("Preset"));
+    presetAwaitingUpdate_ = true;
+    compositionTimer_.stop();
+    compositionPending_ = false;
+    compositionValid_ = false;
+    segmenter_.reset();
+    samNeedsReset_ = true;
+    lastSegmentLayerId_ = 0;
     const QSignalBlocker blocker{layerList_};
     layers_.clear();
     pendingMaskEffects_.clear();
@@ -2725,6 +3011,7 @@ void MainWindow::deletePreset()
 
 void MainWindow::applyRecipe(const PictureRecipe &recipe)
 {
+  recipeSharpenModelId_ = recipe.sharpenModelId;
   globalModelId_ = recipe.globalModelId.isEmpty() ? globalModelId_ : recipe.globalModelId;
   globalBlend_ = recipe.globalBlend;
   globalEnabled_ = recipe.globalEnabled;
@@ -2810,14 +3097,17 @@ void MainWindow::scheduleComposition()
 {
   if(!source_) return;
   ++compositionRevision_;
+  compositionValid_ = false;
   exportAction_->setEnabled(false);
+  refreshModelRunButton();
+  if(presetAwaitingUpdate_) return;
   if(composeWatcher_.isRunning()) { compositionPending_ = true; return; }
   compositionTimer_.start();
 }
 
 void MainWindow::startComposition()
 {
-  if(!source_) return;
+  if(!source_ || presetAwaitingUpdate_) return;
   if(composeWatcher_.isRunning()) { compositionPending_ = true; return; }
   if(!processingReady())
   {
@@ -2843,14 +3133,17 @@ void MainWindow::startComposition()
   const auto quality = highQualityAction_->isChecked()
     ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast;
   statusLabel_->setText(tr("Updating processed preview..."));
+  const QImage before = originalPreviewCache_[quality == rawlab::image::PreviewQuality::High ? 1 : 0];
   setCanvasBusy(QStringLiteral("compose"), true);
 
   composeWatcher_.setFuture(QtConcurrent::run(
-     [generation, revision, source, cache, sharpenCache, layers, models, sharpenPath, geometry,
+     [generation, revision, source, cache, sharpenCache, layers, models, sharpenPath, geometry, before,
       globalModelId, globalBlend, globalEnabled, globalSharpenMode,
       globalSharpenStrength,
       preserveClipped, quality] {
       ComposeResult result;
+      result.highQuality = quality == rawlab::image::PreviewQuality::High;
+      result.before = before;
       result.generation = generation;
       result.revision = revision;
       try
@@ -2916,6 +3209,8 @@ void MainWindow::startComposition()
         rawlab::raw::RawImage current = rawlab::pipeline::composeDenoiseLayers(
           *source, {globalImage, globalBlend, globalEnabled}, localInputs, geometry);
         result.image = std::make_shared<rawlab::raw::RawImage>(std::move(current));
+        if(result.before.isNull()) result.before = qImageCopy(rawlab::image::renderRawPreview(
+          *source, editorPreviewMaxDimension, quality).image);
         result.preview = rawlab::image::renderRawPreview(
           *result.image, editorPreviewMaxDimension, quality);
       }
@@ -3053,12 +3348,23 @@ void MainWindow::refreshActionState()
                           || maskEffectWatcher_.isRunning() || !pendingMaskEffects_.isEmpty()
                           || exportWatcher_.isRunning() || batchWatcher_.isRunning()
                           || compositionTimer_.isActive() || compositionPending_
-                          || !canvasBusyReasons_.isEmpty();
-  exportAction_->setText(!externalOutputPath_.isEmpty() ? tr("Export and Return to Darktable")
+                           || !canvasBusyReasons_.isEmpty();
+  undoAction_->setEnabled(!processing && !maskStrokeActive_ && !undoEdits_.empty());
+  redoAction_->setEnabled(!processing && !maskStrokeActive_ && !redoEdits_.empty());
+  undoAction_->setText(undoEdits_.empty() ? tr("Undo") : tr("Undo %1").arg(undoEdits_.back().label));
+  redoAction_->setText(redoEdits_.empty() ? tr("Redo") : tr("Redo %1").arg(redoEdits_.back().label));
+  exportAction_->setText(!externalBatchRequest_.isEmpty() ? tr("Start Batch and Return to Darktable")
+    : !externalOutputPath_.isEmpty() ? tr("Export and Return to Darktable")
     : batchPaths_.size() > 1 ? tr("Export Selected...") : tr("Export DNG..."));
-  exportAction_->setEnabled(!processing && (batchPaths_.size() > 1
+  exportAction_->setEnabled(!processing && !presetAwaitingUpdate_ && (batchPaths_.size() > 1
     ? source_ != nullptr : composed_ != nullptr && compositionValid_));
-  batchAction_->setEnabled(!processing && source_ != nullptr && batchPaths_.size() > 1);
+  batchAction_->setEnabled(!processing && !presetAwaitingUpdate_ && source_ != nullptr && batchPaths_.size() > 1);
+  resumeBatchAction_->setEnabled(!processing && batchQueue_ && batchQueue_->remaining());
+  presetCombo_->setEnabled(!processing && source_ != nullptr);
+  savePresetButton_->setEnabled(!processing && source_ != nullptr);
+  deletePresetButton_->setEnabled(!processing && presetCombo_->currentIndex() > 0);
+  if(externalAutoExport_ && !externalExportStarted_ && exportAction_->isEnabled())
+    QTimer::singleShot(0, this, &MainWindow::exportDng);
   const bool navigating = loadWatcher_.isRunning() || batchWatcher_.isRunning();
   libraryAction_->setEnabled(!navigating);
   editorAction_->setEnabled(!navigating && source_ != nullptr);
@@ -3085,6 +3391,19 @@ void MainWindow::refreshActionState()
 void MainWindow::showError(const QString &title, const QString &message)
 {
   statusLabel_->setText(message);
+  if(externalAutoExport_)
+  {
+    externalProcessingFailed_ = true;
+    compositionValid_ = false;
+    externalExportStarted_ = true;
+    compositionTimer_.stop();
+    modelQueue_.clear();
+    sharpenQueue_.clear();
+    pendingRecipeSharpenRequests_.clear();
+    QTextStream{stderr} << title << ": " << message << '\n';
+    QCoreApplication::exit(4);
+    return;
+  }
   QMessageBox::critical(this, title, message);
 }
 

@@ -112,6 +112,8 @@ void printInspect(const rawlab::raw::RawInspectInfo &info)
             << "Aperture: " << (info.aperture ? std::to_string(*info.aperture) : "unavailable") << '\n'
             << "Exposure seconds: " << (info.exposureTimeSeconds
                                            ? std::to_string(*info.exposureTimeSeconds) : "unavailable") << '\n'
+            << "Exposure compensation EV: " << (info.exposureBiasEv
+                                                 ? std::to_string(*info.exposureBiasEv) : "unavailable") << '\n'
             << "Focal length mm: " << (info.focalLengthMm
                                          ? std::to_string(*info.focalLengthMm) : "unavailable") << '\n'
             << "Capture timestamp: " << (info.captureTimestamp

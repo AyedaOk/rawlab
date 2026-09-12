@@ -53,6 +53,7 @@ struct PictureRecipe
   int previewWidth = 0;
   int previewHeight = 0;
   QString globalModelId;
+  QString sharpenModelId;
   float globalBlend = 1.0f;
   bool globalEnabled = true;
   bool globalSharpenEnabled = false;
@@ -80,10 +81,12 @@ public:
                                            int targetWidth, int targetHeight);
   static PictureRecipe scaled(const PictureRecipe &source, int targetWidth, int targetHeight);
 
+  // Used by durable batch snapshots; masks remain beside the recipe JSON.
+  static std::optional<PictureRecipe> loadAtPath(const QString &path,
+                                                  int targetWidth, int targetHeight, bool strict = false);
+  static void saveAtPath(const QString &path, const PictureRecipe &recipe,
+                         const QString &presetName = {});
 private:
   static QString presetPath(const QString &name);
   static QString presetDirectory();
-  static std::optional<PictureRecipe> loadAtPath(const QString &path,
-                                                  int targetWidth, int targetHeight);
-  static void saveAtPath(const QString &path, const PictureRecipe &recipe);
 };

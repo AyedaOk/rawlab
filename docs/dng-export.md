@@ -47,6 +47,21 @@ The first synthetic DNG was validated with `tiffinfo` and `exiftool`; both ident
 
 The first ARW-derived DNG from a Sony `ILCE-7CM2` file was validated with `exiftool`; it reports `PhotometricInterpretation=Color Filter Array`, RGGB CFA pattern, source make/model, active area, black/white levels, normalized `AsShotNeutral`, and `ColorMatrix1`. Capture exposure bias and safe lens metadata are written through a referenced EXIF IFD when available.
 
+Exposure bias is read through LibRaw's EXIF callback. Some Sony ARW files have a
+metadata-only first TIFF directory without ImageLength: opening them with libtiff
+to retrieve EXIF fails even though LibRaw can decode them. The `DSC02427.ARW`
+fixture demonstrated this: its EXIF ExposureBiasValue is -1 EV, while the old
+RawLab DNG omitted that tag. The callback preserves the value on RAW-to-DNG export.
+
+DNG BaselineExposure is separate rendering calibration, not camera compensation.
+Preserve it when present in an input DNG; otherwise use the existing zero default.
+Never substitute EXIF ExposureBiasValue into BaselineExposure. Tests cover missing,
+zero, positive and negative EXIF values independently from DNG calibration.
+
+For DNG inputs, read ColorMatrix and its calibration illuminant from LibRaw's
+DNG-specific fields. Generic DNG cameras may have an empty camera-table matrix;
+this must not discard a valid embedded DNG matrix during re-export.
+
 ## Known Risk
 
 Valid CFA DNG export requires correct CFA layout tags, black/white levels, active area, color metadata, orientation, and sample packing. Treat this as a proof-of-concept milestone, not a routine TIFF export.

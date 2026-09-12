@@ -241,9 +241,9 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t
   TIFFSetField(tif, TIFFTAG_COLORMATRIX1,
                static_cast<std::uint32_t>(metadata.colorMatrix1.size()),
                metadata.colorMatrix1.data());
-  TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, static_cast<std::uint16_t>(21));
-  const float baselineExposure = metadata.exposureBiasEv && std::isfinite(*metadata.exposureBiasEv)
-    ? static_cast<float>(*metadata.exposureBiasEv) : 0.0f;
+  TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, metadata.calibrationIlluminant1);
+  const float baselineExposure = metadata.baselineExposureEv && std::isfinite(*metadata.baselineExposureEv)
+    ? static_cast<float>(*metadata.baselineExposureEv) : 0.0f;
   TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
 }
 

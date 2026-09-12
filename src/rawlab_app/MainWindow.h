@@ -10,6 +10,7 @@
 #include "ModelDownloader.h"
 #include "PictureLibraryStore.h"
 #include "PictureRecipe.h"
+#include "BatchQueue.h"
 
 #include <QFutureWatcher>
 #include <QImage>
@@ -42,6 +43,7 @@ class QToolBar;
 class QStackedWidget;
 class LibraryPage;
 class PreviewWidget;
+class QLockFile;
 
 class MainWindow final : public QMainWindow
 {
@@ -51,15 +53,17 @@ public:
   explicit MainWindow(const QString &externalInputPath = {},
                       const QString &externalOutputPath = {},
                       const QString &recipeSourcePath = {},
-                      QWidget *parent = nullptr);
+                       QWidget *parent = nullptr, bool temporaryBatch = false);
   ~MainWindow() override;
 
   bool externalExportSucceeded() const { return externalExportSucceeded_; }
+  bool configureExternalBatch(const QString &request);
 
 protected:
   void closeEvent(QCloseEvent *event) override;
 
 private:
+  friend struct MainWindowTestAccess;
   enum class MaskCategory { Ai, Gradient, Ellipse };
 
   struct MaskLayer
@@ -101,6 +105,7 @@ private:
 
   struct LoadResult
   {
+    bool highQuality = false;
     int generation = 0;
     QString sourcePath;
     std::shared_ptr<rawlab::raw::RawImage> source;
@@ -118,6 +123,8 @@ private:
 
   struct ComposeResult
   {
+    bool highQuality = false;
+    QImage before;
     int generation = 0;
     int revision = 0;
     std::shared_ptr<rawlab::raw::RawImage> image;
@@ -159,6 +166,7 @@ private:
   };
   struct BatchResult
   {
+    BatchQueue queue;
     int succeeded = 0;
     QStringList skipped;
     QStringList errors;
@@ -171,6 +179,7 @@ private:
   bool openRawPath(const QString &path);
   void exportDng();
   void exportSelectedBatch();
+  void startBatchQueue();
   void addMaskLayer();
   void deleteSelectedLayer();
   void beginMaskEdit();
@@ -208,6 +217,8 @@ private:
   void saveCurrentRecipe();
   void loadCurrentRecipe();
   void refreshPresetCombo();
+  void rememberEdit(const QString &label);
+  void restoreEdit(bool redo);
   void applySelectedPreset(int index);
   void savePreset();
   void deletePreset();
@@ -279,7 +290,17 @@ private:
   QLabel *brushSizeLabel_ = nullptr;
   QLabel *brushHardnessLabel_ = nullptr;
   QAction *exportAction_ = nullptr;
+  QAction *undoAction_ = nullptr;
+  QAction *redoAction_ = nullptr;
+  struct EditSnapshot { PictureRecipe recipe; QString label; int selectedLayer; };
+  std::vector<EditSnapshot> undoEdits_;
+  std::vector<EditSnapshot> redoEdits_;
+  bool sliderEditRecorded_ = false;
+  bool maskStrokeActive_ = false;
   QAction *batchAction_ = nullptr;
+  QAction *resumeBatchAction_ = nullptr;
+  std::optional<BatchQueue> batchQueue_;
+  std::unique_ptr<QLockFile> batchRecoveryLock_;
   QAction *libraryAction_ = nullptr;
   QAction *editorAction_ = nullptr;
   QAction *filmstripAction_ = nullptr;
@@ -305,17 +326,21 @@ private:
   QString sourcePath_;
   QString externalInputPath_;
   QString externalOutputPath_;
+  QString externalBatchRequest_;
+  std::vector<BatchQueue::Job> externalBatchJobs_;
   QString recipeSourcePath_;
   std::shared_ptr<rawlab::raw::RawImage> source_;
   std::shared_ptr<rawlab::raw::RawImage> composed_;
   rawlab::image::RawPreview originalPreview_;
   QImage currentPreviewImage_;
+  std::array<QImage, 2> originalPreviewCache_;
   std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> denoisedCache_;
   std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> sharpenedCache_;
   std::map<QString, QString> modelProviders_;
   std::map<QString, rawlab::raw::RawFileMetadata> metadataCache_;
   std::vector<MaskLayer> layers_;
   QString globalModelId_;
+  QString recipeSharpenModelId_;
   float globalBlend_ = 1.0f;
   bool globalEnabled_ = true;
   bool globalSharpenEnabled_ = false;
@@ -331,6 +356,7 @@ private:
   int metadataRevision_ = 0;
   bool compositionPending_ = false;
   bool compositionValid_ = false;
+  bool presetAwaitingUpdate_ = false;
   bool samPending_ = false;
   bool samNeedsReset_ = true;
   int lastSegmentLayerId_ = 0;
@@ -359,6 +385,7 @@ private:
   bool externalExportSucceeded_ = false;
   bool externalExportStarted_ = false;
   bool externalAutoExport_ = false;
+  bool externalProcessingFailed_ = false;
   QSet<QString> deletedRecipePaths_;
 
   QTimer compositionTimer_;

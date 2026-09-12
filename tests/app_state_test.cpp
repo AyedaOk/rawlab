@@ -14,22 +14,32 @@
 #include <QBuffer>
 #include <QComboBox>
 #include <QFile>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QListWidget>
 #include <QSettings>
+#include <QStandardPaths>
+#include <QDir>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTableWidget>
 
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <vector>
 
 int main(int argc, char **argv)
 {
+  const char *stage = "application settings";
+  struct Progress
+  {
+    const char *&stage;
+    ~Progress() { if(stage) std::fprintf(stderr, "App state test stopped at: %s\n", stage); }
+  } progress{stage};
   QApplication application{argc, argv};
   QCoreApplication::setOrganizationName(QStringLiteral("RawLabTest"));
   QCoreApplication::setApplicationName(QStringLiteral("StateTest"));
@@ -87,6 +97,7 @@ int main(int argc, char **argv)
   if(migrated.samModels.size() != 1 || migrated.samModels.front().folder != QStringLiteral("/legacy/sam")
      || migrated.activeSamModelId != migrated.samModels.front().id) return 1;
 
+  stage = "library persistence";
   const QString firstPath = settingsDirectory.filePath(QStringLiteral("first.ARW"));
   const QString secondPath = settingsDirectory.filePath(QStringLiteral("second.NEF"));
   QFile first{firstPath};
@@ -102,6 +113,7 @@ int main(int argc, char **argv)
   const QStringList remaining = store.files();
   if(remaining.size() != 1 || remaining.front() != PictureLibraryStore::normalizedPath(secondPath)) return 1;
 
+  stage = "recipe persistence";
   PictureRecipe recipe;
   recipe.previewWidth = 4;
   recipe.previewHeight = 2;
@@ -196,6 +208,33 @@ int main(int argc, char **argv)
   legacyFile.close();
   if(recipeStore.load(secondPath, 600, 400)) return 1;
 
+  stage = "preset atomic persistence and missing masks";
+  recipe.sharpenModelId = "saved-sharpen-model";
+  recipeStore.savePreset("Portrait / soft", recipe);
+  const QStringList names = recipeStore.presetNames();
+  if(names != QStringList{"Portrait / soft"}) return 1;
+  auto preset = recipeStore.loadPreset(names.front(), 8, 4);
+  if(!preset || preset->sharpenModelId != recipe.sharpenModelId
+     || preset->layers.size() != 1 || !preset->layers[0].baseMask
+     || preset->layers[0].baseMask->width() != 8) return 1;
+  PictureRecipe invalid = recipe;
+  invalid.previewWidth = 0;
+  bool saveFailed = false;
+  try { recipeStore.savePreset(names.front(), invalid); }
+  catch(const std::exception &) { saveFailed = true; }
+  if(!saveFailed || recipeStore.presetNames() != names
+     || !recipeStore.loadPreset(names.front(), 4, 2)) return 1;
+  QDir presets{QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/presets"};
+  const QStringList maskFiles = presets.entryList({"*.png"}, QDir::Files);
+  if(maskFiles.isEmpty() || !presets.remove(maskFiles.front())) return 1;
+  bool loadFailed = false;
+  try { (void)recipeStore.loadPreset(names.front(), 4, 2); }
+  catch(const std::exception &) { loadFailed = true; }
+  if(!loadFailed) return 1;
+  recipeStore.removePreset(names.front());
+  if(!recipeStore.presetNames().isEmpty() || !presets.entryList({"*.png"}, QDir::Files).isEmpty()) return 1;
+
+  stage = "library selection";
   LibraryPage libraryPage;
   libraryPage.setFiles({firstPath, secondPath, QStringLiteral("third.raw")});
   QListWidget *pictures = libraryPage.findChild<QListWidget *>();
@@ -210,6 +249,7 @@ int main(int argc, char **argv)
   if(libraryPage.selectedPath() != QStringLiteral("third.raw")
      || libraryPage.selectedPaths().size() != 2) return 1;
 
+  stage = "preview zoom";
   PreviewWidget previewWidget;
   previewWidget.resize(800, 600);
   previewWidget.show();
@@ -224,8 +264,9 @@ int main(int argc, char **argv)
   previewWidget.zoomIn();
   if(std::abs(previewWidget.imageScale() - 1.25) > 0.0001) return 1;
 
+  stage = "preview comparison";
   PreviewWidget comparisonWidget;
-  comparisonWidget.resize(200, 100);
+  comparisonWidget.resize(600, 400);
   QImage before{100, 100, QImage::Format_RGB888};
   QImage after{100, 100, QImage::Format_RGB888};
   before.fill(Qt::blue);
@@ -236,8 +277,12 @@ int main(int argc, char **argv)
   comparisonWidget.show();
   QApplication::processEvents();
   const QImage comparison = comparisonWidget.grab().toImage();
-  if(comparison.pixelColor(75, 50).blue() < 200 || comparison.pixelColor(125, 50).red() < 200) return 1;
+  const int centerX = comparison.width() / 2;
+  const int centerY = comparison.height() / 2;
+  if(comparison.pixelColor(centerX - 50, centerY).blue() < 200
+     || comparison.pixelColor(centerX + 50, centerY).red() < 200) return 1;
 
+  stage = "DNG preview round trip";
   QImage jpegImage{64, 64, QImage::Format_RGB888};
   jpegImage.fill(QColor{220, 160, 40});
   QByteArray jpegBytes;
@@ -293,10 +338,14 @@ int main(int argc, char **argv)
                             && pattern[2] == 1 && pattern[3] == 2;
   TIFFClose(dngTiff);
   if(!validCfaTags) return 1;
+  stage = "LibRaw DNG decode";
   const rawlab::raw::RawImage decodedDng = rawlab::raw::LibRawDecoder{}.decodeRawImage(
     std::filesystem::path{dngPath.toStdString()});
   if(decodedDng.width() != 64 || decodedDng.height() != 64
      || !decodedDng.metadata().cfa.isBayer) return 1;
-  if(QImage{dngPath}.isNull()) return 1;
+  stage = "Qt TIFF preview plugin";
+  // TIFF is an optional Qt image plugin; test its preview only when installed.
+  if(QImageReader::supportedImageFormats().contains("tiff") && QImage{dngPath}.isNull()) return 1;
+  stage = nullptr;
   return 0;
 }

@@ -67,14 +67,21 @@ std::array<float, 9> multiply(const std::array<float, 9> &a, const std::array<fl
 }
 
 float convolve5(const std::vector<float> &mosaic, const int width, const int height,
-                const int x, const int y, const std::array<float, 25> &kernel)
+                 const int x, const int y, const std::array<float, 25> &kernel)
 {
+  // Reflect across the edge without repeating the edge pixel, preserving Bayer
+  // parity. Clamping substitutes a different CFA color outside the image.
+  const auto mirror = [](int coordinate, int extent) {
+    const int period = 2 * (extent - 1);
+    coordinate = std::abs(coordinate) % period;
+    return coordinate < extent ? coordinate : period - coordinate;
+  };
   float result = 0.0f;
   for(int ky = -2; ky <= 2; ++ky)
     for(int kx = -2; kx <= 2; ++kx)
     {
-      const int sx = std::clamp(x + kx, 0, width - 1);
-      const int sy = std::clamp(y + ky, 0, height - 1);
+      const int sx = mirror(x + kx, width);
+      const int sy = mirror(y + ky, height);
       result += mosaic[static_cast<std::size_t>(sy) * width + sx]
                 * kernel[static_cast<std::size_t>((ky + 2) * 5 + kx + 2)];
     }

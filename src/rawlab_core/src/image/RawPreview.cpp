@@ -306,7 +306,32 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
     {
       for(int x = 0; x < width; ++x)
       {
-        const int samplesPerAxis = quality == PreviewQuality::High && scale < 0.75f ? 2 : 1;
+        if(quality == PreviewQuality::High)
+        {
+          // Integrate the whole pixel footprint in linear camera RGB. Four
+          // point samples miss fine patterns when heavily reducing a RAW.
+          const auto p0 = geometry.previewToRaw(static_cast<float>(x), static_cast<float>(y));
+          const auto p1 = geometry.previewToRaw(static_cast<float>(x + 1), static_cast<float>(y + 1));
+          const float left = std::max(static_cast<float>(area.left), std::min(p0.first, p1.first));
+          const float right = std::min(static_cast<float>(area.left + area.width), std::max(p0.first, p1.first));
+          const float top = std::max(static_cast<float>(area.top), std::min(p0.second, p1.second));
+          const float bottom = std::min(static_cast<float>(area.top + area.height), std::max(p0.second, p1.second));
+          std::array<float, 3> camera{};
+          float total = 0.0f;
+          for(int sy = static_cast<int>(std::floor(top)); sy < static_cast<int>(std::ceil(bottom)); ++sy)
+            for(int sx = static_cast<int>(std::floor(left)); sx < static_cast<int>(std::ceil(right)); ++sx)
+            {
+              const float weight = (std::min(right, static_cast<float>(sx + 1)) - std::max(left, static_cast<float>(sx)))
+                * (std::min(bottom, static_cast<float>(sy + 1)) - std::max(top, static_cast<float>(sy)));
+              const auto &pixel = amaze[static_cast<std::size_t>(sy - area.top) * area.width + sx - area.left];
+              for(std::size_t c = 0; c < 3; ++c) camera[c] += pixel[c] * weight;
+              total += weight;
+            }
+          for(float &c : camera) c /= std::max(total, 1e-12f);
+          linear[static_cast<std::size_t>(y) * width + x] = cameraToSrgb(source.metadata(), camera, true);
+          continue;
+        }
+        const int samplesPerAxis = 1;
         std::array<float, 3> rgb{};
         for(int sampleY = 0; sampleY < samplesPerAxis; ++sampleY)
         {
@@ -350,7 +375,7 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
         const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
                               + static_cast<std::size_t>(x);
         std::array<float, 3> rgb = linear[i];
-        if(x > 0 && y > 0 && x + 1 < width && y + 1 < height)
+        if(quality == PreviewQuality::Fast && x > 0 && y > 0 && x + 1 < width && y + 1 < height)
         {
           const auto luma = [&linear, width](const int px, const int py) {
             const auto &pixel = linear[static_cast<std::size_t>(py) * static_cast<std::size_t>(width)
@@ -370,5 +395,6 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
   });
   return RawPreview{std::move(preview), geometry};
 }
+
 
 }
