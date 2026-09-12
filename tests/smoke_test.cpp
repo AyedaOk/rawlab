@@ -185,14 +185,18 @@ int main()
   if(!exifTiff) return 1;
   char *artist = nullptr;
   char *description = nullptr;
+  float baselineExposure = 0.0f;
   toff_t exifOffset = 0;
   const bool hasBaselineMetadata = TIFFGetField(exifTiff, TIFFTAG_ARTIST, &artist) == 1
                                    && TIFFGetField(exifTiff, TIFFTAG_IMAGEDESCRIPTION,
-                                                   &description) == 1
+                                                    &description) == 1
+                                   && TIFFGetField(exifTiff, TIFFTAG_BASELINEEXPOSURE,
+                                                  &baselineExposure) == 1
                                    && TIFFGetField(exifTiff, TIFFTAG_EXIFIFD, &exifOffset) == 1
                                    && artist && description && exifOffset != 0
                                    && std::string_view{artist} == "RawLab Artist"
-                                   && std::string_view{description} == "RawLab EXIF test";
+                                   && std::string_view{description} == "RawLab EXIF test"
+                                   && nearlyEqual(baselineExposure, -0.3f);
   if(!hasBaselineMetadata || TIFFReadEXIFDirectory(exifTiff, exifOffset) != 1)
   {
     TIFFClose(exifTiff);

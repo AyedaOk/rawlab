@@ -41,6 +41,24 @@ QString PictureRecipeStore::pathForSource(const QString &sourcePath)
   return directory + QLatin1Char('/') + key + QStringLiteral(".json");
 }
 
+QString PictureRecipeStore::presetDirectory()
+{
+  const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                            + QStringLiteral("/presets");
+  QDir{}.mkpath(directory);
+  return directory;
+}
+
+QString PictureRecipeStore::presetPath(const QString &name)
+{
+  const QString trimmed = name.trimmed();
+  if(trimmed.isEmpty()) throw std::invalid_argument{"preset name cannot be empty"};
+  const QByteArray identity = trimmed.toUtf8();
+  const QString key = QString::fromLatin1(
+    QCryptographicHash::hash(identity, QCryptographicHash::Sha1).toHex());
+  return presetDirectory() + QLatin1Char('/') + key + QStringLiteral(".json");
+}
+
 rawlab::pipeline::Mask PictureRecipeStore::resizeMask(
   const rawlab::pipeline::Mask &source, const int targetWidth, const int targetHeight)
 {
@@ -86,7 +104,12 @@ PictureRecipe PictureRecipeStore::scaled(
 
 void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &recipe) const
 {
-  if(sourcePath.isEmpty() || recipe.previewWidth <= 0 || recipe.previewHeight <= 0)
+  saveAtPath(pathForSource(sourcePath), recipe);
+}
+
+void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &recipe)
+{
+  if(path.isEmpty() || recipe.previewWidth <= 0 || recipe.previewHeight <= 0)
   {
     throw std::invalid_argument{"cannot save an empty picture recipe"};
   }
@@ -104,7 +127,7 @@ void PictureRecipeStore::save(const QString &sourcePath, const PictureRecipe &re
    root[QStringLiteral("globalSharpenMode")] = static_cast<int>(globalMode);
   root[QStringLiteral("preserveClipped")] = recipe.preserveClipped;
 
-  const QFileInfo recipeInfo{pathForSource(sourcePath)};
+   const QFileInfo recipeInfo{path};
   const auto saveMask = [&recipeInfo](const PictureRecipeLayer &layer,
                                       const rawlab::pipeline::Mask &mask,
                                       const QString &suffix) {
@@ -207,10 +230,62 @@ void PictureRecipeStore::remove(const QString &sourcePath) const
   for(const QString &mask : masks) recipeInfo.dir().remove(mask);
 }
 
+QStringList PictureRecipeStore::presetNames() const
+{
+  QStringList names;
+  const QDir directory{presetDirectory()};
+  for(const QString &fileName : directory.entryList({QStringLiteral("*.json")}, QDir::Files))
+  {
+    QFile file{directory.filePath(fileName)};
+    if(!file.open(QIODevice::ReadOnly)) continue;
+    const QString name = QJsonDocument::fromJson(file.readAll()).object()
+                           .value(QStringLiteral("presetName")).toString();
+    if(!name.isEmpty()) names.push_back(name);
+  }
+  names.sort(Qt::CaseInsensitive);
+  return names;
+}
+
+std::optional<PictureRecipe> PictureRecipeStore::loadPreset(
+  const QString &name, const int targetWidth, const int targetHeight) const
+{
+  return loadAtPath(presetPath(name), targetWidth, targetHeight);
+}
+
+void PictureRecipeStore::savePreset(const QString &name, const PictureRecipe &recipe) const
+{
+  const QString path = presetPath(name);
+  saveAtPath(path, recipe);
+  QFile file{path};
+  if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"failed to reopen preset"};
+  QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+  file.close();
+  root[QStringLiteral("presetName")] = name.trimmed();
+  QSaveFile output{path};
+  if(!output.open(QIODevice::WriteOnly) || !output.write(QJsonDocument{root}.toJson(QJsonDocument::Indented))
+     || !output.commit()) throw std::runtime_error{"failed to save preset name"};
+}
+
+void PictureRecipeStore::removePreset(const QString &name) const
+{
+  const QString path = presetPath(name);
+  const QFileInfo info{path};
+  QFile::remove(path);
+  const QStringList masks = info.dir().entryList(
+    {info.completeBaseName() + QStringLiteral("-layer-*")}, QDir::Files);
+  for(const QString &mask : masks) info.dir().remove(mask);
+}
+
 std::optional<PictureRecipe> PictureRecipeStore::load(
   const QString &sourcePath, const int targetWidth, const int targetHeight) const
 {
-  QFile file{pathForSource(sourcePath)};
+  return loadAtPath(pathForSource(sourcePath), targetWidth, targetHeight);
+}
+
+std::optional<PictureRecipe> PictureRecipeStore::loadAtPath(
+  const QString &path, const int targetWidth, const int targetHeight)
+{
+  QFile file{path};
   if(!file.open(QIODevice::ReadOnly)) return std::nullopt;
   const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
   if(root.isEmpty()) return std::nullopt;

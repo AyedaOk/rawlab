@@ -242,7 +242,9 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t
                static_cast<std::uint32_t>(metadata.colorMatrix1.size()),
                metadata.colorMatrix1.data());
   TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, static_cast<std::uint16_t>(21));
-  TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, 0.0f);
+  const float baselineExposure = metadata.exposureBiasEv && std::isfinite(*metadata.exposureBiasEv)
+    ? static_cast<float>(*metadata.exposureBiasEv) : 0.0f;
+  TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
 }
 
 void setJpegPreviewFields(TIFF *tif, const JpegPreview &preview,

@@ -4,6 +4,7 @@
 
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <optional>
@@ -68,9 +69,21 @@ public:
                                     int targetWidth, int targetHeight) const;
   void save(const QString &sourcePath, const PictureRecipe &recipe) const;
   void remove(const QString &sourcePath) const;
+  QStringList presetNames() const;
+  std::optional<PictureRecipe> loadPreset(const QString &name,
+                                           int targetWidth, int targetHeight) const;
+  void savePreset(const QString &name, const PictureRecipe &recipe) const;
+  void removePreset(const QString &name) const;
 
   static QString pathForSource(const QString &sourcePath);
   static rawlab::pipeline::Mask resizeMask(const rawlab::pipeline::Mask &source,
                                            int targetWidth, int targetHeight);
   static PictureRecipe scaled(const PictureRecipe &source, int targetWidth, int targetHeight);
+
+private:
+  static QString presetPath(const QString &name);
+  static QString presetDirectory();
+  static std::optional<PictureRecipe> loadAtPath(const QString &path,
+                                                  int targetWidth, int targetHeight);
+  static void saveAtPath(const QString &path, const PictureRecipe &recipe);
 };

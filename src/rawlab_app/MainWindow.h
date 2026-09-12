@@ -207,6 +207,11 @@ private:
   void startLibraryThumbnail(const QString &path);
   void saveCurrentRecipe();
   void loadCurrentRecipe();
+  void refreshPresetCombo();
+  void applySelectedPreset(int index);
+  void savePreset();
+  void deletePreset();
+  bool recipeModelsAvailable(const PictureRecipe &recipe, QString *error = nullptr) const;
   PictureRecipe currentRecipe();
   void applyRecipe(const PictureRecipe &recipe);
   void scheduleComposition();
@@ -231,6 +236,7 @@ private:
   QListWidget *layerList_ = nullptr;
   QListWidget *filmstrip_ = nullptr;
   QComboBox *modelCombo_ = nullptr;
+  QComboBox *presetCombo_ = nullptr;
   QSlider *blendSlider_ = nullptr;
   QLabel *blendValueLabel_ = nullptr;
   QComboBox *sharpenModeCombo_ = nullptr;
@@ -253,6 +259,8 @@ private:
   QPushButton *deleteLayerButton_ = nullptr;
   QPushButton *renameLayerButton_ = nullptr;
   QPushButton *exportButton_ = nullptr;
+  QPushButton *savePresetButton_ = nullptr;
+  QPushButton *deletePresetButton_ = nullptr;
   QToolBar *maskToolbar_ = nullptr;
   QComboBox *maskCategoryCombo_ = nullptr;
   QAction *positiveAction_ = nullptr;
@@ -343,7 +351,6 @@ private:
   QString runningSharpenKey_;
   QString pendingMetadataPath_;
   QSet<QString> thumbnailJobs_;
-  QSet<QString> pendingSharpenPaths_;
   QSet<QString> pendingRecipeSharpenRequests_;
   QSet<int> pendingMaskEffects_;
   QSet<QString> canvasBusyReasons_;

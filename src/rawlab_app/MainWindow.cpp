@@ -34,6 +34,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -451,6 +452,17 @@ void MainWindow::buildUi()
   layerButtons->addWidget(deleteLayerButton_);
   panelLayout->addLayout(layerButtons);
 
+  auto *presetGroup = new QGroupBox{tr("Presets"), panel};
+  auto *presetLayout = new QHBoxLayout{presetGroup};
+  presetCombo_ = new QComboBox{presetGroup};
+  presetCombo_->setToolTip(tr("Choose a saved RawLab preset"));
+  savePresetButton_ = new QPushButton{tr("Save"), presetGroup};
+  deletePresetButton_ = new QPushButton{tr("Delete"), presetGroup};
+  presetLayout->addWidget(presetCombo_, 1);
+  presetLayout->addWidget(savePresetButton_);
+  presetLayout->addWidget(deletePresetButton_);
+  panelLayout->addWidget(presetGroup);
+
   auto *settingsGroup = new QGroupBox{tr("Denoise && Sharpen"), panel};
   auto *settingsLayout = new QFormLayout{settingsGroup};
   auto *modelRow = new QWidget{settingsGroup};
@@ -495,6 +507,7 @@ void MainWindow::buildUi()
   clippedCheck_ = new QCheckBox{tr("Preserve clipped highlights"), settingsGroup};
   settingsLayout->addRow(clippedCheck_);
   panelLayout->addWidget(settingsGroup);
+  refreshPresetCombo();
 
   auto *maskingGroup = new QGroupBox{tr("Masking"), panel};
   auto *maskingLayout = new QVBoxLayout{maskingGroup};
@@ -680,6 +693,10 @@ void MainWindow::buildUi()
   connect(zoomOutAction_, &QAction::triggered, previewWidget_, &PreviewWidget::zoomOut);
   connect(actualSizeAction_, &QAction::triggered, previewWidget_, &PreviewWidget::actualSize);
   connect(settingsAction, &QAction::triggered, this, &MainWindow::showSettings);
+  connect(presetCombo_, qOverload<int>(&QComboBox::currentIndexChanged), this,
+          &MainWindow::applySelectedPreset);
+  connect(savePresetButton_, &QPushButton::clicked, this, &MainWindow::savePreset);
+  connect(deletePresetButton_, &QPushButton::clicked, this, &MainWindow::deletePreset);
   connect(importPicturesAction, &QAction::triggered, this, &MainWindow::importPictures);
   connect(importFolderAction, &QAction::triggered, this, &MainWindow::importFolder);
   connect(libraryAction_, &QAction::triggered, this, &MainWindow::showLibrary);
@@ -1060,7 +1077,6 @@ void MainWindow::connectUi()
     globalSharpenStrength_ = 1.0f;
     preserveClipped_ = true;
     compositionValid_ = false;
-    pendingSharpenPaths_.clear();
     while(layerList_->count() > 1) delete layerList_->takeItem(1);
     layerList_->item(0)->setData(ProcessingEnabledRole, true);
     const QImage displayImage = toQImage(result.preview.image);
@@ -1075,7 +1091,13 @@ void MainWindow::connectUi()
     {
       const auto recipe = recipeStore_.load(recipeSourcePath_, originalPreview_.image.width,
                                             originalPreview_.image.height);
-      if(recipe)
+      QString modelError;
+      if(recipe && !recipeModelsAvailable(*recipe, &modelError))
+      {
+        showError(tr("Apply settings"), modelError);
+        QTimer::singleShot(0, qApp, [] { QCoreApplication::exit(4); });
+      }
+      else if(recipe)
       {
         applyRecipe(*recipe);
         queueRecipeProcessing();
@@ -1116,12 +1138,6 @@ void MainWindow::connectUi()
       denoisedCache_[result.modelPath] = result.image;
       modelProviders_[result.modelPath] = result.executionProvider;
       statusLabel_->setText(tr("Denoise ready on %1").arg(result.executionProvider));
-        if(pendingSharpenPaths_.remove(result.modelPath))
-        {
-         const SharpenMode mode = selectedLayerId() == globalLayerId ? globalSharpenMode_
-           : selectedMaskLayer() ? selectedMaskLayer()->sharpenMode : SharpenMode::Off;
-          runSharpenPath(result.modelPath, mode);
-        }
         queuePendingRecipeSharpening();
         scheduleComposition();
     }
@@ -2057,34 +2073,21 @@ void MainWindow::queuePendingRecipeSharpening()
 
 void MainWindow::runSelectedModel()
 {
-  if(!source_ || modelCombo_->currentIndex() < 0) return;
-  const QString id = modelCombo_->currentData().toString();
-  if(id.isEmpty()) return;
-  if(selectedLayerId() == globalLayerId) globalModelId_ = id;
-  else if(MaskLayer *layer = selectedMaskLayer()) layer->modelId = id;
+  if(!source_) return;
+  if(modelCombo_->currentIndex() >= 0)
+  {
+    const QString id = modelCombo_->currentData().toString();
+    if(!id.isEmpty())
+    {
+      if(selectedLayerId() == globalLayerId) globalModelId_ = id;
+      else if(MaskLayer *layer = selectedMaskLayer()) layer->modelId = id;
+    }
+  }
   compositionValid_ = false;
   beforeAfterAction_->setChecked(false);
   refreshActionState();
   failedModelPath_.clear();
-  const QString path = modelPath(id);
-  if(denoisedCache_.contains(path))
-  {
-    const MaskLayer *layer = selectedMaskLayer();
-     const SharpenMode mode = selectedLayerId() == globalLayerId
-       ? globalSharpenMode_ : layer ? layer->sharpenMode : SharpenMode::Off;
-     const QString sharpenPath = mode == SharpenMode::Normal ? normalSharpenPath() : sharpenModelPath();
-     const bool needsSharpen = mode != SharpenMode::Off && !sharpenPath.isEmpty()
-       && !sharpenedCache_.contains(sharpenCacheKey(path, sharpenPath));
-    if(needsSharpen) queueSharpen(id);
-    else scheduleComposition();
-  }
-  else
-  {
-     if((selectedLayerId() == globalLayerId && globalSharpenMode_ != SharpenMode::Off)
-        || (selectedMaskLayer() && selectedMaskLayer()->sharpenMode != SharpenMode::Off))
-      pendingSharpenPaths_.insert(path);
-    queueModel(id);
-  }
+  queueRecipeProcessing();
   refreshModelRunButton();
 }
 
@@ -2602,6 +2605,122 @@ void MainWindow::loadCurrentRecipe()
     return;
   }
   applyRecipe(*recipe);
+}
+
+bool MainWindow::recipeModelsAvailable(const PictureRecipe &recipe, QString *error) const
+{
+  QStringList missing;
+  const auto checkDenoise = [this, &missing](const QString &id) {
+    const auto model = ApplicationSettingsStore::modelById(appSettings_, id);
+    if(id.isEmpty() || model.path.isEmpty() || !QFileInfo{model.path}.isFile())
+      missing.push_back(id.isEmpty() ? tr("unnamed denoise model") : id);
+  };
+  if(recipe.globalEnabled)
+  {
+    checkDenoise(recipe.globalModelId);
+    if(recipe.globalSharpenMode == SharpenMode::Ai
+       && (appSettings_.sharpenModels.isEmpty()
+           || !QFileInfo{appSettings_.sharpenModels.front().path}.isFile()))
+      missing.push_back(tr("DeepSharpen model"));
+  }
+  for(const PictureRecipeLayer &layer : recipe.layers)
+  {
+    if(!layer.enabled) continue;
+    checkDenoise(layer.modelId);
+    if(layer.sharpenMode == SharpenMode::Ai
+       && (appSettings_.sharpenModels.isEmpty()
+           || !QFileInfo{appSettings_.sharpenModels.front().path}.isFile()))
+      missing.push_back(tr("DeepSharpen model"));
+  }
+  missing.removeDuplicates();
+  if(missing.isEmpty()) return true;
+  if(error) *error = tr("Missing model(s): %1").arg(missing.join(tr(", ")));
+  return false;
+}
+
+void MainWindow::refreshPresetCombo()
+{
+  if(!presetCombo_) return;
+  const QString selected = presetCombo_->currentData().toString();
+  const QSignalBlocker blocker{presetCombo_};
+  presetCombo_->clear();
+  presetCombo_->addItem(tr("No preset"), QString{});
+  for(const QString &name : recipeStore_.presetNames()) presetCombo_->addItem(name, name);
+  const int index = presetCombo_->findData(selected);
+  presetCombo_->setCurrentIndex(index >= 0 ? index : 0);
+  deletePresetButton_->setEnabled(presetCombo_->currentIndex() > 0);
+}
+
+void MainWindow::applySelectedPreset(const int index)
+{
+  if(index <= 0 || !source_) return;
+  if(loadWatcher_.isRunning() || denoiseWatcher_.isRunning() || sharpenWatcher_.isRunning()
+     || composeWatcher_.isRunning() || maskEffectWatcher_.isRunning())
+  {
+    statusLabel_->setText(tr("Wait for the current operation to finish before applying a preset"));
+    return;
+  }
+  const QString name = presetCombo_->itemData(index).toString();
+  try
+  {
+    const auto recipe = recipeStore_.loadPreset(name, originalPreview_.image.width,
+                                                originalPreview_.image.height);
+    if(!recipe)
+    {
+      showError(tr("Load preset"), tr("Could not load preset %1.").arg(name));
+      return;
+    }
+    QString modelError;
+    if(!recipeModelsAvailable(*recipe, &modelError))
+    {
+      showError(tr("Load preset"), modelError);
+      return;
+    }
+    saveCurrentRecipe();
+    const QSignalBlocker blocker{layerList_};
+    layers_.clear();
+    pendingMaskEffects_.clear();
+    while(layerList_->count() > 1) delete layerList_->takeItem(1);
+    nextLayerId_ = 1;
+    applyRecipe(*recipe);
+    statusLabel_->setText(tr("Preset loaded. Press Update Preview to process it."));
+  }
+  catch(const std::exception &error) { showError(tr("Load preset"), QString::fromUtf8(error.what())); }
+}
+
+void MainWindow::savePreset()
+{
+  if(!source_) return;
+  const QString current = presetCombo_->currentData().toString();
+  bool accepted = false;
+  const QString name = QInputDialog::getText(this, tr("Save preset"), tr("Preset name:"),
+                                             QLineEdit::Normal, current, &accepted).trimmed();
+  if(!accepted || name.isEmpty()) return;
+  try
+  {
+    recipeStore_.savePreset(name, currentRecipe());
+    refreshPresetCombo();
+    const QSignalBlocker blocker{presetCombo_};
+    presetCombo_->setCurrentIndex(presetCombo_->findData(name));
+    deletePresetButton_->setEnabled(true);
+    statusLabel_->setText(tr("Preset saved: %1").arg(name));
+  }
+  catch(const std::exception &error) { showError(tr("Save preset"), QString::fromUtf8(error.what())); }
+}
+
+void MainWindow::deletePreset()
+{
+  if(presetCombo_->currentIndex() <= 0) return;
+  const QString name = presetCombo_->currentData().toString();
+  if(QMessageBox::question(this, tr("Delete preset"),
+                           tr("Delete preset %1?").arg(name)) != QMessageBox::Yes) return;
+  try
+  {
+    recipeStore_.removePreset(name);
+    refreshPresetCombo();
+    statusLabel_->setText(tr("Preset deleted: %1").arg(name));
+  }
+  catch(const std::exception &error) { showError(tr("Delete preset"), QString::fromUtf8(error.what())); }
 }
 
 void MainWindow::applyRecipe(const PictureRecipe &recipe)
