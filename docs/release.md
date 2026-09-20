@@ -18,6 +18,26 @@ RawLab ships three desktop packages, each produced by its own workflow:
 All three workflows run manually or for tags matching `v*.*.*`. Every run uploads
 an artifact; tagged runs also attach the package to a GitHub release.
 
+## macOS signing
+
+The macOS build is **ad-hoc signed** (`bundle.macOS.signingIdentity: "-"`).
+Ad-hoc signing is mandatory on Apple Silicon: without a valid signature macOS
+reports the app as "damaged" and refuses to launch it. Ad-hoc signing gives every
+executable and dylib a valid local signature, so the "damaged" error is gone.
+
+Ad-hoc signing is not notarization, so on first launch macOS shows an
+"unidentified developer" warning. Users open it once via **right-click → Open**
+(or System Settings → Privacy & Security → "Open Anyway"). To strip the download
+quarantine flag instead:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/RawLab.app
+```
+
+A clean, warning-free build requires an Apple Developer account plus
+notarization (`APPLE_SIGNING_IDENTITY`, `APPLE_CERTIFICATE`, `APPLE_ID`, …); that
+is future work.
+
 ## GitHub Actions
 
 `.github/workflows/release.yml` builds the worker with the CPU ONNX Runtime
