@@ -84,12 +84,13 @@ jobs:
           shopt -s nullglob
           appimages=(desktop/src-tauri/target/release/bundle/appimage/*.AppImage)
           test "${#appimages[@]}" -eq 1
+          appimage="$(realpath "${appimages[0]}")"
           extract_dir=/tmp/rawlab-appimage-check
           rm -rf "$extract_dir"
           mkdir -p "$extract_dir"
           (
             cd "$extract_dir"
-            "${appimages[0]}" --appimage-extract >/dev/null
+            "$appimage" --appimage-extract >/dev/null
           )
           multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
           test -x "$extract_dir/squashfs-root/usr/bin/rawlab-desktop"
