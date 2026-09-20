@@ -80,6 +80,8 @@ jobs:
           test -x "$app/Contents/MacOS/rawlab-desktop" || test -x "$app/Contents/MacOS/RawLab"
           ls "$app/Contents/Resources"/libonnxruntime*.dylib
           test -f "$app/Contents/Resources/lensfun/version_1/timestamp.txt"
+          codesign --verify --deep --strict "$app"
+          codesign -dv "$app" 2>&1 | grep -q "Signature=adhoc"
           hdiutil detach "$mount" -quiet
 
       - uses: actions/upload-artifact@v4
