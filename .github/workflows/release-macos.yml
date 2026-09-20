@@ -66,7 +66,11 @@ jobs:
       - name: Validate bundle
         run: |
           set -euo pipefail
-          app="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+          dmg="$(find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$dmg"
+          mount="$(mktemp -d)"
+          hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse -quiet
+          app="$(find "$mount" -maxdepth 1 -name '*.app' -print -quit)"
           test -n "$app"
           echo "--- Contents/MacOS ---"
           ls -la "$app/Contents/MacOS"
@@ -76,7 +80,7 @@ jobs:
           test -x "$app/Contents/MacOS/rawlab-desktop" || test -x "$app/Contents/MacOS/RawLab"
           ls "$app/Contents/Resources"/libonnxruntime*.dylib
           test -f "$app/Contents/Resources/lensfun/version_1/timestamp.txt"
-          find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | grep -q .
+          hdiutil detach "$mount" -quiet
 
       - uses: actions/upload-artifact@v4
         with:

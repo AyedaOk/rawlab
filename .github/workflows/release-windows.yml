@@ -70,10 +70,10 @@ jobs:
 
       - name: Stage Windows runtime
         shell: pwsh
-        env:
-          ONNXRUNTIME_LIB_DIR: ${{ env.TEMP }}\onnxruntime-win-x64-1.20.1\lib
-          VCPKG_BIN_DIR: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed\x64-windows\bin
-        run: ./scripts/stage-tauri-windows.ps1
+        run: |
+          $onnx = "$env:TEMP\onnxruntime-win-x64-1.20.1\lib"
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          ./scripts/stage-tauri-windows.ps1 -OnnxRuntimeLibDir $onnx -VcpkgBinDir $vcpkg
 
       - name: Build NSIS installer
         working-directory: desktop
