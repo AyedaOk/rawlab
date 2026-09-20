@@ -33,7 +33,7 @@ jobs:
           cache: true
 
       - name: Install vcpkg dependencies
-        run: vcpkg install libraw libtiff libpng --triplet x64-windows
+        run: vcpkg install libraw tiff libpng --triplet x64-windows
 
       - uses: actions/setup-node@v4
         with:
