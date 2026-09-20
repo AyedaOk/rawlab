@@ -42,6 +42,15 @@ void PictureLibraryStore::removeFiles(const QStringList &paths) const
   QSettings{}.setValue(QStringLiteral("library/files"), result);
 }
 
+void PictureLibraryStore::removeMetadata(const QString &path) const
+{
+  QSettings settings;
+  settings.remove(metadataKey(path));
+  settings.sync();
+  if(settings.status() != QSettings::NoError)
+    throw std::runtime_error{"Cannot remove library metadata"};
+}
+
 PictureLibraryMetadata PictureLibraryStore::metadata(const QString &path) const
 {
   const QString key = metadataKey(path);

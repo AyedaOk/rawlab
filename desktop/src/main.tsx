@@ -24,6 +24,7 @@ import {
   Trash2,
 } from "lucide-react";
 import "./style.css";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   isDesktop,
   chooseNativePreviews,
@@ -53,6 +54,7 @@ import {
   libraryMetadata,
   saveLibraryMetadata,
   addLibraryPaths,
+  removeLibraryPaths,
   loadRecipe,
   saveRecipe,
   listPresets,
@@ -164,6 +166,7 @@ function App() {
   const [photos, setPhotos] = useState<Photo[]>([demo]);
   const [currentId, setCurrentId] = useState(0);
   const [selection, setSelection] = useState<number[]>([]);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: number } | null>(null);
   const [library, setLibrary] = useState(true);
   const [batchView, setBatchView] = useState(false);
   const libraryRef = useRef(library);
@@ -248,6 +251,11 @@ function App() {
     provider: "cpu",
   });
   const [defaultSharpenModelId, setDefaultSharpenModelId] = useState("");
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    if (!isDesktop()) return;
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
   const [externalSession, setExternalSession] = useState<ExternalSession | null>(null);
   const externalSessionRef = useRef(externalSession);
   externalSessionRef.current = externalSession;
@@ -260,6 +268,7 @@ function App() {
   const loadedMetadata = useRef(new Set<number>());
   const persistence = useRef<PersistenceQueue | null>(null);
   const closing = useRef(false);
+  const closeFailed = useRef(false);
   const [restoreEpoch, setRestoreEpoch] = useState(0);
   const recipeRevision = (id: number) => photoRevisions.current.get(id) ?? 0;
   useEffect(() => () => {
@@ -267,7 +276,6 @@ function App() {
     void persistence.current?.flushAll();
   }, []);
   const loadingRecipes = useRef(new Set<number>());
-  const failedRecipeLoads = useRef(new Set<number>());
   const recipeLoadTokens = useRef(new Map<number, number>());
   const rawPreviewCache = useRef(new Map<string, RawPreview>());
   const processedPreviewCache = useRef(new Map<string, RawPreview>());
@@ -421,10 +429,13 @@ function App() {
   if (!persistence.current) persistence.current = new PersistenceQueue((key, error) => {
     setFailedPersistenceKey(key);
     setNotice(`Could not save ${key.startsWith("recipe:") ? "recipe" : key.startsWith("preset:") ? "preset" : "photo metadata"}: ${String(error)}`);
-  }, (key) => setFailedPersistenceKey((failed) => {
-    if (failed !== key) return failed;
-    return persistence.current?.failedKeys().find((candidate) => candidate !== key) ?? "";
-  }));
+  }, (key) => {
+    closeFailed.current = false;
+    setFailedPersistenceKey((failed) => {
+      if (failed !== key) return failed;
+      return persistence.current?.failedKeys().find((candidate) => candidate !== key) ?? "";
+    });
+  });
   useEffect(() => {
     if (!isDesktop()) return;
     let unlisten: (() => void) | undefined;
@@ -433,6 +444,17 @@ function App() {
       unlisten = await currentWindow.onCloseRequested(async (event) => {
         event.preventDefault();
         if (closing.current) return;
+        if (closeFailed.current) {
+          closeFailed.current = false;
+          closing.current = true;
+          try {
+            if (externalSessionRef.current) await finishExternal(3);
+            else await currentWindow.destroy();
+          } finally {
+            closing.current = false;
+          }
+          return;
+        }
         closing.current = true;
         setNotice("Saving changes before closing...");
         let timeout: number | undefined;
@@ -440,8 +462,6 @@ function App() {
           const save = (async () => {
             while (loadingRecipes.current.size)
               await new Promise((resolve) => window.setTimeout(resolve, 10));
-            if (failedRecipeLoads.current.size)
-              throw new Error("One or more recipes could not be restored safely");
             for (const item of photosRef.current) enqueuePhotoPersistence(item, 0);
             return persistence.current?.flushAll();
           })();
@@ -456,10 +476,14 @@ function App() {
           } else if (saved) {
             if (externalSessionRef.current) await finishExternal(3);
             else await currentWindow.destroy();
-          } else setNotice("Could not save all changes. Fix the storage error and close again.");
+          } else {
+            closeFailed.current = true;
+            setNotice("Some changes could not be saved. Press the close button again to close without saving.");
+          }
         } catch (error) {
           if (timeout) window.clearTimeout(timeout);
-          setNotice(`Could not close safely: ${String(error)}`);
+          closeFailed.current = true;
+          setNotice(`Could not close safely: ${String(error)} Press the close button again to close without saving.`);
         } finally {
           closing.current = false;
         }
@@ -765,12 +789,11 @@ function App() {
       ? rawView.url
       : photo.url;
   function recipeFor(p: Photo, outputKind?: "cfa" | "linear-rgb") {
+    const defaultDenoiseId = catalog.denoise.find((m) => m.available)?.id || "";
     return {
-      layers: p.layers.map((l, index) => ({
+      layers: p.layers.map((l) => ({
         ...l,
-        modelId:
-          l.modelId ||
-          (index === 0 ? catalog.denoise.find((m) => m.available)?.id || "" : ""),
+        modelId: l.modelId || defaultDenoiseId,
       })),
       highlights: p.highlights,
       chromaticAberration: p.chromaticAberration,
@@ -1238,7 +1261,6 @@ function App() {
       if (cancelled()) return;
       const stored = (await loadRecipe(path, width, height)).recipe;
       loadSucceeded = true;
-      failedRecipeLoads.current.delete(id);
       if (!stored || !Array.isArray(stored.layers) || recipeRevision(id) !== revision
         || recipeLoadTokens.current.get(id) !== token || cancelled()) return;
       setPhotos((items) => items.map((item) => item.id === id && item.rawPath === path ? {
@@ -1254,7 +1276,6 @@ function App() {
       } : item));
     } catch (error) {
       if (recipeLoadTokens.current.get(id) === token) {
-        failedRecipeLoads.current.add(id);
         if (!cancelled()) setNotice(`Could not restore recipe: ${String(error)}`);
       }
     } finally {
@@ -1505,6 +1526,74 @@ function App() {
         : [id];
     });
   }
+  async function removePhotos(ids: number[]) {
+    if (closing.current || !ids.length) return;
+    const targets = photosRef.current.filter((item) => ids.includes(item.id) && item.kind !== "demo");
+    if (!targets.length) return;
+    const removed = new Set(targets.map((item) => item.id));
+    const paths = targets
+      .map((item) => item.rawPath)
+      .filter((path): path is string => Boolean(path));
+    for (const path of paths) {
+      await persistence.current?.flush(`recipe:${path}`);
+      await persistence.current?.flush(`metadata:${path}`);
+    }
+    if (isDesktop() && paths.length) {
+      try {
+        await removeLibraryPaths(paths);
+      } catch (error) {
+        setNotice(`Could not remove from library: ${String(error)}`);
+        return;
+      }
+    }
+    for (const item of targets) {
+      if (item.url.startsWith("blob:")) {
+        URL.revokeObjectURL(item.url);
+        urls.current = urls.current.filter((entry) => entry !== item.url);
+      }
+      history.current.delete(item.id);
+      photoRevisions.current.delete(item.id);
+      metadataRevisions.current.delete(item.id);
+      loadedRecipes.current.delete(item.id);
+      loadedMetadata.current.delete(item.id);
+      recipeLoadTokens.current.delete(item.id);
+      loadingRecipes.current.delete(item.id);
+    }
+    const remaining = photosRef.current.filter((item) => !removed.has(item.id));
+    setPhotos(remaining.length ? remaining : [demo]);
+    setSelection((current) => current.filter((id) => !removed.has(id)));
+    setContextMenu(null);
+    if (removed.has(currentId) || !remaining.length) {
+      setCurrentId(remaining[0]?.id ?? demo.id);
+      setLibrary(true);
+    }
+    setNotice(`Removed ${removed.size} photograph${removed.size === 1 ? "" : "s"} from the library. Files stay on disk.`);
+  }
+  useEffect(() => {
+    if (!library || !selection.length) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement;
+      if (target.closest("input,textarea,select") || target.isContentEditable) return;
+      event.preventDefault();
+      void removePhotos(selection);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [library, selection, currentId]);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const dismiss = () => setContextMenu(null);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setContextMenu(null);
+    };
+    window.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", escape);
+    return () => {
+      window.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [contextMenu]);
   function applySelectedMetadata(values: Partial<Pick<Photo, "rating" | "labels">>) {
     if (closing.current) return;
     const ids = new Set(selection);
@@ -1624,7 +1713,7 @@ function App() {
         <div className="brand">
           <Aperture size={22} />
           <span>RawLab</span>
-          <small>DESIGN PREVIEW</small>
+          <small>{appVersion ? `v${appVersion}` : "preview"}</small>
         </div>
         <nav aria-label="Workspace">
           <button
@@ -1802,6 +1891,14 @@ function App() {
                     aria-pressed={selection.includes(p.id)}
                      onClick={(e) => pick(p.id, e)}
                     onDoubleClick={() => openPhoto(p.id)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      if (!selection.includes(p.id)) {
+                        selectionAnchor.current = p.id;
+                        setSelection([p.id]);
+                      }
+                      setContextMenu({ x: e.clientX, y: e.clientY, id: p.id });
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -1834,7 +1931,7 @@ function App() {
                 <span>
                   {selection.length} selected{" "}
                   <span className="muted">
-                    · Double-click a photograph to edit
+                    · Double-click to edit · Delete or right-click to remove
                   </span>
                 </span>
               </div>
@@ -2937,6 +3034,21 @@ function App() {
              </div>
           </section>
         </dialog>
+      )}
+      {contextMenu && (
+        <div
+          className="context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            role="menuitem"
+            onClick={() => void removePhotos(selection.includes(contextMenu.id) ? selection : [contextMenu.id])}
+          >
+            <Trash2 size={14} /> Remove from library
+          </button>
+        </div>
       )}
     </div>
   );

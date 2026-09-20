@@ -81,7 +81,7 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
   {
     PictureLibraryStore store;QStringList paths;for(const auto &p:request["paths"].toArray())paths.push_back(p.toString());
     if(operation=="library_add")store.addFiles(paths);
-    if(operation=="library_remove"){for(const auto &path:paths)PictureRecipeStore{}.remove(path);store.removeFiles(paths);}
+    if(operation=="library_remove"){for(const auto &path:paths){PictureRecipeStore{}.remove(path);store.removeMetadata(path);}store.removeFiles(paths);}
     return {{"paths",QJsonArray::fromStringList(store.files())}};
   }
   if(operation == "library_metadata" || operation == "library_metadata_save")
