@@ -3,9 +3,10 @@
 #
 # The release worker links Homebrew Qt/LibRaw/LibTIFF/LibPNG/Lensfun and the
 # ONNX Runtime dylib. dylibbundler rewrites the worker's install names to
-# @loader_path and collects every non-system dependency next to it, so the
-# resulting bundle is self-contained. The worker is copied into the Tauri
-# bundle afterwards by prepare-engine.mjs, which is why this runs first.
+# @loader_path/../Resources and collects every non-system dependency, so the
+# Tauri bundle only has to drop them into Contents/Resources. The worker is
+# copied into the Tauri bundle afterwards by prepare-engine.mjs, which is why
+# this runs first.
 set -euo pipefail
 
 : "${ONNXRUNTIME_LIB_DIR:?ONNXRUNTIME_LIB_DIR must point to the ONNX Runtime lib directory}"
@@ -24,11 +25,11 @@ if ! command -v dylibbundler >/dev/null 2>&1; then
   exit 1
 fi
 
-rm -rf "$root/desktop/src-tauri/bundle/macos" "$lensfun_stage"
+rm -rf "$stage" "$lensfun_stage"
 mkdir -p "$stage" "$lensfun_stage"
 
-# Rewrite the worker in place and collect its dylibs next to it.
-dylibbundler -od -b -x "$engine" -d "$stage" -p "@loader_path/" >/dev/null
+# Rewrite the worker in place and collect its dylibs for Contents/Resources.
+dylibbundler -od -b -x "$engine" -d "$stage" -p "@loader_path/../Resources/" >/dev/null
 
 # dylibbundler does not see dependencies that are only loaded lazily, so copy
 # the ONNX Runtime dylibs explicitly.

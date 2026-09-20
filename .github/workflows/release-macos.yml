@@ -68,9 +68,13 @@ jobs:
           set -euo pipefail
           app="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
           test -n "$app"
-          test -x "$app/Contents/MacOS/rawlab-desktop"
+          echo "--- Contents/MacOS ---"
+          ls -la "$app/Contents/MacOS"
+          echo "--- Contents/Resources ---"
+          ls -la "$app/Contents/Resources"
           test -x "$app/Contents/MacOS/rawlab-preview"
-          ls "$app/Contents/MacOS"/libonnxruntime*.dylib
+          test -x "$app/Contents/MacOS/rawlab-desktop" || test -x "$app/Contents/MacOS/RawLab"
+          ls "$app/Contents/Resources"/libonnxruntime*.dylib
           test -f "$app/Contents/Resources/lensfun/version_1/timestamp.txt"
           find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | grep -q .
 
