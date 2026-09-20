@@ -20,3 +20,4 @@ models/
 compile_commands.json
 
 !packaging/rawlab.png
+!desktop/src-tauri/icons/*.png

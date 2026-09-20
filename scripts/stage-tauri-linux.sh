@@ -8,6 +8,7 @@ qmake_bin="${QMAKE:-qmake6}"
 qt_plugins="$($qmake_bin -query QT_INSTALL_PLUGINS)"
 lensfun_data="${LENSFUN_DATA_DIR:-/usr/share/lensfun}"
 engine="${RAWLAB_ENGINE_SOURCE:-$root/build/release/src/rawlab_preview/rawlab-preview}"
+webkit_dir="/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/webkit2gtk-4.1"
 
 if [[ ! -x "$engine" ]]; then
   echo "Release worker not found or not executable: $engine" >&2
@@ -21,10 +22,15 @@ if ! compgen -G "$lensfun_data/version_*" >/dev/null; then
   echo "Lensfun profiles not found under: $lensfun_data" >&2
   exit 1
 fi
+if [[ ! -x "$webkit_dir/WebKitNetworkProcess" ]]; then
+  echo "WebKit helper processes not found under: $webkit_dir" >&2
+  exit 1
+fi
 
 rm -rf "$root/desktop/src-tauri/bundle/linux"
-mkdir -p "$stage/lib" "$stage/plugins" "$stage/share/lensfun" "$stage/share/rawlab/darktable"
+mkdir -p "$stage/lib" "$stage/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" "$stage/plugins" "$stage/share/lensfun" "$stage/share/rawlab/darktable"
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$stage/lib/"
+cp -a "$webkit_dir" "$stage/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/"
 cp -a "$lensfun_data"/version_* "$stage/share/lensfun/"
 cp "$root/packaging/darktable/RawLab.lua" "$stage/share/rawlab/darktable/"
 

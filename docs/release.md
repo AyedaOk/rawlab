@@ -1,18 +1,28 @@
-# Linux Release Packaging
+# Release Packaging
 
-RawLab's portable Linux package is a Tauri AppImage. It includes the React editor,
-the `rawlab-preview` native worker, ONNX Runtime CPU, Qt runtime plugins, Lensfun
-profiles, and the Darktable Lua integration.
+RawLab ships three desktop packages, each produced by its own workflow:
+
+- Linux AppImage (`.github/workflows/release.yml`): React editor, `rawlab-preview`
+  worker, ONNX Runtime CPU, Qt runtime plugins, Lensfun profiles, and the
+  Darktable Lua integration.
+- macOS DMG (`.github/workflows/release-macos.yml`, Apple Silicon): worker built
+  against Homebrew Qt/LibRaw/LibTIFF/LibPNG/Lensfun; `dylibbundler` rewrites and
+  collects every non-system dylib next to the worker, and the Lensfun database is
+  bundled into `Contents/Resources/lensfun`.
+- Windows NSIS installer (`.github/workflows/release-windows.yml`, x64): worker
+  built against Qt (aqtinstall) and vcpkg LibRaw/LibTIFF/LibPNG; `windeployqt`
+  and the vcpkg runtime DLLs are staged next to the worker. Lensfun is not
+  available on Windows, so lens and chromatic-aberration corrections are greyed
+  out in that build.
+
+All three workflows run manually or for tags matching `v*.*.*`. Every run uploads
+an artifact; tagged runs also attach the package to a GitHub release.
 
 ## GitHub Actions
 
-`.github/workflows/release.yml` runs manually or for tags matching `v*.*.*`.
-Every run uploads the AppImage as a workflow artifact; tagged runs also attach it
-to a GitHub release.
-
-The workflow builds the worker with the CPU ONNX Runtime package, stages its
-runtime dependencies with `scripts/stage-tauri-linux.sh`, and runs
-`npm run desktop:bundle:linux` in `desktop/`.
+`.github/workflows/release.yml` builds the worker with the CPU ONNX Runtime
+package, stages its runtime dependencies with `scripts/stage-tauri-linux.sh`, and
+runs `npm run desktop:bundle:linux` in `desktop/`.
 
 ## Local Build
 

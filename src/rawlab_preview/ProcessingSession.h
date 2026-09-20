@@ -304,7 +304,7 @@ public:
     const auto settings = ApplicationSettingsStore{}.load();
     const auto model = ApplicationSettingsStore::samModelById(settings, settings.activeSamModelId);
     const auto encoder = QDir{model.folder}.filePath("encoder.onnx"), decoder = QDir{model.folder}.filePath("decoder.onnx");
-    if(model.folder.isEmpty() || !QFileInfo{encoder}.isFile() || !QFileInfo{decoder}.isFile()) throw std::runtime_error{"Configure and install a SAM model in Qt RawLab first"};
+    if(model.folder.isEmpty() || !QFileInfo{encoder}.isFile() || !QFileInfo{decoder}.isFile()) throw std::runtime_error{"Configure and install a SAM model in RawLab Settings first"};
     const auto preview = rawlab::image::renderRawPreview(*original, 1024);
     const auto key = fingerprint(encoder) + fingerprint(decoder) + settings.onnxProvider + QString::number(settings.onnxDeviceId) + settings.onnxRuntimeLibrary;
     if(!segmenter_ || key != segmenterKey_)
@@ -353,7 +353,7 @@ public:
     const auto settings = settingsSnapshot ? *settingsSnapshot : ApplicationSettingsStore{}.load();
     const QString id = global["modelId"].toString();
     const auto model = ApplicationSettingsStore::modelById(settings, id);
-    if(model.path.isEmpty() || !QFileInfo{model.path}.isFile()) throw std::runtime_error{"Selected denoise model is missing. Configure/install models in the Qt RawLab application."};
+    if(model.path.isEmpty() || !QFileInfo{model.path}.isFile()) throw std::runtime_error{"Selected denoise model is missing. Configure or install it in RawLab Preferences."};
     const QString execution = settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId) + ':' + settings.onnxRuntimeLibrary;
     const QString key = fingerprint(model.path) + ':' + model.adapter + ':' + execution;
      if(!cache_.contains(key))

@@ -78,6 +78,26 @@ jobs:
         working-directory: desktop
         run: npm run desktop:bundle:linux
 
+      - name: Validate AppImage runtime
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(desktop/src-tauri/target/release/bundle/appimage/*.AppImage)
+          test "${#appimages[@]}" -eq 1
+          appimage="$(realpath "${appimages[0]}")"
+          extract_dir=/tmp/rawlab-appimage-check
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          (
+            cd "$extract_dir"
+            "$appimage" --appimage-extract >/dev/null
+          )
+          multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+          test -x "$extract_dir/squashfs-root/usr/bin/rawlab-desktop"
+          test -x "$extract_dir/squashfs-root/usr/bin/rawlab-preview"
+          test -f "$extract_dir/squashfs-root/usr/lib/libonnxruntime.so.1.20.1"
+          test -x "$extract_dir/squashfs-root/usr/lib/$multiarch/webkit2gtk-4.1/WebKitNetworkProcess"
+
       - uses: actions/upload-artifact@v4
         with:
           name: rawlab-linux-x86_64

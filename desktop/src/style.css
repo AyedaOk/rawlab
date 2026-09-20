@@ -1536,3 +1536,29 @@ h1 {
 .status span:first-child {
   display: block;
 }
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid #444;
+  border-radius: 9px;
+  background: #292929;
+  box-shadow: 0 12px 30px #0008;
+}
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.context-menu button:hover {
+  background: #3b403c;
+}

@@ -18,6 +18,13 @@ target_link_libraries(rawlab_picture_recipe_test PRIVATE rawlab::desktop_support
 rawlab_enable_warnings(rawlab_picture_recipe_test)
 add_test(NAME rawlab_picture_recipe_test COMMAND rawlab_picture_recipe_test)
 
+add_executable(rawlab_picture_library_test
+  picture_library_test.cpp
+)
+target_link_libraries(rawlab_picture_library_test PRIVATE rawlab::desktop_support)
+rawlab_enable_warnings(rawlab_picture_library_test)
+add_test(NAME rawlab_picture_library_test COMMAND rawlab_picture_library_test)
+
 if(RAWLAB_BUILD_PREVIEW_BRIDGE)
   add_executable(rawlab_processing_session_test processing_session_test.cpp)
   target_include_directories(rawlab_processing_session_test PRIVATE ${CMAKE_SOURCE_DIR}/src/rawlab_preview)

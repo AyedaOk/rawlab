@@ -3,5 +3,5 @@
   "identifier": "main-preview",
   "description": "Native preview import, limited to user-selected files and directories",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-save", "fs:allow-read-file", "fs:allow-read-dir", "fs:allow-stat"]
+  "permissions": ["core:default", "core:app:allow-version", "core:window:allow-destroy", "dialog:allow-open", "dialog:allow-save", "fs:allow-read-file", "fs:allow-read-dir", "fs:allow-stat"]
 }

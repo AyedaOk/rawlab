@@ -14,6 +14,7 @@ public:
   QStringList files() const;
   QStringList addFiles(const QStringList &paths) const;
   void removeFiles(const QStringList &paths) const;
+  void removeMetadata(const QString &path) const;
   PictureLibraryMetadata metadata(const QString &path) const;
   void saveMetadata(const QString &path, int rating, const QStringList &labels) const;
 
