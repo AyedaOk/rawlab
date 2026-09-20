@@ -2,6 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
     "targets": ["dmg"],
+    "resources": {
+      "bundle/macos/": "",
+      "bundle/macos-lensfun/": "lensfun/"
+    },
     "macOS": {
       "minimumSystemVersion": "11.0"
     }

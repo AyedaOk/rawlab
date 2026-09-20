@@ -56,14 +56,21 @@ class ProcessingSession
     const QFileInfo file{path};
     std::error_code error;
     const auto modified = std::filesystem::last_write_time(path.toStdString(), error);
-    const auto stamp = error ? file.lastModified().toMSecsSinceEpoch()
-      : modified.time_since_epoch().count();
+    const qint64 stamp = error ? static_cast<qint64>(file.lastModified().toMSecsSinceEpoch())
+      : static_cast<qint64>(modified.time_since_epoch().count());
     QString identity = file.absoluteFilePath() + ':' + QString::number(file.size()) + ':' + QString::number(stamp);
 #ifdef Q_OS_UNIX
     struct stat status {};
     if(::stat(QFile::encodeName(file.absoluteFilePath()).constData(), &status) == 0)
+    {
+#if defined(__APPLE__)
+      identity += ':' + QString::number(status.st_dev) + ':' + QString::number(status.st_ino)
+        + ':' + QString::number(status.st_ctimespec.tv_sec) + ':' + QString::number(status.st_ctimespec.tv_nsec);
+#else
       identity += ':' + QString::number(status.st_dev) + ':' + QString::number(status.st_ino)
         + ':' + QString::number(status.st_ctim.tv_sec) + ':' + QString::number(status.st_ctim.tv_nsec);
+#endif
+    }
 #endif
     return identity;
   }
