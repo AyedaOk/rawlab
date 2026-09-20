@@ -18,20 +18,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["appimage"],
     "category": "Photography",
     "shortDescription": "AI RAW photo preprocessing",
     "externalBin": ["binaries/rawlab-preview"],
-    "icon": ["../../packaging/rawlab.png"],
-    "linux": {
-      "appimage": {
-        "files": {
-          "/usr/lib": "bundle/linux/usr/lib",
-          "/usr/plugins": "bundle/linux/usr/plugins",
-          "/usr/share/lensfun": "bundle/linux/usr/share/lensfun",
-          "/usr/share/rawlab": "bundle/linux/usr/share/rawlab"
-        }
-      }
-    }
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

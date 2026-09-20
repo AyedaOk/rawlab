@@ -1,0 +1,88 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dmg:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Homebrew dependencies
+        run: brew install cmake ninja pkg-config qt libraw libtiff libpng lensfun dylibbundler
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ONNX Runtime CPU
+        run: |
+          curl -L --fail -o /tmp/onnxruntime.tgz \
+            https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-osx-arm64-1.20.1.tgz
+          tar -xzf /tmp/onnxruntime.tgz -C /tmp
+
+      - name: Build native worker
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig
+        run: |
+          onnx=/tmp/onnxruntime-osx-arm64-1.20.1
+          onnxlib="$(ls "$onnx"/lib/libonnxruntime*.dylib | head -1)"
+          cmake --preset release \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+            -DRAWLAB_DEPENDENCY_ROOT="$onnx" \
+            -DONNXRuntime_INCLUDE_DIR="$onnx/include" \
+            -DONNXRuntime_LIBRARY="$onnxlib"
+          cmake --build --preset release --parallel 2
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Stage macOS runtime
+        env:
+          ONNXRUNTIME_LIB_DIR: /tmp/onnxruntime-osx-arm64-1.20.1/lib
+          LENSFUN_DATA_DIR: /opt/homebrew/share/lensfun
+        run: bash scripts/stage-tauri-macos.sh
+
+      - name: Build DMG
+        working-directory: desktop
+        run: npm run desktop:bundle:macos
+
+      - name: Validate bundle
+        run: |
+          set -euo pipefail
+          app="$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)"
+          test -n "$app"
+          test -x "$app/Contents/MacOS/rawlab-desktop"
+          test -x "$app/Contents/MacOS/rawlab-preview"
+          ls "$app/Contents/MacOS"/libonnxruntime*.dylib
+          test -f "$app/Contents/Resources/lensfun/version_1/timestamp.txt"
+          find desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' | grep -q .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawlab-macos-arm64
+          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: desktop/src-tauri/target/release/bundle/dmg/*.dmg

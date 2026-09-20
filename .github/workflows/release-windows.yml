@@ -1,0 +1,103 @@
+name: Windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nsis:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Ninja
+        run: choco install ninja -y --no-progress
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.1"
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Install vcpkg dependencies
+        run: vcpkg install libraw libtiff libpng --triplet x64-windows
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ONNX Runtime CPU
+        shell: pwsh
+        run: |
+          curl.exe -L --fail -o "$env:TEMP\onnxruntime.zip" `
+            https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip
+          Expand-Archive "$env:TEMP\onnxruntime.zip" -DestinationPath "$env:TEMP" -Force
+
+      - name: Build native worker
+        shell: pwsh
+        run: |
+          $onnx = "$env:TEMP\onnxruntime-win-x64-1.20.1"
+          cmake --preset release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" `
+            -DQt6_DIR="$env:QT_ROOT_DIR/lib/cmake/Qt6" `
+            -DRAWLAB_DEPENDENCY_ROOT="$onnx" `
+            -DONNXRuntime_INCLUDE_DIR="$onnx/include" `
+            -DONNXRuntime_LIBRARY="$onnx/lib/onnxruntime.lib"
+          cmake --build --preset release --parallel 2
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Stage Windows runtime
+        shell: pwsh
+        env:
+          ONNXRUNTIME_LIB_DIR: ${{ env.TEMP }}\onnxruntime-win-x64-1.20.1\lib
+          VCPKG_BIN_DIR: ${{ env.VCPKG_INSTALLATION_ROOT }}\installed\x64-windows\bin
+        run: ./scripts/stage-tauri-windows.ps1
+
+      - name: Build NSIS installer
+        working-directory: desktop
+        run: npm run desktop:bundle:windows
+
+      - name: Validate bundle
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem "desktop/src-tauri/target/release/bundle/nsis/*.exe"
+          if (-not $installers) { throw "No NSIS installer produced" }
+          $stage = "desktop/src-tauri/bundle/windows"
+          foreach ($dll in @("onnxruntime.dll", "Qt6Core.dll")) {
+            if (-not (Test-Path (Join-Path $stage $dll))) { throw "Missing staged $dll" }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rawlab-windows-x64
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: desktop/src-tauri/target/release/bundle/nsis/*.exe
