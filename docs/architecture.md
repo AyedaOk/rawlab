@@ -10,7 +10,7 @@ The first implementation phase is not GUI-first. The core risks are raw decoding
 - `rawlab_cli`: proof-of-concept command-line entrypoint for decode, inspect, process, and export experiments.
 - `rawlab_preview`: persistent native worker exposing `rawlab_core` to the desktop shell.
 - `rawlab_desktop`: shared settings, library, recipe, model, and batch services.
-- `ui-prototype`: React editor hosted by Tauri.
+- `desktop`: React editor hosted by Tauri.
 - `tests`: automated checks for deterministic core behavior.
 
 ## Pipeline Direction

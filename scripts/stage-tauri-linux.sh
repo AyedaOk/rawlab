@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${ONNXRUNTIME_LIB_DIR:?ONNXRUNTIME_LIB_DIR must point to the ONNX Runtime lib directory}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
-stage="$root/ui-prototype/src-tauri/bundle/linux/usr"
+stage="$root/desktop/src-tauri/bundle/linux/usr"
 qmake_bin="${QMAKE:-qmake6}"
 qt_plugins="$($qmake_bin -query QT_INSTALL_PLUGINS)"
 lensfun_data="${LENSFUN_DATA_DIR:-/usr/share/lensfun}"
@@ -22,7 +22,7 @@ if ! compgen -G "$lensfun_data/version_*" >/dev/null; then
   exit 1
 fi
 
-rm -rf "$root/ui-prototype/src-tauri/bundle/linux"
+rm -rf "$root/desktop/src-tauri/bundle/linux"
 mkdir -p "$stage/lib" "$stage/plugins" "$stage/share/lensfun" "$stage/share/rawlab/darktable"
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime.so* "$stage/lib/"
 cp -a "$lensfun_data"/version_* "$stage/share/lensfun/"

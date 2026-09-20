@@ -17,7 +17,7 @@ models produce an error, not a fake result.
 3. Zoom in and click-drag to pan. Fit restores centering. In mask editing, hold
    Space to pan after focusing the image. The comparison divider remains independently draggable.
 4. Add a mask, select Edit Mask, and draw Brush/Erase, Gradient or Ellipse marks.
-   AI clicks run SAM using the active model configured in Qt (Shift-click for a
+    AI clicks run SAM using the active model configured in Settings (Shift-click for a
    negative point). Done keeps the mask. Feather/blur and inversion apply on Update;
    the immediate editing overlay is a guide rather than a rendered soft-mask preview.
 5. Export DNG opens a native save dialog and writes processed Bayer CFA with metadata
@@ -30,12 +30,12 @@ remain a non-processing demo.
 
 ## Enable RAW viewing
 
-From the repository root, build the new bridge using the existing C++ dependencies:
+From the repository root, build the native worker using the existing C++ dependencies:
 
 ```bash
 cmake --preset dev
 cmake --build --preset dev --target rawlab_preview --parallel 2
-cd ui-prototype
+cd desktop
 npm ci
 npm run desktop
 ```
@@ -82,7 +82,7 @@ Arch Linux:
 sudo pacman -S --needed base-devel webkit2gtk-4.1 openssl librsvg
 ```
 
-After installing Rust, open a new terminal so `cargo` is on PATH. In `ui-prototype`:
+After installing Rust, open a new terminal so `cargo` is on PATH. In `desktop`:
 
 ```bash
 npm ci
@@ -99,7 +99,7 @@ Build a standalone executable with bundled frontend assets:
 
 ```bash
 npm run desktop:build
-./src-tauri/target/release/rawlab-desktop-preview
+./src-tauri/target/release/rawlab-desktop
 ```
 
 Build the portable package with `npm run desktop:bundle:linux` after running
@@ -116,7 +116,7 @@ Build the portable package with `npm run desktop:bundle:linux` after running
    to a new DNG. Source RAW files remain unchanged.
 
 Native imports are read-only and scoped to paths selected in the dialogs. Unsupported
-files and symlinks are skipped. This preview stage caps one import at 500 images,
+files and symlinks are skipped. The desktop caps one import at 500 images,
 50 MiB per raster-preview file and 256 MiB total raster import data. RAW files are
 passed by path to the decoder rather than loaded into JavaScript. Directory scans are bounded.
 
@@ -125,13 +125,13 @@ passed by path to the decoder rather than loaded into JavaScript. Directory scan
 Install Node.js 20.19+ and npm, then from the repository root:
 
 ```bash
-cd ui-prototype
+cd desktop
 npm ci
 npm run dev
 ```
 
 Open the localhost URL printed by Vite (normally http://127.0.0.1:5173).
-Stop with Ctrl+C. No CMake rebuild is needed for this prototype.
+Stop with Ctrl+C. No CMake rebuild is needed for browser mode.
 
 ## What to review
 

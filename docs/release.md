@@ -12,7 +12,7 @@ to a GitHub release.
 
 The workflow builds the worker with the CPU ONNX Runtime package, stages its
 runtime dependencies with `scripts/stage-tauri-linux.sh`, and runs
-`npm run desktop:bundle:linux` in `ui-prototype/`.
+`npm run desktop:bundle:linux` in `desktop/`.
 
 ## Local Build
 
@@ -22,13 +22,13 @@ Build the release worker before staging the package:
 cmake --preset release
 cmake --build --preset release --parallel 2
 ONNXRUNTIME_LIB_DIR=/path/to/onnxruntime/lib bash scripts/stage-tauri-linux.sh
-cd ui-prototype
+cd desktop
 npm ci
 npm run desktop:bundle:linux
 ```
 
 The resulting package is under
-`ui-prototype/src-tauri/target/release/bundle/appimage/`.
+`desktop/src-tauri/target/release/bundle/appimage/`.
 
 The staging script requires Lensfun and rejects a worker built without Lensfun
 support. Set `RAWLAB_ENGINE_SOURCE` when testing a worker outside `build/release`.

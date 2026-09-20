@@ -39,7 +39,7 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
     <div className="model-manager">
       <header className="preferences-header">
         <div>
-          <h2 id="prototype-title">Preferences</h2>
+          <h2 id="settings-title">Preferences</h2>
           <p>Processing hardware and installed models</p>
         </div>
         <span className="provider-badge">{data.provider === "auto" ? "Auto" : data.provider.toUpperCase()} · device {data.deviceId}</span>

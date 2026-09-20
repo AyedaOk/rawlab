@@ -55,10 +55,10 @@
 - Add fuller global/local module stack concepts.
 - Implement raw-domain masked blend-with-original behavior.
 
-## Milestone 6: CLI End-To-End Prototype
+## Milestone 6: CLI End-To-End
 
 - Status: Completed
-- Add `rawlab process <input.raw> <output.dng> [--denoise <model.onnx>] [--mask <mask.png>] [--blend 0..1] [--clipped-highlights]` as the first stable end-to-end prototype command.
+- Add `rawlab process <input.raw> <output.dng> [--denoise <model.onnx>] [--mask <mask.png>] [--blend 0..1] [--clipped-highlights]` as the first stable end-to-end command.
 - Decode raw input and export it directly when no model is selected.
 - Optionally run the RawNIND `CfaRestoreModel` through `RawProcessingPipeline`.
 - Export non-demosaiced CFA DNG in both paths.
