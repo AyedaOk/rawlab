@@ -1,0 +1,43 @@
+name: Linux build and tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+      LANG: C.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FOSS build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config g++ \
+            qt6-base-dev qt6-base-dev-tools qt6-image-formats-plugins qt6-wayland \
+            libraw-dev libtiff-dev libpng-dev
+      - name: Fetch pinned ONNX Runtime headers
+        run: |
+          mkdir -p "$RUNNER_TEMP/onnx-include"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/microsoft/onnxruntime/v1.20.1/include/onnxruntime/core/session/onnxruntime_c_api.h \
+            --output "$RUNNER_TEMP/onnx-include/onnxruntime_c_api.h"
+      - name: Configure
+        run: cmake --preset dev -DONNXRuntime_INCLUDE_DIR="$RUNNER_TEMP/onnx-include"
+      - name: Build
+        run: cmake --build --preset dev --parallel 2
+      - name: Test (no model downloads required)
+        run: ctest --preset dev
+      - name: Keep test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test-logs
+          path: build/dev/Testing/Temporary/

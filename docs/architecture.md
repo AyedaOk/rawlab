@@ -4,11 +4,13 @@ RawLab is a cross-platform desktop application for raw photo preprocessing. Linu
 
 The first implementation phase is not GUI-first. The core risks are raw decoding, CFA preservation, Darktable-style CFA restore, non-demosaiced CFA DNG export, ONNX inference, and mask-to-raw coordinate mapping.
 
-## Initial Components
+## Components
 
 - `rawlab_core`: reusable raw-domain processing library.
 - `rawlab_cli`: proof-of-concept command-line entrypoint for decode, inspect, process, and export experiments.
-- `rawlab_app`: Qt 6 Widgets single-image editor around `rawlab_core`.
+- `rawlab_preview`: persistent native worker exposing `rawlab_core` to the desktop shell.
+- `rawlab_desktop`: shared settings, library, recipe, model, and batch services.
+- `ui-prototype`: React editor hosted by Tauri.
 - `tests`: automated checks for deterministic core behavior.
 
 ## Pipeline Direction
@@ -29,7 +31,7 @@ Demosaiced RGB previews are derived views only. They must not become the interna
 
 `Sam2Segmenter` owns the interactive segmentation context: the RGB preview encoder runs once, embeddings are cached, and decoder calls can reuse those embeddings and previous-mask feedback as point prompts change. Mask PNGs are preview-space interchange artifacts; CFA composition maps them back to raw coordinates.
 
-`rawlab_app` keeps one permanent Global denoise layer first in the editor,
+The Tauri editor keeps one permanent Global denoise layer first,
 with reorderable local layers beneath it. Local layers contain a SAM base mask,
 optional manual brush corrections, model path, blend amount, invert state,
 processing-enabled state, and independent overlay visibility. Denoised CFA

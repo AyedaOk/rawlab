@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rawlab/raw/RawImage.h"
+#include "rawlab/image/LensCorrection.h"
 
 #include <array>
 #include <cstdint>
@@ -29,6 +30,12 @@ class TiffDngWriter
 public:
   void writeCfaDng(const std::filesystem::path &path, const raw::RawImage &image,
                    const DngPreviews *previews = nullptr) const;
+  // Writes a demosaiced, scene-linear RGB DNG. This is intentionally separate
+  // from writeCfaDng: the output no longer contains the camera CFA samples.
+  void writeLinearRgbDng(const std::filesystem::path &path,
+                           const raw::RawImage &image,
+                           const image::OpticsOptions &optics = {},
+                           const DngPreviews *previews = nullptr) const;
 };
 
 }

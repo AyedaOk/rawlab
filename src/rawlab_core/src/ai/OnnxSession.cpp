@@ -31,7 +31,7 @@ RuntimeState &runtimeState()
   return state;
 }
 
-const OrtApi &ortApi(const std::string &runtimeLibrary = {})
+const OrtApi *ortApi(const std::string &runtimeLibrary = {})
 {
   RuntimeState &state = runtimeState();
   if(!state.api)
@@ -52,13 +52,13 @@ const OrtApi &ortApi(const std::string &runtimeLibrary = {})
   }
   const OrtApi *api = state.api;
   if(!api) throw std::runtime_error{"ONNX Runtime API is unavailable"};
-  return *api;
+  return api;
 }
 
 void throwIfOrtError(OrtStatus *status, const char *operation)
 {
   if(!status) return;
-  const OrtApi &api = ortApi();
+  const OrtApi &api = *ortApi();
   std::string message = std::string{operation} + " failed: " + api.GetErrorMessage(status);
   api.ReleaseStatus(status);
   throw std::runtime_error{message};
@@ -245,7 +245,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
                          const OnnxSessionOptions &options)
   : impl_{new Impl{}}
 {
-  const OrtApi &api = ortApi(options.runtimeLibrary);
+  const OrtApi &api = *ortApi(options.runtimeLibrary);
   const auto cleanupImpl = [&api](Impl *value) {
     if(!value) return;
     if(value->memoryInfo) api.ReleaseMemoryInfo(value->memoryInfo);
@@ -361,7 +361,7 @@ OnnxSession::OnnxSession(const std::filesystem::path &modelPath,
 OnnxSession::~OnnxSession()
 {
   if(!impl_) return;
-  const OrtApi &api = ortApi();
+  const OrtApi &api = *ortApi();
   if(impl_->memoryInfo) api.ReleaseMemoryInfo(impl_->memoryInfo);
   if(impl_->session) api.ReleaseSession(impl_->session);
   if(impl_->options) api.ReleaseSessionOptions(impl_->options);
@@ -400,7 +400,7 @@ OnnxFloatRunResult OnnxSession::runSingleFloat(const std::vector<float> &input,
   const std::int64_t outputCount = product(result.shape);
   result.values.assign(static_cast<std::size_t>(outputCount), 0.0f);
 
-  const OrtApi &api = ortApi();
+  const OrtApi &api = *ortApi();
   OrtValue *inputTensor = nullptr;
   OrtValue *outputTensor = nullptr;
 
@@ -475,7 +475,7 @@ std::vector<OnnxNamedFloatTensor> OnnxSession::runFloat(
     }
   }
 
-  const OrtApi &api = ortApi();
+  const OrtApi &api = *ortApi();
   std::vector<const char *> inputNames;
   std::vector<OrtValue *> inputValues;
   std::vector<const char *> outputNames;
@@ -590,7 +590,7 @@ std::vector<OnnxNamedFloatTensor> OnnxSession::runFloat(
 
 std::vector<OnnxProviderInfo> OnnxSession::availableProviders(const std::string &runtimeLibrary)
 {
-  const OrtApi &api = ortApi(runtimeLibrary);
+  const OrtApi &api = *ortApi(runtimeLibrary);
   const std::vector<std::string> available = advertisedProviders(api);
   std::vector<OnnxProviderInfo> result{{"cpu", "CPU"}};
   for(const ProviderMapping &mapping : providers)

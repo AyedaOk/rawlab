@@ -136,6 +136,7 @@ raw::RawImage RawProcessingPipeline::runNormalSharpen(const raw::RawImage &sourc
   std::vector<float> output = source.samples();
   const int total = source.width() * source.height();
   int completed = 0;
+  const int reportEvery = std::max(1, total / 100);
   for(int y = 0; y < source.height(); ++y)
   {
     for(int x = 0; x < source.width(); ++x)
@@ -158,7 +159,8 @@ raw::RawImage RawProcessingPipeline::runNormalSharpen(const raw::RawImage &sourc
                                     black, source.metadata().whiteLevel);
       output[static_cast<std::size_t>(y) * static_cast<std::size_t>(source.width())
              + static_cast<std::size_t>(x)] = value;
-      if(progress) progress(++completed, total);
+       ++completed;
+       if(progress && (completed == total || completed % reportEvery == 0)) progress(completed, total);
     }
   }
   return raw::RawImage{source.width(), source.height(), std::move(output), source.metadata()};

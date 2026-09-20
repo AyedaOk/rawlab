@@ -1,10 +1,10 @@
 #include "rawlab/raw/LibRawDecoder.h"
 
 #include <libraw/libraw.h>
-#include <tiffio.h>
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -62,33 +62,38 @@ std::string boundedString(const char (&value)[Size])
   return std::string{value, end};
 }
 
-std::optional<double> readExposureBias(const std::filesystem::path &path)
+struct ExposureMetadata
 {
-  TIFF *tif = TIFFOpen(path.string().c_str(), "r");
-  if(!tif) return std::nullopt;
+  std::optional<double> bias;
+  std::optional<double> baseline;
+};
 
-  std::optional<double> result;
-  do
-  {
-    const tdir_t imageDirectory = TIFFCurrentDirectory(tif);
-    toff_t exifDirectory = 0;
-    if(TIFFGetField(tif, TIFFTAG_EXIFIFD, &exifDirectory) == 1
-       && exifDirectory != 0 && TIFFReadEXIFDirectory(tif, exifDirectory) == 1)
-    {
-      float bias = 0.0f;
-      if(TIFFGetField(tif, EXIFTAG_EXPOSUREBIASVALUE, &bias) == 1
-         && std::isfinite(bias))
-      {
-        result = static_cast<double>(bias);
-        break;
-      }
-    }
-    // EXIF directories are metadata-only and do not have ImageLength.
-    // Restore the image directory before continuing the IFD scan.
-    TIFFSetDirectory(tif, imageDirectory);
-  } while(TIFFReadDirectory(tif) == 1);
-  TIFFClose(tif);
-  return result;
+// LibRaw can parse RAW metadata-only IFDs that libtiff rejects for lacking
+// ImageLength. Its callback points at the tag data and restores the stream
+// position afterwards. Only accept standard signed-rational exposure tags.
+void readExposureTags(void *context, int tag, int type, int count,
+                      unsigned int order, void *input, INT64)
+{
+  // TIFF image IFDs carry an index in the high bits; reject maker-note/GPS
+  // namespaces (bits 16..19), where numeric tag IDs can mean something else.
+  if(tag & 0xf0000) return;
+  tag &= 0xffff;
+  if((tag != 0x9204 && tag != 0xc62a) || type != 10 || count != 1
+     || (order != 0x4949 && order != 0x4d4d)) return;
+  std::array<unsigned char, 8> bytes{};
+  auto *stream = static_cast<LibRaw_abstract_datastream *>(input);
+  if(stream->read(bytes.data(), 1, bytes.size()) != 8) return;
+  const auto signed32 = [&bytes, order](int start) {
+    std::uint32_t value = 0;
+    for(int i = 0; i < 4; ++i)
+      value = (value << 8) | bytes[start + (order == 0x4949 ? 3 - i : i)];
+    return std::bit_cast<std::int32_t>(value);
+  };
+  const auto denominator = signed32(4);
+  if(denominator == 0) return;
+  auto &metadata = *static_cast<ExposureMetadata *>(context);
+  auto &value = tag == 0x9204 ? metadata.bias : metadata.baseline;
+  if(!value) value = static_cast<double>(signed32(0)) / denominator;
 }
 
 void throwOnLibRawError(const int error, const char *operation)
@@ -98,7 +103,7 @@ void throwOnLibRawError(const int error, const char *operation)
                            + libraw_strerror(error));
 }
 
-RawMetadata metadataFromLibRaw(LibRaw &processor, const std::filesystem::path &path)
+RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposure)
 {
   const libraw_iparams_t &id = processor.imgdata.idata;
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
@@ -117,7 +122,8 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const std::filesystem::path &p
   metadata.iso = positiveValue(other.iso_speed);
   metadata.aperture = positiveValue(other.aperture);
   metadata.exposureTimeSeconds = positiveValue(other.shutter);
-  metadata.exposureBiasEv = readExposureBias(path);
+  metadata.exposureBiasEv = exposure.bias;
+  metadata.baselineExposureEv = exposure.baseline;
   metadata.focalLengthMm = positiveValue(other.focal_len);
   metadata.focalLength35mm = positiveValue(static_cast<float>(lens.FocalLengthIn35mmFormat));
   if(other.timestamp > 0) metadata.captureTimestamp = static_cast<std::int64_t>(other.timestamp);
@@ -166,6 +172,19 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const std::filesystem::path &p
       metadata.colorMatrix1[static_cast<std::size_t>(cam * 3 + xyz)] = color.cam_xyz[cam][xyz];
     }
   }
+  // For DNG cameras not in LibRaw's camera table, cam_xyz can be empty even
+  // though a valid ColorMatrix was decoded into the DNG-specific metadata.
+  if(id.dng_version)
+  {
+    const auto &dngColor = color.dng_color[color.dng_color[0].illuminant ? 0 : 1];
+    if(dngColor.illuminant)
+    {
+      for(int cam = 0; cam < 3; ++cam)
+        for(int xyz = 0; xyz < 3; ++xyz)
+          metadata.colorMatrix1[static_cast<std::size_t>(cam * 3 + xyz)] = dngColor.colormatrix[cam][xyz];
+      metadata.calibrationIlluminant1 = dngColor.illuminant;
+    }
+  }
   metadata.cameraToXyz = inverse3x3(metadata.colorMatrix1, metadata.colorMatrix1Valid);
   for(int rgb = 0; rgb < 3; ++rgb)
   {
@@ -203,7 +222,7 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const std::filesystem::path &p
   return metadata;
 }
 
-RawImage rawImageFromLibRaw(LibRaw &processor, const std::filesystem::path &path)
+RawImage rawImageFromLibRaw(LibRaw &processor, const ExposureMetadata &exposure)
 {
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
   const libraw_rawdata_t &rawdata = processor.imgdata.rawdata;
@@ -230,14 +249,16 @@ RawImage rawImageFromLibRaw(LibRaw &processor, const std::filesystem::path &path
   }
 
   return RawImage{sizes.raw_width, sizes.raw_height, std::move(samples),
-                  metadataFromLibRaw(processor, path)};
+                  metadataFromLibRaw(processor, exposure)};
 }
 
 } // namespace
 
 RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
 {
+  ExposureMetadata exposure;
   LibRaw processor;
+  processor.set_exifparser_handler(readExposureTags, &exposure);
   throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
   throwOnLibRawError(processor.unpack(), "LibRaw unpack");
 
@@ -252,7 +273,7 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
   info.model = id.model;
   info.normalizedMake = id.normalized_make;
   info.normalizedModel = id.normalized_model;
-  const RawMetadata metadata = metadataFromLibRaw(processor, path);
+  const RawMetadata metadata = metadataFromLibRaw(processor, exposure);
   info.iso = metadata.iso;
   info.aperture = metadata.aperture;
   info.exposureTimeSeconds = metadata.exposureTimeSeconds;
@@ -291,7 +312,7 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
 
   if(info.hasRawImage)
   {
-    const RawImage rawImage = rawImageFromLibRaw(processor, path);
+    const RawImage rawImage = rawImageFromLibRaw(processor, exposure);
     const auto [minIt, maxIt] = std::minmax_element(rawImage.samples().begin(), rawImage.samples().end());
     info.rawImageConverted = true;
     info.rawSampleMin = *minIt;
@@ -310,18 +331,22 @@ RawInspectInfo LibRawDecoder::inspect(const std::filesystem::path &path) const
 
 RawFileMetadata LibRawDecoder::readMetadata(const std::filesystem::path &path) const
 {
+  ExposureMetadata exposure;
   LibRaw processor;
+  processor.set_exifparser_handler(readExposureTags, &exposure);
   throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
-  return {metadataFromLibRaw(processor, path), processor.imgdata.sizes.raw_width,
+  return {metadataFromLibRaw(processor, exposure), processor.imgdata.sizes.raw_width,
           processor.imgdata.sizes.raw_height};
 }
 
 RawImage LibRawDecoder::decodeRawImage(const std::filesystem::path &path) const
 {
+  ExposureMetadata exposure;
   LibRaw processor;
+  processor.set_exifparser_handler(readExposureTags, &exposure);
   throwOnLibRawError(processor.open_file(path.string().c_str()), "LibRaw open_file");
   throwOnLibRawError(processor.unpack(), "LibRaw unpack");
-  return rawImageFromLibRaw(processor, path);
+  return rawImageFromLibRaw(processor, exposure);
 }
 
 }

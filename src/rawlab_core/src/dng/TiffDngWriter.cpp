@@ -1,6 +1,7 @@
 #include "rawlab/dng/DngWriter.h"
 
 #include "rawlab/raw/RawInspectInfo.h"
+#include "rawlab/image/LensCorrection.h"
 
 #include <tiffio.h>
 
@@ -73,6 +74,59 @@ void registerDngFields(TIFF *tif)
      const_cast<char *>("CFAPattern")},
   };
   TIFFMergeFieldInfo(tif, fields, static_cast<std::uint32_t>(std::size(fields)));
+}
+
+void writeLinearRgbMetadata(TIFF *tif, const raw::RawMetadata &metadata)
+{
+  const std::uint8_t dngVersion[4] = {1, 4, 0, 0};
+  const std::uint8_t backwardVersion[4] = {1, 2, 0, 0};
+  TIFFSetField(tif, TIFFTAG_DNGVERSION, dngVersion);
+  TIFFSetField(tif, TIFFTAG_DNGBACKWARDVERSION, backwardVersion);
+  TIFFSetField(tif, TIFFTAG_MAKE, "RawLab");
+  TIFFSetField(tif, TIFFTAG_MODEL, "Linear sRGB");
+  TIFFSetField(tif, TIFFTAG_UNIQUECAMERAMODEL, "RawLab Linear sRGB");
+  std::uint16_t orientation = ORIENTATION_TOPLEFT;
+  if(metadata.flip == 3) orientation = ORIENTATION_BOTRIGHT;
+  else if(metadata.flip == 5) orientation = ORIENTATION_LEFTBOT;
+  else if(metadata.flip == 6) orientation = ORIENTATION_RIGHTTOP;
+  TIFFSetField(tif, TIFFTAG_ORIENTATION, orientation);
+  const float whitePoint[2] = {0.3127f, 0.3290f};
+  TIFFSetField(tif, TIFFTAG_WHITEPOINT, whitePoint);
+  // Linear export pixels have already been white-balanced and transformed from
+  // camera RGB to linear sRGB. Describe that space directly instead of asking a
+  // reader to find a profile for the source camera model.
+  const std::array<float, 9> xyzD65ToSrgb{
+    3.2404542f, -1.5371385f, -0.4985314f,
+    -0.9692660f, 1.8760108f, 0.0415560f,
+    0.0556434f, -0.2040259f, 1.0572252f};
+  const std::array<float, 3> unity{1.0f, 1.0f, 1.0f};
+  TIFFSetField(tif, TIFFTAG_COLORMATRIX1,
+               static_cast<std::uint32_t>(xyzD65ToSrgb.size()), xyzD65ToSrgb.data());
+  TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, static_cast<std::uint16_t>(21));
+  TIFFSetField(tif, TIFFTAG_ASSHOTNEUTRAL,
+               static_cast<std::uint32_t>(unity.size()), unity.data());
+  TIFFSetField(tif, TIFFTAG_ANALOGBALANCE,
+               static_cast<std::uint32_t>(unity.size()), unity.data());
+  if(!metadata.description.empty()) TIFFSetField(tif, TIFFTAG_IMAGEDESCRIPTION,
+                                                   metadata.description.c_str());
+}
+
+std::vector<std::uint16_t> linearRgbSamples(const raw::RawImage &image,
+                                             int &width, int &height,
+                                             const image::OpticsOptions &optics)
+{
+  const auto linear = image::renderLinearRgb(image, optics);
+  width = linear.width;
+  height = linear.height;
+  std::vector<std::uint16_t> samples;
+  samples.reserve(linear.pixels.size());
+  for(const float value : linear.pixels)
+  {
+    if(!std::isfinite(value)) throw std::invalid_argument{"Linear RGB contains a non-finite sample"};
+    samples.push_back(static_cast<std::uint16_t>(std::lround(
+      std::clamp(value, 0.0f, 1.0f) * 65535.0f)));
+  }
+  return samples;
 }
 
 bool validPositive(const std::optional<double> value)
@@ -241,9 +295,9 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t
   TIFFSetField(tif, TIFFTAG_COLORMATRIX1,
                static_cast<std::uint32_t>(metadata.colorMatrix1.size()),
                metadata.colorMatrix1.data());
-  TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, static_cast<std::uint16_t>(21));
-  const float baselineExposure = metadata.exposureBiasEv && std::isfinite(*metadata.exposureBiasEv)
-    ? static_cast<float>(*metadata.exposureBiasEv) : 0.0f;
+  TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, metadata.calibrationIlluminant1);
+  const float baselineExposure = metadata.baselineExposureEv && std::isfinite(*metadata.baselineExposureEv)
+    ? static_cast<float>(*metadata.baselineExposureEv) : 0.0f;
   TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
 }
 
@@ -497,6 +551,79 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     throw;
   }
 
+  TIFFClose(tif);
+}
+
+void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
+                                       const raw::RawImage &image,
+                                       const image::OpticsOptions &optics,
+                                       const DngPreviews *previews) const
+{
+  if(image.width() <= 0 || image.height() <= 0)
+    throw std::invalid_argument{"Invalid linear RGB image size"};
+
+  int width = 0;
+  int height = 0;
+  const std::vector<std::uint16_t> rgb = linearRgbSamples(image, width, height, optics);
+  const bool canonical = previews && validPreview(previews->thumbnail)
+                         && validPreview(previews->display);
+  if(previews && !canonical) throw std::invalid_argument{"Incomplete DNG JPEG previews"};
+  TIFF *tif = TIFFOpen(path.string().c_str(), "wl");
+  if(!tif) throw std::runtime_error{"Could not open linear RGB DNG output for writing"};
+  try
+  {
+    const toff_t exifOffset = writeExifDirectory(tif, image.metadata());
+    if(TIFFCreateDirectory(tif) != 0)
+      throw std::runtime_error{"Could not create linear RGB DNG image directory"};
+    registerDngFields(tif);
+    if(canonical)
+    {
+      setJpegPreviewFields(tif, previews->thumbnail, &image.metadata(), exifOffset, 2);
+      writeJpegStrip(tif, previews->thumbnail);
+      requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG thumbnail directory");
+      TIFFCreateDirectory(tif);
+      registerDngFields(tif);
+    }
+    writeLinearRgbMetadata(tif, image.metadata());
+    TIFFSetField(tif, TIFFTAG_SUBFILETYPE, static_cast<std::uint32_t>(0));
+    TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, static_cast<std::uint32_t>(width));
+    TIFFSetField(tif, TIFFTAG_IMAGELENGTH, static_cast<std::uint32_t>(height));
+    TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, static_cast<std::uint16_t>(16));
+    TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, static_cast<std::uint16_t>(3));
+    TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    constexpr std::uint16_t photometricLinearRaw = 34892;
+    TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, photometricLinearRaw);
+    TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+    const std::array<float, 3> blackLevel{0.0f, 0.0f, 0.0f};
+    const std::array<std::uint32_t, 3> whiteLevel{65535, 65535, 65535};
+    TIFFSetField(tif, TIFFTAG_BLACKLEVEL,
+                 static_cast<std::uint32_t>(blackLevel.size()), blackLevel.data());
+    TIFFSetField(tif, TIFFTAG_WHITELEVEL,
+                 static_cast<std::uint32_t>(whiteLevel.size()), whiteLevel.data());
+    for(int y = 0; y < height; ++y)
+    {
+      auto *row = const_cast<std::uint16_t *>(rgb.data()
+        + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 3U);
+      if(TIFFWriteScanline(tif, row, static_cast<std::uint32_t>(y), 0) < 0)
+        throw std::runtime_error{"TIFFWriteScanline failed for linear RGB DNG"};
+    }
+    requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG directory");
+    if(canonical)
+    {
+      TIFFCreateDirectory(tif);
+      registerDngFields(tif);
+      setJpegPreviewFields(tif, previews->display, nullptr, 0, 0);
+      writeJpegStrip(tif, previews->display);
+      requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG display preview directory");
+    }
+  }
+  catch(...)
+  {
+    TIFFClose(tif);
+    throw;
+  }
   TIFFClose(tif);
 }
 

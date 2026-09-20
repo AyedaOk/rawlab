@@ -1,0 +1,27 @@
+<!-- Original RawLab demo illustration, GPL-3.0-or-later. No external assets. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1060" viewBox="0 0 1600 1060">
+ <defs>
+  <linearGradient id="sky" x2="0" y2="1"><stop stop-color="#719aa8"/><stop offset=".65" stop-color="#d7c8b2"/><stop offset="1" stop-color="#e9c392"/></linearGradient>
+  <linearGradient id="water" x2="0" y2="1"><stop stop-color="#87afb3"/><stop offset=".5" stop-color="#3e737e"/><stop offset="1" stop-color="#163f4d"/></linearGradient>
+  <linearGradient id="rock" x2="1" y2="1"><stop stop-color="#606c77"/><stop offset="1" stop-color="#213842"/></linearGradient>
+  <linearGradient id="light" x2=".7" y2="1"><stop stop-color="#eee4d7"/><stop offset="1" stop-color="#a4b7bf"/></linearGradient>
+  <filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".65" numOctaves="3" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".085"/></feComponentTransfer><feBlend in="SourceGraphic" mode="soft-light"/></filter>
+ </defs>
+ <g filter="url(#grain)">
+ <path fill="url(#sky)" d="M0 0H1600V1060H0z"/>
+ <ellipse cx="1170" cy="220" rx="76" ry="76" fill="#f3d3aa" opacity=".65"/>
+ <path d="M0 410L110 320 180 373 360 210 475 363 610 300 735 445 900 305 1060 413 1230 320 1400 421 1600 290V690H0Z" fill="#9cabb0"/>
+ <path d="M0 675L240 422 315 465 560 95 650 255 726 214 940 535 1050 600 1270 287 1480 514 1600 470V750H0Z" fill="url(#rock)"/>
+ <path d="M315 465L560 95 650 255 726 214 817 370 732 325 702 351 657 301 615 383 561 264 511 368 478 330 410 469Z" fill="url(#light)"/>
+ <path d="M560 95L544 239 615 383 576 352 612 476 708 551 650 366 657 301Z" fill="#7e969f"/>
+ <path d="M726 214L738 295 817 370 781 327Z" fill="#cdd5d6"/>
+ <path d="M1110 475L1270 287 1395 410 1300 384 1275 410 1221 365 1180 446Z" fill="#b5c6cc"/>
+ <path d="M0 697Q400 616 800 664T1600 685V1060H0Z" fill="url(#water)"/>
+ <path d="M330 713L560 997 644 865 730 903 866 736 680 780 575 702Z" fill="#a4b4b6" opacity=".27"/>
+ <path d="M0 534L200 640 410 683 704 696 405 715 150 710 0 681Z" fill="#163a3d"/>
+ <path d="M1600 555L1400 648 1115 695 1390 713 1600 689Z" fill="#25494b"/>
+ <g fill="#183a3c"><path d="M122 515l-35 138h70zM180 557l-26 116h52zM237 594l-23 89h46zM303 621l-18 64h36zM1355 604l-25 76h50zM1450 548l-30 115h60zM1510 479l-43 174h86z"/></g>
+ <g stroke="#d1d9cc" stroke-width="2" opacity=".24"><path d="M500 752h350m-420 18h640m-370 22h270m-520 66h660m-310 54h320m-1000 48h590m200 34h420"/></g>
+ <path d="M0 1020L143 941 261 976 362 952 450 1060H0Z" fill="#19373a"/>
+ </g>
+</svg>

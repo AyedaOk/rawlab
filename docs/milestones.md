@@ -1,5 +1,8 @@
 # Milestones
 
+> Historical implementation record. Use [current-roadmap.md](current-roadmap.md) for
+> current priorities and status.
+
 ## Milestone 0: Repository Foundation 
 
 - Status: Completed

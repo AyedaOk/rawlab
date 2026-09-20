@@ -1,4 +1,4 @@
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Network)
 find_package(Threads REQUIRED)
 
 find_package(PkgConfig QUIET)
@@ -7,6 +7,7 @@ if(PkgConfig_FOUND)
   pkg_check_modules(LibRaw QUIET IMPORTED_TARGET libraw)
   pkg_check_modules(LibTIFF QUIET IMPORTED_TARGET libtiff-4)
   pkg_check_modules(LibPNG QUIET IMPORTED_TARGET libpng)
+  pkg_check_modules(Lensfun QUIET IMPORTED_TARGET lensfun)
 endif()
 
 set(RAWLAB_DEPENDENCY_ROOT "" CACHE PATH "Root directory for packaged dependencies")
@@ -60,6 +61,22 @@ if(NOT TARGET PkgConfig::LibPNG)
   set(RAWLAB_LIBPNG_TARGET RawLab::LibPNG)
 else()
   set(RAWLAB_LIBPNG_TARGET PkgConfig::LibPNG)
+endif()
+
+if(TARGET PkgConfig::Lensfun)
+  set(RAWLAB_LENSFUN_TARGET PkgConfig::Lensfun)
+else()
+  find_path(RAWLAB_LENSFUN_INCLUDE_DIR NAMES lensfun/lensfun.h
+    PATHS "${RAWLAB_DEPENDENCY_ROOT}/include")
+  find_library(RAWLAB_LENSFUN_LIBRARY NAMES lensfun
+    PATHS "${RAWLAB_DEPENDENCY_ROOT}/lib" "${RAWLAB_DEPENDENCY_ROOT}/lib64")
+  if(RAWLAB_LENSFUN_INCLUDE_DIR AND RAWLAB_LENSFUN_LIBRARY)
+    add_library(RawLab::Lensfun UNKNOWN IMPORTED)
+    set_target_properties(RawLab::Lensfun PROPERTIES
+      IMPORTED_LOCATION "${RAWLAB_LENSFUN_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${RAWLAB_LENSFUN_INCLUDE_DIR}")
+    set(RAWLAB_LENSFUN_TARGET RawLab::Lensfun)
+  endif()
 endif()
 
 find_path(ONNXRuntime_INCLUDE_DIR

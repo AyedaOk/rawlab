@@ -4,6 +4,7 @@
 #include "rawlab/image/PngImage.h"
 #include "rawlab/image/AmazeDemosaic.h"
 #include "rawlab/image/RawPreview.h"
+#include "rawlab/image/LensCorrection.h"
 #include "rawlab/pipeline/Mask.h"
 #include "rawlab/pipeline/LayerComposition.h"
 #include "rawlab/pipeline/MaskedBlend.h"
@@ -12,9 +13,11 @@
 #include "rawlab/raw/RawImage.h"
 #include "rawlab/raw/RawInspectInfo.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
@@ -135,6 +138,12 @@ rawlab::raw::RawImage makeFlatPreviewImage(
 
 int main()
 {
+  const char *stage = "CFA utilities";
+  struct Progress
+  {
+    const char *&stage;
+    ~Progress() { if(stage) std::fprintf(stderr, "Smoke test stopped at: %s\n", stage); }
+  } progress{stage};
   if(rawlab::core::version() != std::string_view{"0.1.0"}) return 1;
 
   const rawlab::raw::CfaPattern rggb = makeRggb();
@@ -154,30 +163,94 @@ int main()
   if(!nearlyEqual(rawlab::raw::normalizeRawSample(6.0f, 2.0f, 10.0f), 0.5f)) return 1;
   if(!nearlyEqual(rawlab::raw::denormalizeRawSample(0.5f, 2.0f, 10.0f), 6.0f)) return 1;
 
+  stage = "Fast preview";
   const rawlab::raw::RawImage image = makeSyntheticRggbImage();
+#ifdef RAWLAB_HAS_LENSFUN
+  stage = "Lensfun profile matching";
+  auto opticsMetadata = image.metadata();
+  opticsMetadata.make = "Nikon Corporation";
+  opticsMetadata.model = "Nikon D750";
+  opticsMetadata.lensMake = "Nikon";
+  opticsMetadata.lensModel = "Nikon AF-S Nikkor 16-35mm f/4G ED VR";
+  opticsMetadata.focalLengthMm = 16.0;
+  opticsMetadata.aperture = 4.0;
+  const auto optics = rawlab::image::opticsStatus(opticsMetadata, 64, 64);
+  if(!optics.profileMatched || !optics.chromaticAberrationAvailable
+     || !optics.lensCorrectionAvailable) return 1;
+  auto opticsImage = makeFlatPreviewImage(rggb);
+  opticsImage.metadata() = opticsMetadata;
+  opticsImage.metadata().activeArea = {0, 0, opticsImage.width(), opticsImage.height()};
+  const auto corrected = rawlab::image::renderLinearRgb(opticsImage, {true, true});
+  if(corrected.width != opticsImage.width() || corrected.height != opticsImage.height()
+      || corrected.pixels.size() != static_cast<std::size_t>(corrected.width * corrected.height * 3)
+      || !std::all_of(corrected.pixels.begin(), corrected.pixels.end(), [](float value) {
+        return std::isfinite(value) && value > 0.0001f;
+      })) return 1;
+#endif
   // A flat, neutral field must stay neutral after low-resolution Fast PPG.
   // Per-site black levels make this also exercise normalization before CFA interpolation.
   for(const rawlab::raw::CfaPattern pattern : { rggb, bggr })
   {
+    const auto linearPreview = rawlab::image::renderLinearRawPreview(
+      makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::Fast);
+    if(linearPreview.width != 8 || linearPreview.height != 8
+       || linearPreview.pixels.size() != 8U * 8U * 3U
+       || !std::all_of(linearPreview.pixels.begin(), linearPreview.pixels.end(), [](float value) {
+         return std::isfinite(value);
+       })) return 1;
     const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(
       makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::Fast);
-    if(preview.image.width != 8 || preview.image.height != 8) return 1;
+    if(preview.image.width != 8 || preview.image.height != 8)
+    {
+      std::fprintf(stderr, "Unexpected Fast preview dimensions: %d x %d\n",
+                   preview.image.width, preview.image.height);
+      return 1;
+    }
     for(std::size_t i = 0; i < preview.image.pixels.size(); i += 3)
     {
       const std::uint8_t red = preview.image.pixels[i];
       const std::uint8_t green = preview.image.pixels[i + 1];
       const std::uint8_t blue = preview.image.pixels[i + 2];
-      if(red < 165 || green < 165 || blue < 165) return 1;
+      if(red < 165 || green < 165 || blue < 165)
+      {
+        std::fprintf(stderr, "Flat preview too dark: %d %d %d\n", red, green, blue);
+        return 1;
+      }
       if(std::abs(static_cast<int>(red) - static_cast<int>(green)) > 1
          || std::abs(static_cast<int>(green) - static_cast<int>(blue)) > 1) return 1;
     }
+    const auto highPreview = rawlab::image::renderRawPreview(
+      makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::High);
+    for(std::size_t i = 0; i < highPreview.image.pixels.size(); i += 3)
+      if(std::abs(static_cast<int>(highPreview.image.pixels[i])
+                  - static_cast<int>(highPreview.image.pixels[i + 1])) > 1
+         || std::abs(static_cast<int>(highPreview.image.pixels[i + 1])
+                     - static_cast<int>(highPreview.image.pixels[i + 2])) > 1) return 1;
+  }
+  stage = "normal sharpening";
+  // Strong reduction follows the half-size preview path even when High Quality is selected.
+  auto reducedSource = makeFlatPreviewImage(rggb);
+  for(int y = 0; y < 16; ++y)
+    for(int x = 0; x < 16; ++x)
+      reducedSource.setSample(x, y, 100.0f + static_cast<float>((x * 37 + y * 59) % 700));
+  for(int flip : {0, 3, 5, 6})
+  {
+    reducedSource.metadata().flip = flip;
+    const auto reduced = rawlab::image::renderRawPreview(reducedSource, 1, rawlab::image::PreviewQuality::High);
+    const auto reducedFast = rawlab::image::renderRawPreview(reducedSource, 1, rawlab::image::PreviewQuality::Fast);
+    if(reduced.image.pixels != reducedFast.image.pixels) return 1;
   }
   const rawlab::raw::RawImage unchanged =
     rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(image, 0.0f);
   if(unchanged.samples() != image.samples()) return 1;
   const rawlab::raw::RawImage sharpened =
     rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(image, 1.0f);
-  if(nearlyEqual(sharpened.sample(1, 1), image.sample(1, 1))) return 1;
+  if(nearlyEqual(sharpened.sample(1, 1), image.sample(1, 1)))
+  {
+    std::fprintf(stderr, "Sharpening test did not change the chosen sample\n");
+    return 1;
+  }
+  stage = "EXIF round trip";
   const std::filesystem::path exifDngPath = std::filesystem::temp_directory_path()
                                                   / "rawlab-exif-test.dng";
   rawlab::dng::TiffDngWriter{}.writeCfaDng(exifDngPath, image);
@@ -196,9 +269,10 @@ int main()
                                    && artist && description && exifOffset != 0
                                    && std::string_view{artist} == "RawLab Artist"
                                    && std::string_view{description} == "RawLab EXIF test"
-                                   && nearlyEqual(baselineExposure, -0.3f);
+                                   && nearlyEqual(baselineExposure, 0.0f);
   if(!hasBaselineMetadata || TIFFReadEXIFDirectory(exifTiff, exifOffset) != 1)
   {
+    std::fprintf(stderr, "Missing baseline metadata (baseline=%g)\n", baselineExposure);
     TIFFClose(exifTiff);
     return 1;
   }
@@ -254,9 +328,15 @@ int main()
                                  && std::string_view{lensSerial} == "LENS-456"
                                  && nearlyEqual(lensSpecification[0], 50.0f)
                                  && nearlyEqual(lensSpecification[3], 2.8f);
+  if(!validExifMetadata)
+    std::fprintf(stderr, "EXIF found=%d exposure=%g bias=%g aperture=%g ISO=%u focal=%g lens=%g,%g\n",
+                 hasExifMetadata, exposureTime, exposureBias, aperture, iso ? iso[0] : 0,
+                 focalLength, lensSpecification ? lensSpecification[0] : -1,
+                 lensSpecification ? lensSpecification[3] : -1);
   TIFFClose(exifTiff);
   std::filesystem::remove(exifDngPath);
   if(!validExifMetadata) return 1;
+  stage = "Bayer processing";
   const rawlab::raw::PackedBayerImage packed = rawlab::raw::packBayerForceRggb(image);
   if(packed.width != 2 || packed.height != 2) return 1;
 
@@ -291,6 +371,7 @@ int main()
     if(!nearlyEqual(remosaiced[i], expectedRemosaic[i])) return 1;
   }
 
+  stage = "RawForge color conversion";
   rawlab::raw::RawMetadata rawForgeMetadata;
   rawForgeMetadata.cfa = rggb;
   rawForgeMetadata.whiteLevel = 1.0f;
@@ -323,6 +404,7 @@ int main()
   for(std::size_t i = 0; i < constantCfa.size(); ++i)
     if(!nearlyEqual(rawForgeRoundTrip.samples()[i], constantCfa[i])) return 1;
 
+  stage = "blend and highlights";
   rawlab::raw::RawMetadata blendMetadata = image.metadata();
   rawlab::raw::RawImage processed{
     4,
@@ -363,6 +445,7 @@ int main()
   if(!nearlyEqual(preserved.sample(0, 1), 15.6f)) return 1;
   if(!nearlyEqual(preserved.sample(1, 1), 4.0f)) return 1;
 
+  stage = "masks";
   const rawlab::pipeline::Mask mask{2, 2, std::vector<float>{ -1.0f, 0.5f, 1.0f, 2.0f }};
   if(!nearlyEqual(mask.sampleNearest(0, 0), 0.0f)) return 1;
   if(!nearlyEqual(mask.sampleNearest(1, 0), 0.5f)) return 1;
@@ -429,6 +512,7 @@ int main()
   const rawlab::raw::RawImage maskedQuarter = rawlab::pipeline::blendWithMask(smallOriginal, smallProcessed, mask, 0.25f);
   if(!nearlyEqual(maskedQuarter.sample(1, 1), 12.5f)) return 1;
 
+  stage = "mapped masks";
   const rawlab::raw::RawImage mappedMasked = rawlab::pipeline::blendWithMappedMask(image, processed, previewMask, 1.0f);
   if(!nearlyEqual(mappedMasked.sample(0, 0), image.sample(0, 0))) return 1;
   if(!nearlyEqual(mappedMasked.sample(2, 0), 5.5f)) return 1;
@@ -442,6 +526,7 @@ int main()
   if(!nearlyEqual(mappedSplit.sample(2, 0), processed.sample(2, 0))) return 1;
   if(!nearlyEqual(mappedSplit.sample(3, 3), processed.sample(3, 3))) return 1;
 
+  stage = "preview quality";
   const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(image, 2);
   if(preview.image.width != 2 || preview.image.height != 2) return 1;
   if(preview.image.pixels.size() != 12) return 1;
@@ -554,6 +639,7 @@ int main()
   std::filesystem::remove(orientedDngPath);
   if(hasOrientation != 1 || orientation != ORIENTATION_RIGHTTOP) return 1;
 
+  stage = "DNG CFA phase";
   rawlab::raw::RawMetadata phaseMetadata = image.metadata();
   phaseMetadata.activeArea = {1, 1, 2, 2};
   phaseMetadata.blackLevel = {10.0f, 20.0f, 30.0f, 40.0f};
@@ -608,6 +694,7 @@ int main()
   catch(const std::invalid_argument &) { rejectedInvalidColor = true; }
   if(!rejectedInvalidColor) return 1;
 
+  stage = "layer composition";
   const rawlab::image::PreviewGeometry activeGeometry{{1, 1, 2, 2}, 2, 2, 0};
   const rawlab::pipeline::Mask activeMask{2, 2, std::vector<float>{1.0f, 0.0f, 0.0f, 0.0f}};
   const rawlab::raw::RawImage activeBlend = rawlab::pipeline::blendWithPreviewMask(
@@ -648,7 +735,9 @@ int main()
     image, {}, {}, preview.geometry);
   if(metadataResult.metadata().iso != image.metadata().iso
      || metadataResult.metadata().aperture != image.metadata().aperture
-     || metadataResult.metadata().exposureTimeSeconds != image.metadata().exposureTimeSeconds
+      || metadataResult.metadata().exposureTimeSeconds != image.metadata().exposureTimeSeconds
+      || metadataResult.metadata().exposureBiasEv != image.metadata().exposureBiasEv
+      || metadataResult.metadata().baselineExposureEv != image.metadata().baselineExposureEv
      || metadataResult.metadata().focalLengthMm != image.metadata().focalLengthMm
      || metadataResult.metadata().focalLength35mm != image.metadata().focalLength35mm
      || metadataResult.metadata().captureTimestamp != image.metadata().captureTimestamp
@@ -696,5 +785,6 @@ int main()
   if(std::fabs(loadedMask.sampleNearest(1, 0) - 0.5f) > (1.0f / 255.0f)) return 1;
   if(!nearlyEqual(loadedMask.sampleNearest(1, 1), 1.0f)) return 1;
 
+  stage = nullptr;
   return 0;
 }
