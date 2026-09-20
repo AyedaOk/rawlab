@@ -1,9 +1,9 @@
 [package]
-name = "rawlab-desktop-preview"
+name = "rawlab-desktop"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "RawLab React desktop preview"
+description = "RawLab desktop application"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

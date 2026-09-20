@@ -429,24 +429,36 @@ function App() {
     if (!isDesktop()) return;
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
-      unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+      const currentWindow = getCurrentWindow();
+      unlisten = await currentWindow.onCloseRequested(async (event) => {
         event.preventDefault();
         if (closing.current) return;
         closing.current = true;
         setNotice("Saving changes before closing...");
+        let timeout: number | undefined;
         try {
-          while (loadingRecipes.current.size)
-            await new Promise((resolve) => window.setTimeout(resolve, 10));
-          if (failedRecipeLoads.current.size)
-            throw new Error("One or more recipes could not be restored safely");
-          for (const item of photosRef.current) enqueuePhotoPersistence(item, 0);
-          const saved = await persistence.current?.flushAll();
-          if (saved) {
+          const save = (async () => {
+            while (loadingRecipes.current.size)
+              await new Promise((resolve) => window.setTimeout(resolve, 10));
+            if (failedRecipeLoads.current.size)
+              throw new Error("One or more recipes could not be restored safely");
+            for (const item of photosRef.current) enqueuePhotoPersistence(item, 0);
+            return persistence.current?.flushAll();
+          })();
+          const timeoutReached = new Promise<"timeout">((resolve) => {
+            timeout = window.setTimeout(() => resolve("timeout"), 10_000);
+          });
+          const saved = await Promise.race([save, timeoutReached]);
+          if (timeout) window.clearTimeout(timeout);
+          if (saved === "timeout") {
+            setNotice("Closing after the save timed out. Some recent changes may not be saved.");
+            await currentWindow.destroy();
+          } else if (saved) {
             if (externalSessionRef.current) await finishExternal(3);
-            else await getCurrentWindow().destroy();
-          }
-          else setNotice("Could not save all changes. Fix the storage error and close again.");
+            else await currentWindow.destroy();
+          } else setNotice("Could not save all changes. Fix the storage error and close again.");
         } catch (error) {
+          if (timeout) window.clearTimeout(timeout);
           setNotice(`Could not close safely: ${String(error)}`);
         } finally {
           closing.current = false;
@@ -2606,7 +2618,7 @@ function App() {
                     </div>
                     <p className="hint">
                       {maskTool} tool selected · Hold Space to pan. AI uses the
-                      SAM model configured in Qt RawLab.
+                      SAM model configured in Settings.
                       {correctedGeometry && " Optical corrections resume when mask editing ends."}
                     </p>
                     <Slider
@@ -2891,7 +2903,7 @@ function App() {
       {settings && (
         <dialog
           ref={dialog}
-          aria-labelledby="prototype-title"
+           aria-labelledby="settings-title"
           className="modal-backdrop"
           onCancel={() => showSettings(false)}
           onClick={() => showSettings(false)}
@@ -2913,7 +2925,7 @@ function App() {
              ) : (
                <>
                  <Aperture size={30} />
-                 <h2 id="prototype-title">Desktop model settings</h2>
+                  <h2 id="settings-title">Desktop model settings</h2>
                  <p>
                    Model management is available in the Linux desktop build.
                    Browser mode displays JPEG, PNG and WebP previews only.
