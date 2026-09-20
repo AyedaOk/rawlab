@@ -6,6 +6,7 @@ add_library(rawlab_core STATIC
   src/image/PngImage.cpp
   src/image/AmazeDemosaic.cpp
   src/image/RawPreview.cpp
+  src/image/LensCorrection.cpp
   src/pipeline/Mask.cpp
   src/pipeline/LayerComposition.cpp
   src/pipeline/MaskedBlend.cpp
@@ -35,3 +36,8 @@ target_link_libraries(rawlab_core
 )
 
 rawlab_enable_warnings(rawlab_core)
+
+if(RAWLAB_LENSFUN_TARGET)
+  target_link_libraries(rawlab_core PUBLIC ${RAWLAB_LENSFUN_TARGET})
+  target_compile_definitions(rawlab_core PUBLIC RAWLAB_HAS_LENSFUN=1)
+endif()

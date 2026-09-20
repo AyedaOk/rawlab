@@ -5,6 +5,16 @@ through “vibe coding”. It keeps Bayer CFA data intact while applying
 AI denoise and sharpening, then exports a non-demosaiced CFA DNG
 for use in a RAW editor.
 
+## React design prototype
+
+The experimental frontend lives in [`ui-prototype/`](ui-prototype/README.md).
+Run `npm ci` and `npm run desktop` there for the Tauri desktop preview (see its
+Linux prerequisites), or `npm run dev` for browser mode. Build the `rawlab_preview`
+CMake target to enable RAW thumbnails, metadata and High Quality viewing in Tauri.
+The desktop now connects single-image denoise, sharpening, masks and CFA DNG export.
+Qt still supplies model configuration and the existing batch/Darktable integration;
+the migration is not yet complete. See the prototype README before switching workflows.
+
 ## Features
 
 - Global and local denoise layers
@@ -32,14 +42,15 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-Release GUI build:
+Release worker build:
 
 ```bash
 cmake --preset release
 cmake --build --preset release
 ```
 
-The desktop application is `build/release/src/rawlab_app/rawlab-app`.
+The desktop application is built from `ui-prototype/`. See
+`docs/release.md` for the Linux AppImage workflow.
 
 ## Basic Workflow
 

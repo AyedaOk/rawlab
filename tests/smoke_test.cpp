@@ -4,6 +4,7 @@
 #include "rawlab/image/PngImage.h"
 #include "rawlab/image/AmazeDemosaic.h"
 #include "rawlab/image/RawPreview.h"
+#include "rawlab/image/LensCorrection.h"
 #include "rawlab/pipeline/Mask.h"
 #include "rawlab/pipeline/LayerComposition.h"
 #include "rawlab/pipeline/MaskedBlend.h"
@@ -12,6 +13,7 @@
 #include "rawlab/raw/RawImage.h"
 #include "rawlab/raw/RawInspectInfo.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -163,10 +165,39 @@ int main()
 
   stage = "Fast preview";
   const rawlab::raw::RawImage image = makeSyntheticRggbImage();
+#ifdef RAWLAB_HAS_LENSFUN
+  stage = "Lensfun profile matching";
+  auto opticsMetadata = image.metadata();
+  opticsMetadata.make = "Nikon Corporation";
+  opticsMetadata.model = "Nikon D750";
+  opticsMetadata.lensMake = "Nikon";
+  opticsMetadata.lensModel = "Nikon AF-S Nikkor 16-35mm f/4G ED VR";
+  opticsMetadata.focalLengthMm = 16.0;
+  opticsMetadata.aperture = 4.0;
+  const auto optics = rawlab::image::opticsStatus(opticsMetadata, 64, 64);
+  if(!optics.profileMatched || !optics.chromaticAberrationAvailable
+     || !optics.lensCorrectionAvailable) return 1;
+  auto opticsImage = makeFlatPreviewImage(rggb);
+  opticsImage.metadata() = opticsMetadata;
+  opticsImage.metadata().activeArea = {0, 0, opticsImage.width(), opticsImage.height()};
+  const auto corrected = rawlab::image::renderLinearRgb(opticsImage, {true, true});
+  if(corrected.width != opticsImage.width() || corrected.height != opticsImage.height()
+      || corrected.pixels.size() != static_cast<std::size_t>(corrected.width * corrected.height * 3)
+      || !std::all_of(corrected.pixels.begin(), corrected.pixels.end(), [](float value) {
+        return std::isfinite(value) && value > 0.0001f;
+      })) return 1;
+#endif
   // A flat, neutral field must stay neutral after low-resolution Fast PPG.
   // Per-site black levels make this also exercise normalization before CFA interpolation.
   for(const rawlab::raw::CfaPattern pattern : { rggb, bggr })
   {
+    const auto linearPreview = rawlab::image::renderLinearRawPreview(
+      makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::Fast);
+    if(linearPreview.width != 8 || linearPreview.height != 8
+       || linearPreview.pixels.size() != 8U * 8U * 3U
+       || !std::all_of(linearPreview.pixels.begin(), linearPreview.pixels.end(), [](float value) {
+         return std::isfinite(value);
+       })) return 1;
     const rawlab::image::RawPreview preview = rawlab::image::renderRawPreview(
       makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::Fast);
     if(preview.image.width != 8 || preview.image.height != 8)
@@ -188,26 +219,26 @@ int main()
       if(std::abs(static_cast<int>(red) - static_cast<int>(green)) > 1
          || std::abs(static_cast<int>(green) - static_cast<int>(blue)) > 1) return 1;
     }
+    const auto highPreview = rawlab::image::renderRawPreview(
+      makeFlatPreviewImage(pattern), 8, rawlab::image::PreviewQuality::High);
+    for(std::size_t i = 0; i < highPreview.image.pixels.size(); i += 3)
+      if(std::abs(static_cast<int>(highPreview.image.pixels[i])
+                  - static_cast<int>(highPreview.image.pixels[i + 1])) > 1
+         || std::abs(static_cast<int>(highPreview.image.pixels[i + 1])
+                     - static_cast<int>(highPreview.image.pixels[i + 2])) > 1) return 1;
   }
   stage = "normal sharpening";
-  // Strong reduction must include every AMaZE pixel, not four point samples.
+  // Strong reduction follows the half-size preview path even when High Quality is selected.
   auto reducedSource = makeFlatPreviewImage(rggb);
   for(int y = 0; y < 16; ++y)
     for(int x = 0; x < 16; ++x)
       reducedSource.setSample(x, y, 100.0f + static_cast<float>((x * 37 + y * 59) % 700));
-  const auto cameraPixels = rawlab::image::demosaicAmaze(reducedSource, reducedSource.metadata().activeArea);
   for(int flip : {0, 3, 5, 6})
   {
     reducedSource.metadata().flip = flip;
     const auto reduced = rawlab::image::renderRawPreview(reducedSource, 1, rawlab::image::PreviewQuality::High);
-    for(int c = 0; c < 3; ++c)
-    {
-      double mean = 0;
-      for(const auto &pixel : cameraPixels) mean += pixel[c];
-      mean /= cameraPixels.size();
-      const double encoded = mean <= 0.0031308 ? 12.92 * mean : 1.055 * std::pow(mean, 1.0 / 2.4) - 0.055;
-      if(std::abs(static_cast<int>(reduced.image.pixels[c]) - std::lround(encoded * 255)) > 1) return 1;
-    }
+    const auto reducedFast = rawlab::image::renderRawPreview(reducedSource, 1, rawlab::image::PreviewQuality::Fast);
+    if(reduced.image.pixels != reducedFast.image.pixels) return 1;
   }
   const rawlab::raw::RawImage unchanged =
     rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(image, 0.0f);

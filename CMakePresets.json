@@ -21,8 +21,16 @@
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "OFF",
         "BUILD_TESTING": "OFF",
-        "RAWLAB_BUILD_GUI": "ON",
         "RAWLAB_BUILD_CLI": "OFF"
+      }
+    },
+    {
+      "name": "preview",
+      "displayName": "Optimized preview development",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/preview",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
       }
     }
   ],
@@ -34,6 +42,11 @@
     {
       "name": "release",
       "configurePreset": "release"
+    },
+    {
+      "name": "preview",
+      "configurePreset": "preview",
+      "targets": ["rawlab_preview"]
     }
   ],
   "testPresets": [

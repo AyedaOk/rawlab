@@ -186,6 +186,25 @@ CameraRgb demosaicHalfSize(const raw::RawImage &source,
   return result;
 }
 
+CameraRgb demosaicBilinear(const raw::RawImage &source, const raw::ActiveArea &area,
+                           const int x, const int y)
+{
+  CameraRgb sum{};
+  std::array<int, 3> count{};
+  for(int dy = -1; dy <= 1; ++dy)
+    for(int dx = -1; dx <= 1; ++dx)
+    {
+      const int sx = std::clamp(x + dx, area.left, area.left + area.width - 1);
+      const int sy = std::clamp(y + dy, area.top, area.top + area.height - 1);
+      const int channel = colorIndex(raw::colorAt(source.metadata().cfa, sx, sy));
+      sum[static_cast<std::size_t>(channel)] += normalizedSample(source, area, sx, sy);
+      ++count[static_cast<std::size_t>(channel)];
+    }
+  for(std::size_t channel = 0; channel < sum.size(); ++channel)
+    sum[channel] /= static_cast<float>(std::max(1, count[channel]));
+  return sum;
+}
+
 std::array<float, 3> cameraToSrgb(const raw::RawMetadata &metadata,
                                    std::array<float, 3> camera,
                                    const bool alreadyWhiteBalanced)
@@ -277,8 +296,8 @@ std::pair<float, float> PreviewGeometry::previewToRaw(const float previewX, cons
   };
 }
 
-RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
-                            const PreviewQuality quality)
+LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, const int maxDimension,
+                                        const PreviewQuality quality)
 {
   if(maxDimension <= 0) throw std::invalid_argument{"Preview maximum dimension must be positive"};
   if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
@@ -296,7 +315,10 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
   const int width = std::max(1, static_cast<int>(std::lround(orientedWidth * scale)));
   const int height = std::max(1, static_cast<int>(std::lround(orientedHeight * scale)));
   const PreviewGeometry geometry{area, width, height, source.metadata().flip};
-  const std::vector<CameraRgb> amaze = quality == PreviewQuality::High
+  // As in darktable's preview pipe, full demosaicing cannot add visible detail
+  // once one output pixel spans at least a 2x2 Bayer cell.
+  const bool fullDemosaic = quality == PreviewQuality::High && scale > 0.5f;
+  const std::vector<CameraRgb> amaze = fullDemosaic
     ? demosaicAmaze(source, area) : std::vector<CameraRgb>{};
   std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(width)
                                            * static_cast<std::size_t>(height));
@@ -306,7 +328,7 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
     {
       for(int x = 0; x < width; ++x)
       {
-        if(quality == PreviewQuality::High)
+        if(fullDemosaic)
         {
           // Integrate the whole pixel footprint in linear camera RGB. Four
           // point samples miss fine patterns when heavily reducing a RAW.
@@ -345,12 +367,12 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
               static_cast<float>(x) + offsetX, static_cast<float>(y) + offsetY);
             const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
             const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
-            const std::array<float, 3> camera = quality == PreviewQuality::High
+            const std::array<float, 3> camera = fullDemosaic
               ? amaze[static_cast<std::size_t>(rawY - area.top) * static_cast<std::size_t>(area.width)
                       + static_cast<std::size_t>(rawX - area.left)]
               : demosaicHalfSize(source, area, rawX, rawY);
             const std::array<float, 3> sample = cameraToSrgb(
-              source.metadata(), camera, quality == PreviewQuality::High);
+              source.metadata(), camera, fullDemosaic);
             for(std::size_t channel = 0; channel < rgb.size(); ++channel)
               rgb[channel] += sample[channel];
           }
@@ -363,10 +385,26 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
     }
   });
 
+  LinearRawPreview preview{width, height, {}, geometry};
+  preview.pixels.reserve(linear.size() * 3U);
+  for(const auto &pixel : linear)
+    preview.pixels.insert(preview.pixels.end(), pixel.begin(), pixel.end());
+  return preview;
+}
+
+RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
+                            const PreviewQuality quality)
+{
+  const auto linearPreview = renderLinearRawPreview(source, maxDimension, quality);
+  const int width = linearPreview.width;
+  const int height = linearPreview.height;
+  std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(width) * height);
+  for(std::size_t i = 0; i < linear.size(); ++i)
+    std::copy_n(linearPreview.pixels.begin() + static_cast<std::ptrdiff_t>(i * 3U), 3, linear[i].begin());
   RgbImage preview;
   preview.width = width;
   preview.height = height;
-  preview.pixels.resize(linear.size() * 3);
+  preview.pixels.resize(linearPreview.pixels.size());
   parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
     for(int y = begin; y < end; ++y)
     {
@@ -393,7 +431,63 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
       }
     }
   });
-  return RawPreview{std::move(preview), geometry};
+  return RawPreview{std::move(preview), linearPreview.geometry};
+}
+
+RawPreview renderRawPreviewRegion(const raw::RawImage &source, const int x, const int y,
+                                  const int width, const int height)
+{
+  if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
+  const raw::ActiveArea area = boundedActiveArea(source);
+  const bool rotated = source.metadata().flip == 5 || source.metadata().flip == 6;
+  const int orientedWidth = rotated ? area.height : area.width;
+  const int orientedHeight = rotated ? area.width : area.height;
+  if(x < 0 || y < 0 || width <= 0 || height <= 0
+     || static_cast<std::int64_t>(x) + width > orientedWidth
+     || static_cast<std::int64_t>(y) + height > orientedHeight
+     || static_cast<std::int64_t>(width) * height > 16 * 1024 * 1024)
+    throw std::invalid_argument{"Invalid source preview region"};
+
+  const PreviewGeometry geometry{area, orientedWidth, orientedHeight, source.metadata().flip};
+  std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(width) * height);
+  parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
+    for(int row = begin; row < end; ++row)
+      for(int column = 0; column < width; ++column)
+      {
+        const auto [rawXf, rawYf] = geometry.previewToRaw(
+          static_cast<float>(x + column) + 0.5f, static_cast<float>(y + row) + 0.5f);
+        const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
+        const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
+        linear[static_cast<std::size_t>(row) * width + column] = cameraToSrgb(
+          source.metadata(), demosaicBilinear(source, area, rawX, rawY), false);
+      }
+  });
+  RgbImage image;
+  image.width = width;
+  image.height = height;
+  image.pixels.resize(linear.size() * 3);
+  parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
+    for(int row = begin; row < end; ++row)
+      for(int column = 0; column < width; ++column)
+      {
+        const std::size_t index = static_cast<std::size_t>(row) * width + column;
+        auto rgb = linear[index];
+        if(column > 0 && row > 0 && column + 1 < width && row + 1 < height)
+        {
+          const auto luma = [&linear, width](const int px, const int py) {
+            const auto &pixel = linear[static_cast<std::size_t>(py) * width + px];
+            return 0.2126f * pixel[0] + 0.7152f * pixel[1] + 0.0722f * pixel[2];
+          };
+          const float detail = luma(column, row) - (luma(column - 1, row) + luma(column + 1, row)
+            + luma(column, row - 1) + luma(column, row + 1)) * 0.25f;
+          for(float &channel : rgb) channel = std::max(0.0f, channel + 0.04f * detail);
+        }
+        image.pixels[index * 3] = displayByte(rgb[0]);
+        image.pixels[index * 3 + 1] = displayByte(rgb[1]);
+        image.pixels[index * 3 + 2] = displayByte(rgb[2]);
+      }
+  });
+  return {std::move(image), geometry};
 }
 
 

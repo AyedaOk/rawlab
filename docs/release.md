@@ -1,50 +1,57 @@
-# Release Packaging
+# Linux Release Packaging
 
-## Current Release
+RawLab's portable Linux package is a Tauri AppImage. It includes the React editor,
+the `rawlab-preview` native worker, ONNX Runtime CPU, Qt runtime plugins, Lensfun
+profiles, and the Darktable Lua integration.
 
-The project version is `0.1.0`. The release workflow is
-`.github/workflows/release.yml` and runs only when a tag matching `v*.*.*` is
-pushed. It builds Linux x86_64, macOS Apple Silicon, and Windows x86_64
-artifacts.
+## GitHub Actions
 
-Windows is distributed as a portable ZIP containing the executable and DLLs,
-because Qt, ONNX Runtime, and vcpkg runtime DLLs are required beside it.
+`.github/workflows/release.yml` runs manually or for tags matching `v*.*.*`.
+Every run uploads the AppImage as a workflow artifact; tagged runs also attach it
+to a GitHub release.
 
-## Dependency Packaging
+The workflow builds the worker with the CPU ONNX Runtime package, stages its
+runtime dependencies with `scripts/stage-tauri-linux.sh`, and runs
+`npm run desktop:bundle:linux` in `ui-prototype/`.
 
-- Linux uses Ubuntu Qt packages, LibRaw, libtiff, and libpng. Do not restore
-  `install-qt-action` to Linux; aqtinstall cannot resolve the Linux `qt_base`
-  archive used here.
-- Linux downloads CPU ONNX Runtime and copies its shared libraries into the
-  AppImage before linuxdeploy scans dependencies.
-- macOS uses the Apple Silicon runner and the CPU ONNX Runtime arm64 package.
-  macdeployqt receives the ONNX and Homebrew library paths.
-- Windows uses Qt MSVC, the MSVC developer environment, vcpkg libraries, and
-  the official CPU ONNX Runtime package.
+## Local Build
 
-## Packaging Pitfalls
-
-- `scripts/package-linux.sh` must not pass `--plugin-dir`; the bundled
-  linuxdeploy version does not support it.
-- `packaging/rawlab.desktop` and `packaging/rawlab.png` must be committed.
-  The icon needs `git add -f` because the general `*.png` ignore rule applies.
-- `CMakePresets.json` must contain the `release` preset before moving the tag.
-- The macOS application target must retain `MACOSX_BUNDLE TRUE`.
-- Generated `AppDir/`, `dist/`, linuxdeploy binaries, logs, and AppImages are
-  ignored and should not be committed.
-
-## Retrying A Release
-
-After fixing a workflow or packaging change, commit and push `main`, then move
-the release tag to the new commit:
+Build the release worker before staging the package:
 
 ```bash
-git add <changed-files>
-git commit -m "Describe the release fix"
-git push origin main
-git tag -f v0.1.0
-git push origin v0.1.0 --force
+cmake --preset release
+cmake --build --preset release --parallel 2
+ONNXRUNTIME_LIB_DIR=/path/to/onnxruntime/lib bash scripts/stage-tauri-linux.sh
+cd ui-prototype
+npm ci
+npm run desktop:bundle:linux
 ```
 
-The tag push triggers the workflow. The release job publishes artifacts after
-all three platform jobs succeed.
+The resulting package is under
+`ui-prototype/src-tauri/target/release/bundle/appimage/`.
+
+The staging script requires Lensfun and rejects a worker built without Lensfun
+support. Set `RAWLAB_ENGINE_SOURCE` when testing a worker outside `build/release`.
+
+## Release Validation
+
+Before publishing, run the AppImage outside the source checkout and verify:
+
+- startup and CPU processing without `RAWLAB_PREVIEW_ENGINE`
+- model discovery and useful missing-model errors
+- RAW import, preview, mask editing, and Bayer and Linear RGB DNG exports
+- close/reopen recipe restoration and batch recovery
+- Darktable handoff using the bundled `packaging/darktable/RawLab.lua`
+- Wayland, high-DPI, and narrow-window behavior
+
+## Publishing
+
+After the workflow succeeds on `main`, create and push a version tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Do not move a published tag. If a release must be corrected, publish a new patch
+version after merging the fix.

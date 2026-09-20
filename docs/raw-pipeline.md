@@ -19,7 +19,7 @@ RawSpeed may be evaluated later after the LibRaw baseline is understood.
 
 Mask and preview coordinates must map back to raw coordinates explicitly. Active-area offsets, crops, rotations, scaling, and CFA phase cannot be implicit.
 
-The Qt editor renders a bounded, display-only RGB preview from the current
+The native preview worker renders a bounded, display-only RGB preview from the current
 in-memory CFA composition. `PreviewGeometry` records active-area, scale, and
 LibRaw orientation mapping so SAM masks map back to matching sensor
 coordinates. The DNG writer preserves source orientation while leaving CFA
@@ -27,9 +27,11 @@ samples in sensor order.
 
 ## Preview Demosaicing
 
-`PreviewQuality::Fast` uses direct half-size 2x2 Bayer-block demosaicing. `PreviewQuality::High`
-uses the complete standalone AMaZE (Aliasing Minimization and Zipper Elimination)
-algorithm adapted from Darktable's `src/iop/demosaicing/amaze.cc`. The adaptation
+`PreviewQuality::Fast` uses direct half-size 2x2 Bayer-block demosaicing. Following
+Darktable's preview policy, `PreviewQuality::High` uses the same path when the output
+scale is at or below one half. Above one half it uses the complete standalone AMaZE
+(Aliasing Minimization and Zipper Elimination) algorithm adapted from Darktable's
+`src/iop/demosaicing/amaze.cc`. The adaptation
 is GPLv3-compatible and retains the original Darktable and Emil Martinec/Ingo
 Weyrich attribution in `AmazeDemosaic.cpp`; it does not include Darktable
 headers or runtime internals. RawLab supplies AMaZE with active-area samples

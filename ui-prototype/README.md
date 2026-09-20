@@ -1,0 +1,193 @@
+# RawLab Desktop
+
+RawLab's React editor runs in a Tauri desktop window or in a browser. The
+desktop shell provides RAW viewing and processing through a persistent C++
+worker and shared native settings, library, model, and batch services.
+
+## Process a RAW
+
+Rebuild `rawlab_preview` using the commands below, then restart the desktop app.
+Configure denoise, sharpening, and SAM models in the desktop settings. Missing
+models produce an error, not a fake result.
+
+1. Open a RAW, select a denoise model and set blend, sharpening and highlights.
+2. Press Update. The worker applies all enabled layers and returns real before/after
+   previews. Source CFA and denoise/sharpen outputs stay in the C++ worker; repeated
+   blend changes reuse inference results for the current document/model.
+3. Zoom in and click-drag to pan. Fit restores centering. In mask editing, hold
+   Space to pan after focusing the image. The comparison divider remains independently draggable.
+4. Add a mask, select Edit Mask, and draw Brush/Erase, Gradient or Ellipse marks.
+   AI clicks run SAM using the active model configured in Qt (Shift-click for a
+   negative point). Done keeps the mask. Feather/blur and inversion apply on Update;
+   the immediate editing overlay is a guide rather than a rendered soft-mask preview.
+5. Export DNG opens a native save dialog and writes processed Bayer CFA with metadata
+   and JPEG previews. Existing files are not overwritten. Cancel requests a stop at
+   a processing checkpoint; an in-flight inference or demosaic may need to finish.
+
+Ctrl+Z / Ctrl+Shift+Z restore up to 20 setting/layer/mask snapshots per photograph.
+Desktop presets persist in the Tauri webview's local storage. Browser-mode controls
+remain a non-processing demo.
+
+## Enable RAW viewing
+
+From the repository root, build the new bridge using the existing C++ dependencies:
+
+```bash
+cmake --preset dev
+cmake --build --preset dev --target rawlab_preview --parallel 2
+cd ui-prototype
+npm ci
+npm run desktop
+```
+
+Debug desktop runs automatically find `build/dev/src/rawlab_preview/rawlab-preview`.
+For another build location, set `RAWLAB_PREVIEW_ENGINE` to the **absolute executable
+path** before launching. For a standalone release executable, place `rawlab-preview`
+beside it or set that environment variable. The C++ helper needs its Qt/LibRaw/PNG
+runtime libraries installed, as does the existing C++ app.
+
+Import RAW pictures or a folder using the native buttons. Thumbnails are rendered
+at 400 pixels with Fast demosaicing. Open a RAW in Edit to render up to 4096 pixels;
+High Quality uses the existing AMaZE pipeline and area-weighted reduction. Uncheck
+High Quality for Fast mode. Metadata includes camera, sensor dimensions, ISO,
+aperture, shutter, focal length and exposure compensation. Lens information is
+available in the metadata tooltip.
+
+Preview work runs outside the UI thread, one RAW decode at a time. The desktop
+caches at most eight encoded previews / 64 MiB, keyed by source and engine file
+size/modification time, dimensions and quality. Stale responses cannot replace the
+currently selected image. Refresh RAW preview retries errors or rereads a changed
+source. Unsupported sensors (including non-Bayer layouts) display an error; choosing
+a RAW extension alone does not guarantee decoder/model support.
+
+Before a processing update, both comparison sides show the original RAW. After an
+update, the processed side uses the returned CFA composition. JPEG/PNG/WebP and
+browser viewing remain available. The stable inspect/process/mask CLI surface is
+unchanged; `rawlab-preview --serve` is a private desktop bridge.
+
+## Desktop launch on Linux
+
+Requirements: Node.js 20.19+, npm, current stable Rust/Cargo (via
+[rustup](https://rustup.rs)), a C/C++ compiler, pkg-config and WebKitGTK 4.1 development files.
+
+Ubuntu/Debian:
+
+```bash
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev librsvg2-dev
+```
+
+Arch Linux:
+
+```bash
+sudo pacman -S --needed base-devel webkit2gtk-4.1 openssl librsvg
+```
+
+After installing Rust, open a new terminal so `cargo` is on PATH. In `ui-prototype`:
+
+```bash
+npm ci
+npm run desktop
+```
+
+This opens **RawLab**, not a browser tab. Stop any existing
+`npm run dev` server first: desktop development manages its own server on port 5173.
+Run npm and Cargo as your normal user, not with sudo. Initial Rust compilation
+can take several minutes. On KDE, keep your distribution's desktop portal services
+enabled for native file dialogs.
+
+Build a standalone executable with bundled frontend assets:
+
+```bash
+npm run desktop:build
+./src-tauri/target/release/rawlab-desktop-preview
+```
+
+Build the portable package with `npm run desktop:bundle:linux` after running
+`scripts/stage-tauri-linux.sh` from the repository root. See `docs/release.md`.
+
+### Try the desktop shell
+
+1. Launch with `npm run desktop`.
+2. Use Import Pictures to pick RAW files or JPEG/PNG/WebP images in a native dialog.
+3. Use Import Folder and check nested photographs appear. Cancel a picker to
+   confirm the existing collection is preserved.
+4. Open a picture, adjust interface controls, resize the window and try comparison.
+5. For a RAW, toggle High Quality, check orientation/metadata, process and export
+   to a new DNG. Source RAW files remain unchanged.
+
+Native imports are read-only and scoped to paths selected in the dialogs. Unsupported
+files and symlinks are skipped. This preview stage caps one import at 500 images,
+50 MiB per raster-preview file and 256 MiB total raster import data. RAW files are
+passed by path to the decoder rather than loaded into JavaScript. Directory scans are bounded.
+
+## Run on Linux
+
+Install Node.js 20.19+ and npm, then from the repository root:
+
+```bash
+cd ui-prototype
+npm ci
+npm run dev
+```
+
+Open the localhost URL printed by Vite (normally http://127.0.0.1:5173).
+Stop with Ctrl+C. No CMake rebuild is needed for this prototype.
+
+## What to review
+
+- Library/Edit navigation with the rounded charcoal containers from the supplied screenshot.
+- Library with a slim icon-only import rail on the left and no adjustments panel or zoom controls. Import Pictures supports
+  multiple files; Import Folder reads browser-supported previews from a directory.
+  Browser mode skips RAW files; desktop mode renders supported RAWs through the bridge. Files are deduplicated within
+  the session by relative name, size and modification time.
+- Click to select and Ctrl/Shift-click to extend selection. Double-click or Enter
+  opens a photograph directly; there is no Open button in the footer. A filter-icon
+  button opens filename, minimum-rating and file-type controls, with Reset filters.
+- Edit has a right adjustments panel and filmstrip, with no left sidebar.
+  Export appears only in that panel, not the top header.
+- Separate collapsible Layers, Denoise and Sharpen sections, with contextual mask editing.
+  Preserve highlights is under Denoise; sharpening mode and strength are under Sharpen.
+- Layer actions (Add Mask, Edit Mask and Delete) sit together below the layer list;
+  Edit/Delete are disabled for Global. Edit Mask reveals tools and feather, blur,
+  inversion and overlay controls directly below Layers. Done hides the panel while
+  keeping settings. Changing layers or images closes editing.
+- A Presets icon beside Reset Settings opens saved presets, highlights the selected
+  one, and offers Save current settings and Delete selected preset. Deleting a
+  preset leaves image settings intact; applying one waits for Update.
+- Save current settings opens a naming dialog, prefilled with the selected preset name.
+  Saving with the same name replaces that session preset; Cancel/Escape leave it unchanged.
+  Preserve highlights uses an Off/On segmented control and is included in presets.
+- Desktop-local presets, star rating, zoom relative to Fit. Drag the
+  comparison divider directly on the image (mouse or touch); focus it and use
+  Left/Right arrows for keyboard adjustments. There is no comparison range slider.
+- Small-window layouts, keyboard focus, local preview loading and drag/drop.
+
+The bundled landscape is an original SVG illustration, not a processed RAW.
+Open your own JPEG, PNG or WebP for a photographic example. Images are displayed
+locally through browser object URLs; there are no uploads, accounts, external fonts
+or remote image assets. Browser mode never simulates denoise with a CSS filter.
+Real processing requires a RAW opened in the desktop app. Imported documents and
+history are session-local; desktop presets persist separately.
+
+## Verification
+
+```bash
+npm run build             # TypeScript check + production bundle
+npx playwright install chromium
+# Linux may also require: npx playwright install-deps chromium
+npm test                 # interaction, local image and responsive-layout tests
+```
+
+## Remaining validation
+
+Validate the AppImage, model management, batch recovery, and Darktable handoff on
+a clean Linux host, including Wayland and high-DPI behavior.
+
+## Licensing
+
+Prototype source, styling and demo illustration: GPL-3.0-or-later, as RawLab.
+React/React DOM and Vite: MIT; TypeScript: Apache-2.0; Lucide icons: ISC;
+Playwright: Apache-2.0; Prettier: MIT. Dependency notices ship in their packages.
+Tauri and its official dialog/filesystem plugins: MIT or Apache-2.0. The desktop
+icon is generated from RawLab's existing `packaging/rawlab.png`.
+RapidRAW is a visual reference; its AGPL application code and branding are not copied.

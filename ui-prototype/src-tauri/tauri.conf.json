@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RawLab",
+  "version": "0.1.0",
+  "identifier": "org.rawlab.desktop-preview",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 5173 --strictPort",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "RawLab", "width": 1440, "height": 900, "minWidth": 800, "minHeight": 600, "dragDropEnabled": false }],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'",
+      "devCsp": "default-src 'self'; connect-src ipc: http://ipc.localhost http://127.0.0.1:5173 ws://127.0.0.1:5173; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage"],
+    "category": "Photography",
+    "shortDescription": "AI RAW photo preprocessing",
+    "externalBin": ["binaries/rawlab-preview"],
+    "icon": ["../../packaging/rawlab.png"],
+    "linux": {
+      "appimage": {
+        "files": {
+          "/usr/lib": "bundle/linux/usr/lib",
+          "/usr/plugins": "bundle/linux/usr/plugins",
+          "/usr/share/lensfun": "bundle/linux/usr/share/lensfun",
+          "/usr/share/rawlab": "bundle/linux/usr/share/rawlab"
+        }
+      }
+    }
+  }
+}

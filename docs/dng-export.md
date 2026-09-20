@@ -28,7 +28,8 @@ it runs the production raw-domain pipeline before writing the Bayer CFA DNG.
 - Active area/crop metadata when needed for correct re-import.
 - Source ISO, aperture, exposure time, focal length, and capture time in a dedicated EXIF IFD.
 - Lens make/model/specification/serial, camera body serial, artist, and image description when LibRaw exposes them.
-- Embedded JPEG thumbnail and display preview for GUI exports.
+- Embedded JPEG thumbnail and display preview for both CFA and Linear RGB exports,
+  including single, recoverable-batch, and Darktable-batch output.
 
 GPS, MakerNotes, XMP, and arbitrary source structural tags are intentionally not copied. This keeps the generated DNG layout valid and avoids silently carrying location metadata.
 
@@ -66,4 +67,10 @@ this must not discard a valid embedded DNG matrix during re-export.
 
 Valid CFA DNG export requires correct CFA layout tags, black/white levels, active area, color metadata, orientation, and sample packing. Treat this as a proof-of-concept milestone, not a routine TIFF export.
 
-LinearRaw DNG is a separate later path for non-Bayer sensors or linear RGB models. It must not replace the Bayer CFA DNG path.
+LinearRaw DNG is an optional demosaiced export path. RawLab writes white-balanced linear
+sRGB samples with an embedded identity profile: a stable RawLab camera identity,
+XYZ-D65-to-sRGB matrix, D65 illuminant, unity neutral and analog balance, and explicit
+three-channel black and white levels. It does not replace the Bayer CFA DNG baseline.
+When built with Lensfun, this path can also apply matched lateral chromatic-aberration,
+distortion, vignetting, and automatic scaling corrections. Bayer CFA output never applies
+those RGB-domain corrections.

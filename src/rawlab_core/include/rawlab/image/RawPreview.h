@@ -4,6 +4,7 @@
 #include "rawlab/raw/RawImage.h"
 
 #include <utility>
+#include <vector>
 
 namespace rawlab::image {
 
@@ -26,7 +27,21 @@ struct RawPreview
   PreviewGeometry geometry;
 };
 
+struct LinearRawPreview
+{
+  int width = 0;
+  int height = 0;
+  std::vector<float> pixels;
+  PreviewGeometry geometry;
+};
+
+LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, int maxDimension = 2048,
+                                        PreviewQuality quality = PreviewQuality::Fast);
+
 RawPreview renderRawPreview(const raw::RawImage &source, int maxDimension = 2048,
                             PreviewQuality quality = PreviewQuality::Fast);
+
+RawPreview renderRawPreviewRegion(const raw::RawImage &source, int x, int y,
+                                  int width, int height);
 
 }
