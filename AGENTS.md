@@ -1,5 +1,13 @@
 # Agent Notes
 
+## Required skills
+
+- Load and follow `stop-slop` when drafting or editing prose.
+- Load and follow `graphify` for codebase questions and architecture exploration. Query an existing graph before rebuilding it.
+- Load and follow `ponytail` for coding, debugging, refactoring, and code review. Use full intensity unless the user requests another level.
+
+## Project notes
+
 - Release packaging and tag/retry instructions are documented in `docs/release.md`.
 
 - This is a C++20/CMake project for a raw-domain photo preprocessing app; the first milestones are CLI/core proof-of-concepts, not GUI work.

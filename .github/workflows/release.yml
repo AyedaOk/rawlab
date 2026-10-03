@@ -99,8 +99,10 @@ jobs:
           test -x "$extract_dir/squashfs-root/usr/lib/$multiarch/webkit2gtk-4.1/WebKitNetworkProcess"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:
           name: rawlab-linux-x86_64
+          retention-days: 7
           path: desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
