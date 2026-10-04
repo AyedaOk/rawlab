@@ -61,7 +61,7 @@ jobs:
 
       - name: Build DMG
         working-directory: desktop
-        run: npm run desktop:bundle:macos
+        run: npm run desktop:bundle:macos -- --config src-tauri/bundle/macos-deployment.json
 
       - name: Validate bundle
         run: |
@@ -82,6 +82,27 @@ jobs:
           test -f "$app/Contents/Resources/lensfun/version_1/timestamp.txt"
           codesign --verify --deep --strict "$app"
           codesign -dv "$app" 2>&1 | grep -q "Signature=adhoc"
+          python3 - "$app" <<'PY'
+          import pathlib, subprocess, sys
+          app = pathlib.Path(sys.argv[1])
+          for path in app.rglob('*'):
+              if not path.is_file() or path.is_symlink():
+                  continue
+              if 'Mach-O' not in subprocess.check_output(['file', '-b', str(path)], text=True):
+                  continue
+              links = subprocess.check_output(['otool', '-L', str(path)], text=True)
+              for line in links.splitlines()[1:]:
+                  dependency = line.strip().split(' (')[0]
+                  if dependency.startswith('/') and not dependency.startswith(('/System/Library/', '/usr/lib/')):
+                      raise SystemExit(f'External dependency: {path}: {dependency}')
+          result = subprocess.run([str(app / 'Contents/MacOS/rawlab-preview'), '--serve'],
+              input='{"operation":"settings"}\n', text=True, capture_output=True, timeout=30)
+          assert result.returncode == 0, result.stderr
+          import json
+          response = json.loads(result.stdout)
+          assert 'error' not in response, response
+          print('Packaged worker settings request passed')
+          PY
           hdiutil detach "$mount" -quiet
 
       - uses: actions/upload-artifact@v4
