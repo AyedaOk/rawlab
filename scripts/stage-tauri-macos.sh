@@ -41,7 +41,7 @@ cat > "$deployment/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleExecutable</key><string>rawlab-preview</string><key>CFBundleIdentifier</key><string>org.rawlab.worker</string></dict></plist>
 PLIST
-"$(brew --prefix qt)/bin/macdeployqt" "$deployment" -always-overwrite -no-strip
+"$(brew --prefix qt)/bin/macdeployqt" "$deployment" -always-overwrite -no-strip -no-plugins
 cp "$deployment/Contents/MacOS/rawlab-preview" "$engine"
 framework_stage="$root/desktop/src-tauri/bundle/macos-frameworks"
 rm -rf "$framework_stage"
@@ -64,7 +64,7 @@ for path in files:
     links = subprocess.check_output(['otool', '-L', str(path)], text=True)
     for line in links.splitlines()[1:]:
         old = line.strip().split(' (')[0]
-        if '.framework/' in old:
+        if '.framework/' in old and not old.startswith('/System/Library/'):
             name = old.split('.framework/')[0].split('/')[-1]
             relative = name + '.framework/' + old.split('.framework/', 1)[1]
             assert (tauri / 'bundle/macos-frameworks' / relative).exists(), old
@@ -73,7 +73,8 @@ for path in files:
     if '.framework/' in str(path):
         relative = str(path.relative_to(tauri / 'bundle/macos-frameworks'))
         subprocess.run(['install_name_tool', '-id', '@rpath/' + relative, str(path)], check=True)
-config = {'bundle': {'macOS': {'frameworks': [str(p) for p in frameworks]}}}
+libraries = sorted((tauri / 'bundle/macos-frameworks').glob('*.dylib'))
+config = {'bundle': {'macOS': {'frameworks': [str(p) for p in frameworks + libraries]}}}
 (tauri / 'bundle/macos-deployment.json').write_text(json.dumps(config))
 PY
 rm -rf "$(dirname "$deployment")"
