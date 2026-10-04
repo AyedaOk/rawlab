@@ -99,6 +99,16 @@ rm -rf "$(dirname "$deployment")"
 # the ONNX Runtime dylibs explicitly.
 cp -a "$ONNXRUNTIME_LIB_DIR"/libonnxruntime*.dylib "$stage/" 2>/dev/null || true
 
+# Tauri seals Resources as data; sign its executable code after all path rewrites.
+python3 - "$stage" <<'PY'
+import pathlib, subprocess, sys
+for path in pathlib.Path(sys.argv[1]).rglob('*'):
+    if path.is_file() and not path.is_symlink():
+        if 'Mach-O' in subprocess.check_output(['file', '-b', str(path)], text=True):
+            subprocess.run(['codesign', '--force', '--sign', '-', '--timestamp=none', str(path)], check=True)
+            subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
+PY
+
 if compgen -G "$lensfun_data/version_*" >/dev/null; then
   cp -a "$lensfun_data"/version_* "$lensfun_stage/"
 else

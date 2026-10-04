@@ -96,6 +96,7 @@ jobs:
                   continue
               if 'Mach-O' not in subprocess.check_output(['file', '-b', str(path)], text=True):
                   continue
+              subprocess.run(['codesign', '--verify', '--strict', str(path)], check=True)
               links = subprocess.check_output(['otool', '-L', str(path)], text=True)
               for line in links.splitlines()[1:]:
                   dependency = line.strip().split(' (')[0]
