@@ -15,7 +15,8 @@
 int main(int argc, char **argv)
 {
   QCoreApplication application{argc, argv};
-  if(argc != 2) return 1;
+  const bool exportOnly = argc == 3 && QString::fromLocal8Bit(argv[2]) == "--export-only";
+  if(argc != 2 && !exportOnly) return 1;
   QTemporaryDir directory;
   if(!directory.isValid()) return 1;
   rawlab::raw::RawMetadata metadata;
@@ -162,6 +163,13 @@ int main(int argc, char **argv)
        || width != 64 || height != 96 || orientation != ORIENTATION_RIGHTTOP
        || !linearMetadataValid || !linearPixelsValid || !hasLinearDisplayPreview
        || displayType != FILETYPE_REDUCEDIMAGE || displayCompression != COMPRESSION_JPEG) return 1;
+  if(exportOnly)
+  {
+    server.closeWriteChannel();
+    if(!server.waitForFinished(5000) || server.exitCode() != 0) return 1;
+    std::cout << "Packaged CFA and Linear RGB DNG exports passed\n";
+    return 0;
+  }
   QJsonObject batch{{"operation", "batch_create"},
                     {"sources", QJsonArray{input}},
                     {"outputDirectory", directory.path()},
@@ -245,7 +253,7 @@ int main(int argc, char **argv)
   QJsonObject recipeSave{{"operation", "recipe_save"}, {"path", input}, {"recipe", richRecipe}, {"width", 64}, {"height", 96}};
   const auto savedRecipe = send(recipeSave);
   if(savedRecipe["saved"] != true) { std::cerr << "recipe save failed: " << QJsonDocument{savedRecipe}.toJson().constData(); return 1; }
-  QJsonObject recipeLoad{{"operation", "recipe_load"}, {"path", input}};
+   QJsonObject recipeLoad{{"operation", "recipe_load"}, {"path", input}};
   const auto roundTrip = send(recipeLoad)["recipe"].toObject();
   const auto roundTripLayer = roundTrip["layers"].toArray().at(1).toObject();
    if(roundTripLayer["strokes"].toArray().size() < 2 || roundTripLayer["strokes"].toArray().at(1).toObject()["tool"] != "Gradient"

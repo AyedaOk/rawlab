@@ -118,7 +118,7 @@ jobs:
           print('Packaged worker HTTPS catalog request passed')
           PY
           QT_PLUGIN_PATH="$app/Contents/Resources/qt-plugins" \
-            build/release/tests/rawlab_preview_bridge_test "$app/Contents/MacOS/rawlab-preview"
+            build/release/tests/rawlab_preview_bridge_test "$app/Contents/MacOS/rawlab-preview" --export-only
           hdiutil detach "$mount" -quiet
 
       - uses: actions/upload-artifact@v4

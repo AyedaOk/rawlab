@@ -32,6 +32,10 @@ Status: Functional. Detailed validation can continue later.
 Later checks include a packaged desktop close/reopen exercise and broader failure
 injection on additional platforms.
 
+- macOS packaged-worker bridge test failed recipe round-trip assertions on 2026-10-04:
+  restored local-layer points and category strokes were empty. Investigate test isolation
+  and persistence behavior (Actions run 37239571508). DNG export checks passed before this failure.
+
 ## 3. Preview performance and worker scheduling
 
 Status: Functional. Detailed validation can continue later.
