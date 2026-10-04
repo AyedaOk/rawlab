@@ -42,11 +42,15 @@ cat > "$deployment/Contents/Info.plist" <<'PLIST'
 <plist version="1.0"><dict><key>CFBundleExecutable</key><string>rawlab-preview</string><key>CFBundleIdentifier</key><string>org.rawlab.worker</string></dict></plist>
 PLIST
 "$(brew --prefix qt)/bin/macdeployqt" "$deployment" -always-overwrite -no-strip -no-plugins
-# Deploy only the native TLS backend; the worker does not need GUI plugins.
+# Deploy TLS and JPEG encoding without unrelated GUI plugins.
 tls="$("$(brew --prefix qt)/bin/qtpaths" --query QT_INSTALL_PLUGINS)/tls/libqsecuretransportbackend.dylib"
 test -f "$tls"
 mkdir -p "$stage/qt-plugins/tls"
 cp "$tls" "$stage/qt-plugins/tls/"
+jpeg="$("$(brew --prefix qt)/bin/qtpaths" --query QT_INSTALL_PLUGINS)/imageformats/libqjpeg.dylib"
+mkdir -p "$stage/qt-plugins/imageformats"
+cp "$jpeg" "$stage/qt-plugins/imageformats/"
+dylibbundler -of -b -x "$stage/qt-plugins/imageformats/libqjpeg.dylib" -d "$stage" -p "@executable_path/../Resources/"
 cp "$deployment/Contents/MacOS/rawlab-preview" "$engine"
 framework_stage="$root/desktop/src-tauri/bundle/macos-frameworks"
 rm -rf "$framework_stage"
