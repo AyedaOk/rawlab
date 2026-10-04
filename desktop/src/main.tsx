@@ -34,6 +34,7 @@ import {
   rawSourceVersion,
   type RawPreview,
   configuredModels,
+  control,
   type ModelCatalog,
   processRaw,
   recomposeRaw,
@@ -789,7 +790,7 @@ function App() {
       ? rawView.url
       : photo.url;
   function recipeFor(p: Photo, outputKind?: "cfa" | "linear-rgb") {
-    const defaultDenoiseId = catalog.denoise.find((m) => m.available)?.id || "";
+    const defaultDenoiseId = "hf:rawdenoise-okeinla";
     return {
       layers: p.layers.map((l) => ({
         ...l,
@@ -930,6 +931,17 @@ function App() {
     );
     setRawError("");
     try {
+      if (!exporting && recipe.layers.some((layer) => layer.enabled && layer.modelId === "hf:rawdenoise-okeinla")
+          && !catalog.denoise.some((model) => model.id === "hf:rawdenoise-okeinla" && model.available)) {
+        setProgress("Downloading Okeinla…");
+        await control({ operation: "model_download", id: "rawdenoise-okeinla" });
+        const models = await configuredModels();
+        setCatalog(models);
+        if (!models.denoise.some((model) => model.id === "hf:rawdenoise-okeinla" && model.available)) {
+          throw new Error("Okeinla download did not install a usable model. Retry or install it in Preferences.");
+        }
+        setProgress("Processing enabled layers…");
+      }
       const destination = exporting
         ? externalSession?.mode === "single"
           ? externalSession.output
@@ -1711,7 +1723,6 @@ function App() {
       />
       <header className="topbar">
         <div className="brand">
-          <Aperture size={22} />
           <span>RawLab</span>
           <small>{appVersion ? `v${appVersion}` : "preview"}</small>
         </div>
@@ -2753,8 +2764,7 @@ function App() {
                     value={
                       isDesktop()
                         ? active.modelId ||
-                          catalog.denoise.find((m) => m.available)?.id ||
-                          ""
+                          "hf:rawdenoise-okeinla"
                         : active.modelId || "demo"
                     }
                     onChange={(e) => change({ modelId: e.target.value })}
@@ -2762,6 +2772,9 @@ function App() {
                     {isDesktop() ? (
                       <>
                         <option value="">Select configured model</option>
+                        {!catalog.denoise.some((m) => m.id === "hf:rawdenoise-okeinla") && (
+                          <option value="hf:rawdenoise-okeinla">Okeinla (download on Update)</option>
+                        )}
                         {catalog.denoise.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.name}

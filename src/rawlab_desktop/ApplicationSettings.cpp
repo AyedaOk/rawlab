@@ -35,6 +35,16 @@ ApplicationSettingsData defaults()
   });
   data.activeSamModelId = data.samModels.front().id;
   data.denoiseModels.push_back({
+    QStringLiteral("hf:rawdenoise-okeinla"),
+    QStringLiteral("Okeinla"),
+    QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+      + QStringLiteral("/models/rawdenoise-okeinla/1.0/model_bayer.onnx"),
+    QStringLiteral("rawnind-bayer-v1"),
+    QStringLiteral("rawdenoise-okeinla"),
+    QStringLiteral("1.0"),
+    QStringLiteral("default"),
+  });
+  data.denoiseModels.push_back({
     QStringLiteral("hf:rawdenoise-nind"),
     QStringLiteral("RawNIND Bayer"),
     darktableModelPath(QStringLiteral("rawdenoise-nind/model_bayer.onnx")),

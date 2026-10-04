@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { cancelProcessing, control, type ModelCatalog } from "./desktop";
 
 type Settings = ModelCatalog & {
-  sam: { id: string; name: string; folder: string }[];
+  sam: { id: string; name: string; folder: string; origin?: string }[];
   activeSamModelId: string;
   runtimeLibrary: string;
   deviceId: number;
@@ -76,7 +76,8 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
               <span title={"folder" in model ? model.folder : model.path}>{model.name}{"available" in model && !model.available ? " (missing)" : ""}</span>
               <button className="subtle" onClick={() => void run("Removing model…", async () => {
                 await control({ operation: "model_remove", task: group.task, id: model.id }); await refresh();
-              })}>Remove</button>
+                setCatalog((items) => items.map((item) => `hf:${item.id}` === model.id ? { ...item, installed: false } : item));
+              })}>{model.origin === "verified" ? "Remove" : "Forget"}</button>
             </div>)}
           </section>)}
         </div>

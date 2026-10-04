@@ -131,8 +131,8 @@ export const discardBatch = () => batchControl({ operation: 'batch_discard' });
 export const cancelBatchProcessing = () => invoke("cancel_batch_processing");
 export const runBatch = () => batchControl({ operation: 'batch_run' });
 export type ModelCatalog = {
-  denoise: { id: string; name: string; path?: string; available: boolean }[];
-  sharpen: { id: string; name: string; path?: string; available: boolean }[];
+  denoise: { id: string; name: string; path?: string; origin?: string; available: boolean }[];
+  sharpen: { id: string; name: string; path?: string; origin?: string; available: boolean }[];
   provider: string;
 };
 export const configuredModels = async () =>

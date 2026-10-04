@@ -10,7 +10,7 @@ test('the latest active photograph owns the visible preview', async ({page}) => 
       __resolveActive:(path:string) => active.get(path)?.({version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,png:`${png}${path.endsWith('b.ARW')?'B':'A'}`,quality:'high',metadata:{model:path,rawWidth:6000,rawHeight:4000}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
         if(command==='external_session') return null;
-        if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
+       if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
         if(command==='render_raw_preview') {
           calls.push(structuredClone(args));
           if(args.background) return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,png,quality:'fast',metadata:{model:args.path,rawWidth:6000,rawHeight:4000}};
@@ -51,7 +51,7 @@ test('quality changes issue one source request and reuse processed derivatives',
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
       if(command==='external_session') return null;
       calls.push({command,args:structuredClone(args)});
-      if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
+      if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='raw_source_version') return sourceVersion;
       if(command==='render_raw_preview') return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion,png,quality:args.highQuality?'high':'fast',metadata:{rawWidth:6000,rawHeight:4000}};
       if(command==='process_raw') return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',resultId:'result-1',png,before:png,quality:'high',metadata:{rawWidth:6000,rawHeight:4000}};

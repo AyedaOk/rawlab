@@ -13,7 +13,7 @@ function nativeBridge(paths: string[]) {
         if (command === 'external_session') return null;
         if (command === 'plugin:app|version') return '0.1.0';
         if (command === 'raw_source_version') return 'v1';
-        if (command === 'processing_models') return { models: { denoise: [{ id: 'test', name: 'Test denoise', available: true }], sharpen: [], provider: 'cpu' } };
+        if (command === 'processing_models') return { models: { denoise: [{ id: 'hf:rawdenoise-okeinla', name: 'Okeinla', available: true }], sharpen: [], provider: 'cpu' } };
         if (command === 'render_raw_preview') return { version: 1, width: 2, height: 2, png, quality: args.highQuality ? 'high' : 'fast', metadata: { rawWidth: 2, rawHeight: 2 } };
         if (command === 'process_raw') return { version: 1, width: 2, height: 2, png, before: png, resultId: 'result-1', output: args.output, quality: 'fast', sourceVersion: 'v1', metadata: {} };
         if (command === 'render_processed') return { version: 1, width: 2, height: 2, png, before: png, quality: 'fast', sourceVersion: 'v1', metadata: {} };
@@ -79,7 +79,7 @@ test('local mask layers inherit the default denoise model', async ({ page }) => 
   await expect.poll(() => page.evaluate(() => {
     const call = (window as any).__libraryCalls.filter((entry: any) => entry.command === 'process_raw').at(-1);
     return call?.args.recipe.layers[1]?.modelId;
-  })).toBe('test');
+  })).toBe('hf:rawdenoise-okeinla');
 });
 
 test('a failed recipe load no longer blocks closing', async ({ page }) => {

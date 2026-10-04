@@ -43,9 +43,9 @@ test('RAW thumbnails, metadata and quality changes use the native renderer', asy
           if(args.highQuality) await new Promise(resolve => setTimeout(resolve, 100));
           return {version:1, width:1, height:1, png, quality:args.highQuality ? 'high':'fast', metadata:{make:'SONY', model:'ILCE-7CM2', lens:'Test lens', iso:640, aperture:2.8, exposureBiasEv:-1, rawWidth:7008, rawHeight:4672, optics:{lensfunAvailable:true,profileMatched:true,chromaticAberrationAvailable:true,lensCorrectionAvailable:true,message:'Test lens'}}};
         }
-        if(command === 'processing_models') return {models:{denoise:[{id:'test',name:'Test denoise',available:true}],sharpen:[],provider:'cpu'}};
+        if(command === 'processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
         if(command === 'process_raw') {
-          if(args.recipe.layers[0].modelId !== 'test') throw new Error('Wrong processing model');
+          if(args.recipe.layers[0].modelId !== 'hf:rawdenoise-okeinla') throw new Error('Wrong processing model');
           return {version:1,width:1,height:1,png,before:png,resultId:'result-1',output:args.output,quality:'high',metadata:{}};
         }
         if(command === 'render_processed') return {version:1,width:1,height:1,png,quality:'high',metadata:{}};

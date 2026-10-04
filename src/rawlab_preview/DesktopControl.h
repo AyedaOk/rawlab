@@ -50,6 +50,25 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
     const auto task=request["task"].toString(),id=request["id"].toString(),path=request["path"].toString(),name=request["name"].toString();
     if(operation=="model_remove")
     {
+      const auto removeFiles = [&](const auto &model) {
+        if(model.id != id || model.origin != "verified") return;
+        const auto safeComponent = [](const QString &value) {
+          return !value.isEmpty() && value != "." && value != ".."
+            && !value.contains('/') && !value.contains('\\');
+        };
+        if(!safeComponent(model.sourceId) || !safeComponent(model.version))
+          throw std::runtime_error{"Invalid managed model directory"};
+        const QString root = ModelDownloader{}.modelRoot();
+        const QString source = QDir{root}.filePath(model.sourceId);
+        const QString directory = QDir{source}.filePath(model.version);
+        if(QFileInfo{root}.isSymLink() || QFileInfo{source}.isSymLink() || QFileInfo{directory}.isSymLink())
+          throw std::runtime_error{"Refusing to delete a linked model directory"};
+        if(QFileInfo::exists(directory) && !QDir{directory}.removeRecursively())
+          throw std::runtime_error{"Could not remove model files; registration was kept. Retry removal."};
+      };
+      if(task=="denoise") for(const auto &model:settings.denoiseModels) removeFiles(model);
+      if(task=="sharpen") for(const auto &model:settings.sharpenModels) removeFiles(model);
+      if(task=="mask") for(const auto &model:settings.samModels) removeFiles(model);
       settings.denoiseModels.removeIf([&](const auto &m){return task=="denoise"&&m.id==id;});
       settings.sharpenModels.removeIf([&](const auto &m){return task=="sharpen"&&m.id==id;});
       settings.samModels.removeIf([&](const auto &m){return task=="mask"&&m.id==id;});

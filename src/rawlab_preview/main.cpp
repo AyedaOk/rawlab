@@ -10,7 +10,6 @@
 #include <QUuid>
 #include <QBuffer>
 #include <QCoreApplication>
-#include <QElapsedTimer>
 #include <QImage>
 #include <QJsonDocument>
 #include <QLockFile>
@@ -95,8 +94,6 @@ static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QS
     if(size < 128 || size > 4096 || (quality != "fast" && quality != "high"))
       throw std::runtime_error{"Invalid preview size or quality"};
     const bool corrected = corrections.chromaticAberration || corrections.lensCorrection;
-    QElapsedTimer stageTimer;
-    stageTimer.start();
     const auto preview = corrected || linearPreview ? rawlab::image::RawPreview{} : rawlab::image::renderRawPreview(image, size,
       quality == "high" ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast);
     QImage display;
@@ -119,14 +116,10 @@ static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QS
       geometry.previewWidth = width; geometry.previewHeight = height; geometry.flip = image.metadata().flip;
     }
     else display = QImage{preview.image.pixels.data(), width, height, width * 3, QImage::Format_RGB888};
-    const auto renderMilliseconds = stageTimer.elapsed();
-    stageTimer.restart();
     QByteArray encoded;
     QBuffer buffer{&encoded};
     if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
       throw std::runtime_error{"Could not encode RAW preview"};
-    std::cerr << "preview render=" << renderMilliseconds << "ms encode="
-              << stageTimer.elapsed() << "ms size=" << width << 'x' << height << '\n';
     const auto &m = image.metadata();
     const auto optics = rawlab::image::opticsStatus(m, image.width(), image.height());
     const auto number = [](std::optional<double> value) -> QJsonValue {
@@ -232,8 +225,21 @@ static void reply(const QJsonObject &response)
   std::cout << QJsonDocument{response}.toJson(QJsonDocument::Compact).constData() << std::endl;
 }
 
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
+
 int main(int argc, char **argv)
 {
+#ifndef _WIN32
+  // ONNX's symbolizer reserves descriptors above 1024; a 1024 soft limit causes diagnostic spam.
+  rlimit descriptors{};
+  if(getrlimit(RLIMIT_NOFILE, &descriptors) == 0 && descriptors.rlim_cur <= 1024 && descriptors.rlim_max > 1024)
+  {
+    descriptors.rlim_cur = std::min<rlim_t>(descriptors.rlim_max, 4096);
+    setrlimit(RLIMIT_NOFILE, &descriptors);
+  }
+#endif
   QCoreApplication application{argc, argv};
   application.setOrganizationName("RawLab"); application.setApplicationName("RawLab");
   const auto args = application.arguments();
@@ -482,14 +488,10 @@ int main(int argc, char **argv)
              ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast;
            const bool useComposedPreview = operation == "process" || operation == "recompose"
              || operation == "processed_preview";
-           QElapsedTimer previewTimer;
-           previewTimer.start();
            auto linear = useComposedPreview
              ? std::optional<rawlab::image::LinearRawPreview>{session.preview(
                  path, recipe, resultId, *processed, previewSize, quality)}
              : std::nullopt;
-           if(useComposedPreview)
-             std::cerr << "preview endpoints=" << previewTimer.elapsed() << "ms\n";
             QJsonObject response = render(*processed, previewSize, previewQuality, corrections, std::move(linear));
             if(operation == "process" || operation == "processed_preview")
             {
