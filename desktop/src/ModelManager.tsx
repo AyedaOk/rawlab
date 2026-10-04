@@ -67,13 +67,13 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
       </fieldset>
 
       <fieldset className="preferences-section" disabled={!!busy}>
-        <legend>Installed models</legend>
+        <legend>Configured models</legend>
         <div className="model-groups">
           {groups.map((group) => <section className="model-group" key={group.task}>
             <h3>{group.label}<span>{group.models.length}</span></h3>
             {group.models.length === 0 && <p className="empty-models">No models configured</p>}
             {group.models.map((model) => <div className="model-row" key={model.id}>
-              <span title={"folder" in model ? model.folder : model.name}>{model.name}</span>
+              <span title={"folder" in model ? model.folder : model.path}>{model.name}{"available" in model && !model.available ? " (missing)" : ""}</span>
               <button className="subtle" onClick={() => void run("Removing model…", async () => {
                 await control({ operation: "model_remove", task: group.task, id: model.id }); await refresh();
               })}>Remove</button>

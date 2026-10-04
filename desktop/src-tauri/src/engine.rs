@@ -62,6 +62,10 @@ impl Engine {
         }
         if guard.is_none() {
             let mut command = Command::new(crate::preview::engine_path()?);
+            #[cfg(target_os = "macos")]
+            if let Some(directory) = crate::preview::engine_path()?.parent() {
+                command.env("QT_PLUGIN_PATH", directory.join("../Resources/qt-plugins"));
+            }
             if let Some(appdir) = std::env::var_os("APPDIR") {
                 let mut plugin_paths = vec![PathBuf::from(appdir).join("usr/plugins")];
                 if let Some(existing) = std::env::var_os("QT_PLUGIN_PATH") {

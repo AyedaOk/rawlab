@@ -301,8 +301,8 @@ public:
   {
     const auto settings = ApplicationSettingsStore{}.load();
     QJsonArray denoise, sharpen;
-    for(const auto &m : settings.denoiseModels) denoise.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"available", QFileInfo{m.path}.isFile()}});
-    for(const auto &m : settings.sharpenModels) sharpen.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"available", QFileInfo{m.path}.isFile()}});
+    for(const auto &m : settings.denoiseModels) denoise.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"path", m.path}, {"available", QFileInfo{m.path}.isFile()}});
+    for(const auto &m : settings.sharpenModels) sharpen.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"path", m.path}, {"available", QFileInfo{m.path}.isFile()}});
     return {{"denoise", denoise}, {"sharpen", sharpen}, {"provider", settings.onnxProvider}};
   }
   rawlab::pipeline::Mask segment(const QString &path, const QJsonArray &points)

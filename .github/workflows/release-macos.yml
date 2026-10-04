@@ -107,6 +107,14 @@ jobs:
           response = json.loads(result.stdout)
           assert 'error' not in response, response
           print('Packaged worker settings request passed')
+          import os
+          environment = dict(os.environ, QT_PLUGIN_PATH=str(app / 'Contents/Resources/qt-plugins'))
+          result = subprocess.run([str(worker), '--serve'], input='{"operation":"catalog"}\n',
+              text=True, capture_output=True, timeout=60, env=environment)
+          assert result.returncode == 0, result.stderr
+          responses = [json.loads(line) for line in result.stdout.splitlines()]
+          assert responses and 'catalog' in responses[-1] and responses[-1]['catalog'], (result.stdout, result.stderr)
+          print('Packaged worker HTTPS catalog request passed')
           PY
           hdiutil detach "$mount" -quiet
 
