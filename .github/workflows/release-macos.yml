@@ -85,6 +85,11 @@ jobs:
           python3 - "$app" <<'PY'
           import pathlib, subprocess, sys
           app = pathlib.Path(sys.argv[1])
+          worker = app / 'Contents/MacOS/rawlab-preview'
+          signature = subprocess.run(['codesign', '-dv', '--verbose=4', str(worker)],
+              capture_output=True, text=True, check=True).stderr
+          assert 'Signature=adhoc' in signature, signature
+          assert 'runtime)' not in signature and ',runtime,' not in signature, signature
           for path in app.rglob('*'):
               if not path.is_file() or path.is_symlink():
                   continue
