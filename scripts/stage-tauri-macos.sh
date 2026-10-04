@@ -70,9 +70,16 @@ for path in files:
             assert (tauri / 'bundle/macos-frameworks' / relative).exists(), old
             new = '@executable_path/../Frameworks/' + relative
             subprocess.run(['install_name_tool', '-change', old, new, str(path)], check=True)
+        elif old.startswith(('/opt/homebrew/', '/usr/local/')):
+            target = tauri / 'bundle/macos-frameworks' / pathlib.Path(old).name
+            assert target.exists(), old
+            new = '@executable_path/../Frameworks/' + target.name
+            subprocess.run(['install_name_tool', '-change', old, new, str(path)], check=True)
     if '.framework/' in str(path):
         relative = str(path.relative_to(tauri / 'bundle/macos-frameworks'))
         subprocess.run(['install_name_tool', '-id', '@rpath/' + relative, str(path)], check=True)
+    elif path.parent == tauri / 'bundle/macos-frameworks':
+        subprocess.run(['install_name_tool', '-id', '@rpath/' + path.name, str(path)], check=True)
 libraries = sorted((tauri / 'bundle/macos-frameworks').glob('*.dylib'))
 config = {'bundle': {'macOS': {'frameworks': [str(p) for p in frameworks + libraries]}}}
 (tauri / 'bundle/macos-deployment.json').write_text(json.dumps(config))
