@@ -49,12 +49,30 @@ cp -R "$deployment/Contents/Frameworks" "$framework_stage"
 if [[ -d "$deployment/Contents/PlugIns" ]]; then
   cp -R "$deployment/Contents/PlugIns" "$stage/qt-plugins"
 fi
-python3 - "$root" <<'PY'
-import json, pathlib, sys
+python3 - "$root" "$engine" <<'PY'
+import json, pathlib, subprocess, sys
 root = pathlib.Path(sys.argv[1])
 tauri = root / 'desktop/src-tauri'
 frameworks = sorted((tauri / 'bundle/macos-frameworks').glob('*.framework'))
 assert frameworks, 'macdeployqt did not deploy Qt frameworks'
+files = [pathlib.Path(sys.argv[2])]
+for directory in [tauri / 'bundle/macos-frameworks', tauri / 'bundle/macos']:
+    files.extend(p for p in directory.rglob('*') if p.is_file() and not p.is_symlink())
+for path in files:
+    if 'Mach-O' not in subprocess.check_output(['file', '-b', str(path)], text=True):
+        continue
+    links = subprocess.check_output(['otool', '-L', str(path)], text=True)
+    for line in links.splitlines()[1:]:
+        old = line.strip().split(' (')[0]
+        if '.framework/' in old:
+            name = old.split('.framework/')[0].split('/')[-1]
+            relative = name + '.framework/' + old.split('.framework/', 1)[1]
+            assert (tauri / 'bundle/macos-frameworks' / relative).exists(), old
+            new = '@executable_path/../Frameworks/' + relative
+            subprocess.run(['install_name_tool', '-change', old, new, str(path)], check=True)
+    if '.framework/' in str(path):
+        relative = str(path.relative_to(tauri / 'bundle/macos-frameworks'))
+        subprocess.run(['install_name_tool', '-id', '@rpath/' + relative, str(path)], check=True)
 config = {'bundle': {'macOS': {'frameworks': [str(p) for p in frameworks]}}}
 (tauri / 'bundle/macos-deployment.json').write_text(json.dumps(config))
 PY
