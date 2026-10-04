@@ -93,6 +93,17 @@ jobs:
             }
           }
 
+          $extracted = Join-Path $env:TEMP "rawlab-installer-check"
+          & $sevenZip x $installers[0].FullName "-o$extracted" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Installer extraction failed" }
+          $worker = Get-ChildItem $extracted -Recurse -Filter rawlab-preview.exe | Select-Object -First 1
+          if (-not $worker) { throw "Extracted worker missing" }
+          $env:QT_PLUGIN_PATH = $worker.DirectoryName
+          $python = (Get-Command python).Source
+          $env:PATH = "$($worker.DirectoryName);$env:SystemRoot\System32;$env:SystemRoot"
+          & $python scripts/check-worker-downloads.py $worker.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Packaged worker download check failed" }
+
       - uses: actions/upload-artifact@v4
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         with:

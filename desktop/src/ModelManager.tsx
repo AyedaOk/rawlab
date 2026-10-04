@@ -94,7 +94,7 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
       <fieldset className="preferences-section catalog-section" disabled={!!busy}>
         <legend>Model catalog</legend>
         <div className="section-action start"><button className="subtle" onClick={() => void run("Fetching catalog…", async () => setCatalog((await control<{ catalog: CatalogItem[] }>({ operation: "catalog" })).catalog))}>Refresh catalog</button></div>
-        {catalog.map((model) => <div className="model-row" key={model.id}><span>{model.name}</span><button className="subtle" onClick={() => void run(`Downloading ${model.name}…`, async () => { await control({ operation: "model_download", id: model.id }); await refresh(); setCatalog((items) => items.map((item) => item.id === model.id ? { ...item, installed: true } : item)); })}>{model.installed ? "Reinstall" : "Install"}</button></div>)}
+        {catalog.map((model) => <div className="model-row" key={model.id}><span>{model.name}</span><button className="subtle" disabled={model.installed} onClick={() => void run(`Downloading ${model.name}…`, async () => { await control({ operation: "model_download", id: model.id }); await refresh(); setCatalog((items) => items.map((item) => item.id === model.id ? { ...item, installed: true } : item)); })}>{model.installed ? "Installed" : "Install"}</button></div>)}
       </fieldset>
       {busy && <div className="preferences-status" role="status"><span>{busy}</span><button className="subtle" onClick={() => void cancelProcessing()}>Cancel</button></div>}
     </div>
