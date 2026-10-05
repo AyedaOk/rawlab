@@ -1,6 +1,6 @@
 # RawLab
 
-RawLab is a vibe-coded RAW photographs pre-processor. It can preserves Bayer CFA data and DNG export.
+RawLab is a RAW photo preprocessor with AI denoising, local masks, and DNG export.
 
 ## Features
 
@@ -14,6 +14,9 @@ RawLab is a vibe-coded RAW photographs pre-processor. It can preserves Bayer CFA
 - CPU and supported GPU inference through ONNX Runtime
 
 ## Build From Source
+
+For Arch Linux dependencies, release builds, and installation under `/opt/rawlab`,
+see [Linux installation](docs/linux-install.md).
 
 Install C++20, CMake 3.25+, Ninja, Qt 6 Core/Gui/Network, LibRaw, libtiff,
 libpng, Lensfun, and the ONNX Runtime C API. The ONNX Runtime installation must
@@ -35,19 +38,32 @@ Build and run the desktop editor:
 ```bash
 cd desktop
 npm ci
+RAWLAB_ALLOW_DEBUG_ENGINE=1 npm run desktop:prepare
 npm run build
 npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run desktop
 ```
 
-The development build finds the worker at
-`build/dev/src/rawlab_preview/rawlab-preview`. Set
-`RAWLAB_ENGINE_SOURCE` to an absolute worker path when using another build.
+Preparation prefers an optimized worker and allows `build/dev` when
+`RAWLAB_ALLOW_DEBUG_ENGINE=1`. Set `RAWLAB_ENGINE_SOURCE` to select the worker
+copied during preparation. Set `RAWLAB_PREVIEW_ENGINE` to override its location
+at runtime. Use absolute executable paths for both variables.
+
+## Downloads
+
+Download the Linux x64 AppImage, Windows x64 installer, or macOS Apple Silicon
+DMG from [Releases](https://github.com/AyedaOk/rawlab/releases).
+The macOS app uses ad-hoc signing; macOS may require **Open Anyway** in
+System Settings > Privacy & Security. Lensfun corrections are unavailable in
+the current Windows package.
+
+Release packages include CPU ONNX Runtime. GPU acceleration requires a compatible
+external ONNX Runtime and its platform dependencies; choose its library in Preferences.
 
 ## Models and Data
 
-RawLab does not include model weights. Use **Settings > Model Manager** or add
+RawLab does not include model weights. Use **Preferences** to download or add
 local models. Model licenses remain separate from the RawLab license.
 
 ## Darktable

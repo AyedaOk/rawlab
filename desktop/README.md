@@ -20,12 +20,12 @@ models produce an error, not a fake result.
     AI clicks run SAM using the active model configured in Settings (Shift-click for a
    negative point). Done keeps the mask. Feather/blur and inversion apply on Update;
    the immediate editing overlay is a guide rather than a rendered soft-mask preview.
-5. Export DNG opens a native save dialog and writes processed Bayer CFA with metadata
+5. Export DNG opens a native save dialog and writes Bayer CFA or Linear RGB with metadata
    and JPEG previews. Existing files are not overwritten. Cancel requests a stop at
    a processing checkpoint; an in-flight inference or demosaic may need to finish.
 
 Ctrl+Z / Ctrl+Shift+Z restore up to 20 setting/layer/mask snapshots per photograph.
-Desktop presets persist in the Tauri webview's local storage. Browser-mode controls
+Desktop presets persist through the native worker. Browser-mode controls
 remain a non-processing demo.
 
 ## Enable RAW viewing
@@ -37,10 +37,12 @@ cmake --preset dev
 cmake --build --preset dev --target rawlab_preview --parallel 2
 cd desktop
 npm ci
+RAWLAB_ALLOW_DEBUG_ENGINE=1 npm run desktop:prepare
 npm run desktop
 ```
 
-Debug desktop runs automatically find `build/dev/src/rawlab_preview/rawlab-preview`.
+Preparation copies a worker beside the desktop executable; the explicit debug opt-in
+allows `build/dev/src/rawlab_preview/rawlab-preview` when no optimized build exists.
 For another build location, set `RAWLAB_PREVIEW_ENGINE` to the **absolute executable
 path** before launching. For a standalone release executable, place `rawlab-preview`
 beside it or set that environment variable. The C++ helper needs its Qt/LibRaw/PNG
@@ -67,6 +69,9 @@ unchanged; `rawlab-preview --serve` is a private desktop bridge.
 
 ## Desktop launch on Linux
 
+See [Linux installation](../docs/linux-install.md) for the complete native release
+build, `/opt` installation, and application-menu launcher.
+
 Requirements: Node.js 20.19+, npm, current stable Rust/Cargo (via
 [rustup](https://rustup.rs)), a C/C++ compiler, pkg-config and WebKitGTK 4.1 development files.
 
@@ -86,6 +91,7 @@ After installing Rust, open a new terminal so `cargo` is on PATH. In `desktop`:
 
 ```bash
 npm ci
+npm run desktop:prepare
 npm run desktop
 ```
 
@@ -99,6 +105,7 @@ Build a standalone executable with bundled frontend assets:
 
 ```bash
 npm run desktop:build
+install -m755 ../build/release/src/rawlab_preview/rawlab-preview src-tauri/target/release/rawlab-preview
 ./src-tauri/target/release/rawlab-desktop
 ```
 
@@ -167,7 +174,7 @@ Open your own JPEG, PNG or WebP for a photographic example. Images are displayed
 locally through browser object URLs; there are no uploads, accounts, external fonts
 or remote image assets. Browser mode never simulates denoise with a CSS filter.
 Real processing requires a RAW opened in the desktop app. Imported documents and
-history are session-local; desktop presets persist separately.
+history are session-local in browser mode. The desktop app persists its library and recipes.
 
 ## Verification
 

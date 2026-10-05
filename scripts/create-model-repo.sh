@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-DEFAULT_MODEL_SOURCE="/home/ao/Documents/Project/Coding/dtmodels/dtmodels"
-DEFAULT_SAM_SOURCE="/home/ao/.local/share/darktable/models/mask-object-sam21-large"
-DEFAULT_NIND_SOURCE="/home/ao/.local/share/darktable/models/rawdenoise-nind"
+DEFAULT_MODEL_SOURCE="${MODEL_SOURCE_DIR:-}"
+DEFAULT_SAM_SOURCE="$HOME/.local/share/darktable/models/mask-object-sam21-large"
+DEFAULT_NIND_SOURCE="$HOME/.local/share/darktable/models/rawdenoise-nind"
 
-MODEL_SOURCE_DIR="${1:-$DEFAULT_MODEL_SOURCE}"
+MODEL_SOURCE_DIR="${1:-${DEFAULT_MODEL_SOURCE:?Pass the model source directory as the first argument or set MODEL_SOURCE_DIR}}"
 OUTPUT_DIR="${2:-$(dirname "$MODEL_SOURCE_DIR")/rawlab-model}"
 SAM_SOURCE_DIR="${3:-$DEFAULT_SAM_SOURCE}"
 NIND_SOURCE_DIR="${NIND_SOURCE_DIR:-$DEFAULT_NIND_SOURCE}"
