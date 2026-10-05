@@ -17,9 +17,6 @@ RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, an
 
 ## Build From Source
 
-See [Linux installation](docs/linux-install.md) for AppImage usage, distribution
-dependencies, and native build and installation instructions.
-
 Install C++20, CMake 3.25+, Ninja, Qt 6 Core/Gui/Network, LibRaw, libtiff,
 libpng, Lensfun, and the ONNX Runtime C API. The ONNX Runtime installation must
 provide `onnxruntime_c_api.h` and its shared library.
@@ -47,6 +44,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 npm run desktop
 ```
 
+See [Linux installation](docs/linux-install.md) for AppImage usage, distribution
+dependencies, and native build and installation instructions.
+
 ## Downloads
 
 Download the Linux x64 AppImage, Windows x64 installer, or macOS Apple Silicon
@@ -62,6 +62,9 @@ external ONNX Runtime and its platform dependencies; choose its library in Prefe
 
 RawLab does not include model weights. Use **Preferences** to download or add
 local models. Model licenses remain separate from the RawLab license.
+
+Models available through Preferences come from
+[AyedaOk/rawlab-models on Hugging Face](https://huggingface.co/AyedaOk/rawlab-models).
 
 ## Darktable
 
