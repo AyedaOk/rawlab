@@ -69,9 +69,6 @@ unchanged; `rawlab-preview --serve` is a private desktop bridge.
 
 ## Desktop launch on Linux
 
-See [Linux installation](../docs/linux-install.md) for the complete native release
-build, `/opt` installation, and application-menu launcher.
-
 Requirements: Node.js 20.19+, npm, current stable Rust/Cargo (via
 [rustup](https://rustup.rs)), a C/C++ compiler, pkg-config and WebKitGTK 4.1 development files.
 

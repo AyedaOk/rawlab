@@ -1,6 +1,6 @@
 # RawLab
 
-RawLab is a RAW photo preprocessor with AI denoising, local masks, and DNG export.
+RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, and DNG export.
 
 ## Features
 
@@ -14,9 +14,6 @@ RawLab is a RAW photo preprocessor with AI denoising, local masks, and DNG expor
 - CPU and supported GPU inference through ONNX Runtime
 
 ## Build From Source
-
-For Arch Linux dependencies, release builds, and installation under `/opt/rawlab`,
-see [Linux installation](docs/linux-install.md).
 
 Install C++20, CMake 3.25+, Ninja, Qt 6 Core/Gui/Network, LibRaw, libtiff,
 libpng, Lensfun, and the ONNX Runtime C API. The ONNX Runtime installation must
@@ -44,11 +41,6 @@ npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run desktop
 ```
-
-Preparation prefers an optimized worker and allows `build/dev` when
-`RAWLAB_ALLOW_DEBUG_ENGINE=1`. Set `RAWLAB_ENGINE_SOURCE` to select the worker
-copied during preparation. Set `RAWLAB_PREVIEW_ENGINE` to override its location
-at runtime. Use absolute executable paths for both variables.
 
 ## Downloads
 
