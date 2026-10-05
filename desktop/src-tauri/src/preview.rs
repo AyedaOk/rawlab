@@ -13,7 +13,7 @@ pub(crate) fn engine_path() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(path));
     }
     if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.with_file_name("rawlab-preview");
+        let sibling = worker_sibling(&exe);
         if sibling.is_file() {
             return Ok(sibling);
         }
@@ -26,13 +26,33 @@ pub(crate) fn engine_path() -> Result<PathBuf, String> {
             .parent()
             .unwrap();
         for build in ["preview", "dev"] {
-            let path = root.join(format!("build/{build}/src/rawlab_preview/rawlab-preview"));
+            let path = root.join(format!("build/{build}/src/rawlab_preview/rawlab-preview{}", std::env::consts::EXE_SUFFIX));
             if path.is_file() {
                 return Ok(path);
             }
         }
     }
     Err("RAW preview engine not found. Build CMake target rawlab_preview, or set RAWLAB_PREVIEW_ENGINE to the rawlab-preview executable and restart the desktop app.".into())
+}
+
+fn worker_sibling(executable: &Path) -> PathBuf {
+    executable.with_file_name(format!("rawlab-preview{}", std::env::consts::EXE_SUFFIX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_uses_platform_executable_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = if cfg!(windows) { "rawlab-preview.exe" } else { "rawlab-preview" };
+        let expected = directory.path().join(name);
+        std::fs::write(&expected, b"worker").unwrap();
+        let resolved = worker_sibling(&directory.path().join("rawlab-desktop"));
+        assert_eq!(resolved, expected);
+        assert!(resolved.is_file());
+    }
 }
 
 #[tauri::command]

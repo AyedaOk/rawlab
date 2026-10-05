@@ -79,6 +79,10 @@ jobs:
         working-directory: desktop
         run: npm run desktop:bundle:windows
 
+      - name: Test worker executable lookup
+        working-directory: desktop
+        run: cargo test --manifest-path src-tauri/Cargo.toml worker_uses_platform_executable_name
+
       - name: Validate bundle
         shell: pwsh
         run: |
