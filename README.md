@@ -2,6 +2,8 @@
 
 RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, and DNG export.
 
+![RawLab 0.2.1 desktop interface](docs/screenshots/Rawlab_0.2.1_screenshot.png)
+
 ## Features
 
 - Global and local denoise layers
@@ -14,6 +16,9 @@ RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, an
 - CPU and supported GPU inference through ONNX Runtime
 
 ## Build From Source
+
+See [Linux installation](docs/linux-install.md) for AppImage usage, distribution
+dependencies, and native build and installation instructions.
 
 Install C++20, CMake 3.25+, Ninja, Qt 6 Core/Gui/Network, LibRaw, libtiff,
 libpng, Lensfun, and the ONNX Runtime C API. The ONNX Runtime installation must
