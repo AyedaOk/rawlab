@@ -2,7 +2,7 @@
 
 RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, and DNG export.
 
-![RawLab 0.2.1 desktop interface](docs/screenshots/Rawlab_0.2.1_screenshot.png)
+![RawLab 0.2.1 desktop interface](docs/screenshots/Rawlab_0.2.1_screenshot2.png)
 
 ## Features
 

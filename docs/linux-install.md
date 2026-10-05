@@ -168,6 +168,29 @@ ldd /opt/rawlab/rawlab-preview
 Resolve any `not found` entries using your package manager. ONNX Runtime loads
 dynamically, so check its availability in Preferences as well.
 
+### Arch CUDA workaround
+
+If Arch's ONNX Runtime CUDA provider fails with
+`undefined symbol: cudnnGetConvolutionBackwardDataAlgorithm_v7`, try launching with
+cuDNN preloaded:
+
+```sh
+env LD_PRELOAD=/usr/lib/libcudnn.so.9 /opt/rawlab/rawlab-desktop
+```
+
+If this enables CUDA inference, replace the `Exec=` line in
+`~/.local/share/applications/rawlab.desktop` with:
+
+```ini
+Exec=env LD_PRELOAD=/usr/lib/libcudnn.so.9 /opt/rawlab/rawlab-desktop
+```
+
+This is a workaround for the observed Arch dependency-loading issue, not a
+requirement for other Linux installations. It requires that cuDNN library to remain
+installed. The desktop entry applies to menu launches; terminal launches still
+need the command above. Selecting an explicit ONNX Runtime path in Preferences
+does not replace the preload.
+
 ## Update or uninstall
 
 For an AppImage, quit RawLab and replace the downloaded file. If you extracted it,
