@@ -62,6 +62,11 @@ impl Engine {
         }
         if guard.is_none() {
             let mut command = Command::new(crate::preview::engine_path()?);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
             #[cfg(target_os = "macos")]
             if let Some(directory) = crate::preview::engine_path()?.parent() {
                 command.env("QT_PLUGIN_PATH", directory.join("../Resources/qt-plugins"));
