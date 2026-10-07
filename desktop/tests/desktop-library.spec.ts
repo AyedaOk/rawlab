@@ -129,7 +129,7 @@ test('a failed recipe load no longer blocks closing', async ({ page }) => {
     });
   });
   await page.goto('/');
-  await expect(page.getByText(/Could not restore recipe:.*Malformed recipe JSON/)).toBeVisible();
+  await expect(page.getByText(/Could not restore recipe for .*:.*Malformed recipe JSON/)).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__closeReady())).toBe(true);
   await page.evaluate(() => (window as any).__requestClose());
   await expect.poll(() => page.evaluate(() => (window as any).__destroyed())).toBe(1);

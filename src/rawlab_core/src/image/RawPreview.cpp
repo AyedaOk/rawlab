@@ -434,7 +434,7 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
   return RawPreview{std::move(preview), linearPreview.geometry};
 }
 
-RawPreview renderRawPreviewRegion(const raw::RawImage &source, const int x, const int y,
+LinearRawPreview renderLinearRawPreviewRegion(const raw::RawImage &source, const int x, const int y,
                                   const int width, const int height)
 {
   if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
@@ -462,7 +462,7 @@ RawPreview renderRawPreviewRegion(const raw::RawImage &source, const int x, cons
           source.metadata(), demosaicBilinear(source, area, rawX, rawY), false);
       }
   });
-  RgbImage image;
+  LinearRawPreview image;
   image.width = width;
   image.height = height;
   image.pixels.resize(linear.size() * 3);
@@ -482,13 +482,22 @@ RawPreview renderRawPreviewRegion(const raw::RawImage &source, const int x, cons
             + luma(column, row - 1) + luma(column, row + 1)) * 0.25f;
           for(float &channel : rgb) channel = std::max(0.0f, channel + 0.04f * detail);
         }
-        image.pixels[index * 3] = displayByte(rgb[0]);
-        image.pixels[index * 3 + 1] = displayByte(rgb[1]);
-        image.pixels[index * 3 + 2] = displayByte(rgb[2]);
+        image.pixels[index * 3] = rgb[0];
+        image.pixels[index * 3 + 1] = rgb[1];
+        image.pixels[index * 3 + 2] = rgb[2];
       }
   });
-  return {std::move(image), geometry};
+  image.geometry = geometry;
+  return image;
 }
 
+RawPreview renderRawPreviewRegion(const raw::RawImage &source, const int x, const int y,
+                                  const int width, const int height)
+{
+  const auto linear = renderLinearRawPreviewRegion(source, x, y, width, height);
+  RgbImage image{width, height, std::vector<std::uint8_t>(linear.pixels.size())};
+  std::transform(linear.pixels.begin(), linear.pixels.end(), image.pixels.begin(), displayByte);
+  return {std::move(image), linear.geometry};
+}
 
 }

@@ -25,6 +25,60 @@
 .canvas.mask-pointing {
   cursor: crosshair;
 }
+.photo-frame.mask-drawing {
+  cursor: var(--mask-cursor, crosshair);
+}
+.brush-size-ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  border: 1px solid white;
+  outline: 1px solid black;
+  border-radius: 50%;
+  will-change: transform;
+}
+.photo-frame.mask-pan {
+  cursor: grab;
+}
+.canvas.panning .photo-frame.mask-pan {
+  cursor: grabbing;
+}
+.mask-guides {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  fill: none;
+  stroke: white;
+  stroke-width: 1.5;
+}
+.mask-guides circle,
+.mask-guides ellipse,
+.mask-guides path,
+.mask-guides line {
+  vector-effect: non-scaling-stroke;
+}
+.mask-history {
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.brush-size {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.brush-size > span {
+  display: flex;
+  justify-content: space-between;
+}
+.brush-size input {
+  width: 100%;
+}
 .comparison-shade img {
   display: block;
   width: 100%;
@@ -1322,6 +1376,26 @@ h1 {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
+}
+.status > button {
+  flex-shrink: 0;
+  padding: 1px 4px;
+  min-height: 0;
+}
+.status-message {
+  flex: 1;
+  min-width: 0;
+}
+.mask-history,
+.dismissible-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dismissible-error > span {
+  flex: 1;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 .status-state::before {
   content: "";

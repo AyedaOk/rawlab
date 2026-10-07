@@ -4,6 +4,7 @@
 #include <QTemporaryDir>
 #include <QSettings>
 #include <QProcess>
+#include <QElapsedTimer>
 #include <iostream>
 
 int main(int argc,char **argv)
@@ -21,7 +22,7 @@ int main(int argc,char **argv)
   const auto path=directory.filePath("source.dng");
   std::vector<float> samples(4096);
   for(int y = 0; y < 64; ++y) for(int x = 0; x < 64; ++x)
-    samples[static_cast<std::size_t>(y * 64 + x)] = static_cast<float>(500 + x * 40 + y * 4);
+    samples[static_cast<std::size_t>(y * 64 + x)] = static_cast<float>(500 + x * 40 + y * 4 + ((x / 4 + y / 4) % 2) * 120);
   rawlab::dng::TiffDngWriter{}.writeCfaDng(path.toStdString(),{64,64,std::move(samples),metadata});
   try
   {
@@ -41,6 +42,19 @@ int main(int argc,char **argv)
     try { (void)rawlab::image::renderRawPreviewRegion(*source, 60, 60, 20, 20); }
     catch(const std::invalid_argument &) { invalidRegion = true; }
     if(!invalidRegion) return 1;
+    const auto sharp = rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*source, 1.0f);
+    const auto unsharpDetail = rawlab::image::renderLinearRawPreviewRegion(*source, 7, 9, 20, 16);
+    const auto sharpDetail = rawlab::image::renderLinearRawPreviewRegion(sharp, 7, 9, 20, 16);
+    if(sharpDetail.pixels == unsharpDetail.pixels) {
+      std::cerr << "Normal sharpening is invisible in the detail preview\n"; return 1;
+    }
+    const QRect tile{7, 9, 20, 16};
+    QElapsedTimer timer; timer.start();
+    const auto cold = session.preview(path, recipe, {}, *source, 2048, rawlab::image::PreviewQuality::High, tile);
+    const auto coldNs = timer.nsecsElapsed(); timer.restart();
+    const auto warm = session.preview(path, recipe, {}, *source, 2048, rawlab::image::PreviewQuality::High, tile);
+    std::cout << "Detail endpoint cold/warm ms: " << coldNs / 1e6 << '/' << timer.nsecsElapsed() / 1e6 << '\n';
+    if(cold.pixels != unsharpDetail.pixels || cold.pixels != warm.pixels) return 1;
     if(session.process(path,recipe,{})!=source || source->metadata().exposureBiasEv!=std::optional<double>{-1}) return 1;
     const QString firstResult = session.rememberProcessed(path, source, QStringLiteral("first"));
     const QString secondResult = session.rememberProcessed(path, source, QStringLiteral("second"));
@@ -75,7 +89,8 @@ int main(int argc,char **argv)
       if(argc>2)settings.onnxRuntimeLibrary=QString::fromLocal8Bit(argv[2]);
       settings.denoiseModels.push_back({"test","Test",QString::fromLocal8Bit(argv[1]),"rawnind-bayer-v1"});
       ApplicationSettingsStore{}.save(settings);
-      global["modelId"]="test";global["sharpen"]="Normal";global["strength"]=30;global["blend"]=100;recipe["layers"]=QJsonArray{global};
+       global["modelId"]="test";global["sharpen"]="Normal";global["strength"]=30;global["blend"]=100;recipe["layers"]=QJsonArray{global};
+       recipe["outputKind"]="linear-rgb";
        auto processed=session.process(path,recipe,{});
        if(processed->width()!=64 || processed->metadata().exposureBiasEv!=source->metadata().exposureBiasEv)return 1;
        global["strength"]=0;recipe["layers"]=QJsonArray{global};
@@ -84,6 +99,23 @@ int main(int argc,char **argv)
        const auto fullySharpened=session.process(path,recipe,{});
        if(unsharpened->samples()==fullySharpened->samples())
        { std::cerr<<"Sharpening strength did not change CFA output\n";return 1; }
+       timer.restart();
+       const auto fullDetail = session.preview(path, recipe, {}, *fullySharpened, 2048,
+                                               rawlab::image::PreviewQuality::High, tile);
+       const auto coldSharpNs = timer.nsecsElapsed();
+       global["strength"]=0;recipe["layers"]=QJsonArray{global};
+       timer.restart();
+       const auto zeroDetail = session.preview(path, recipe, {}, *fullySharpened, 2048,
+                                               rawlab::image::PreviewQuality::High, tile);
+       std::cout << "Sharpening detail cold/warm ms: " << coldSharpNs / 1e6 << '/' << timer.nsecsElapsed() / 1e6 << '\n';
+       const auto expectedFull = rawlab::image::renderLinearRawPreviewRegion(*fullySharpened, 7, 9, 20, 16);
+       const auto expectedZero = rawlab::image::renderLinearRawPreviewRegion(*unsharpened, 7, 9, 20, 16);
+       if(fullDetail.pixels == zeroDetail.pixels) return 1;
+       for(std::size_t i=0;i<fullDetail.pixels.size();++i)
+         if(std::fabs(fullDetail.pixels[i]-expectedFull.pixels[i])>1e-5f
+            || std::fabs(zeroDetail.pixels[i]-expectedZero.pixels[i])>1e-5f) {
+           std::cerr << "Detail sharpening differs from full CFA composition\n"; return 1;
+         }
        int inferenceProgress=0;
       global["blend"]=0;recipe["layers"]=QJsonArray{global};
       auto zero=session.process(path,recipe,[&](int,int){++inferenceProgress;});

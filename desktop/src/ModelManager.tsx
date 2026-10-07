@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { cancelProcessing, control, type ModelCatalog } from "./desktop";
 
 type Settings = ModelCatalog & {
@@ -28,7 +29,10 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
     try { await operation(); } catch (caught) { setError(String(caught)); } finally { setBusy(""); }
   };
   useEffect(() => { void run("Reading settings…", refresh); }, []);
-  if (!data) return <div role="status">{error || "Reading model settings…"}</div>;
+  if (!data) return <div role="status">{error || (busy ? "Reading model settings…" : "Model settings unavailable")}
+    {error && <button className="icon" aria-label="Dismiss settings error" onClick={() => setError("")}><X size={14} /></button>}
+    {!busy && <button className="subtle" onClick={() => void run("Reading settings…", refresh)}>Retry</button>}
+  </div>;
 
   const groups = [
     { label: "Denoise", task: "denoise", models: data.denoise },
@@ -44,7 +48,9 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
         </div>
         <span className="provider-badge">{data.provider === "auto" ? "Auto" : data.provider.toUpperCase()} · device {data.deviceId}</span>
       </header>
-      {error && <p className="preferences-error" role="alert">{error}</p>}
+      {error && <div className="preferences-error dismissible-error" role="alert"><span>{error}</span>
+        <button className="icon" aria-label="Dismiss settings error" onClick={() => setError("")}><X size={14} /></button>
+      </div>}
 
       <fieldset className="preferences-section" disabled={!!busy}>
         <legend>Processing</legend>
@@ -59,7 +65,9 @@ export default function ModelManager({ onChanged }: { onChanged: () => void }) {
             <option value="">None</option>{data.sam.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
           </select></label>
         </div>
-        {data.runtimeError && <p className="field-error">{data.runtimeError}</p>}
+        {data.runtimeError && <div className="field-error dismissible-error" role="alert"><span>{data.runtimeError}</span>
+          <button className="icon" aria-label="Dismiss runtime error" onClick={() => setData({ ...data, runtimeError: "" })}><X size={14} /></button>
+        </div>}
         <div className="section-action"><button className="primary" onClick={() => void run("Saving settings…", async () => {
           await control({ operation: "settings_save", provider: data.provider, deviceId: data.deviceId, runtimeLibrary: data.runtimeLibrary, activeSamModelId: data.activeSamModelId });
           await refresh();

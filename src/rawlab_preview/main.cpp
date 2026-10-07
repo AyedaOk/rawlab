@@ -431,6 +431,29 @@ int main(int argc, char **argv)
                const QString resultId = request["resultId"].toString();
                const QString recipeKey = processingRecipeKey(recipe);
                target = session.processed(path, resultId);
+               const auto corrections = recipe["outputKind"].toString("cfa") == "linear-rgb"
+                 ? opticsFromRecipe(recipe) : rawlab::image::OpticsOptions{};
+               if(recipe["layers"].toArray().size() <= 1
+                  || (!corrections.chromaticAberration && !corrections.lensCorrection))
+               {
+                 const QRect region{request["x"].toInt(), request["y"].toInt(),
+                                    request["width"].toInt(), request["height"].toInt()};
+                 if(region.width() <= 0 || region.height() <= 0) throw std::runtime_error{"Invalid detail region"};
+                 auto linear = session.preview(path, recipe, resultId, *target, 2048,
+                                               rawlab::image::PreviewQuality::High, region, corrections);
+                 const auto geometry = linear.geometry;
+                 const auto display = linearDisplay(std::move(linear), target->metadata(), {});
+                 QByteArray encoded;
+                 QBuffer buffer{&encoded};
+                 if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
+                   throw std::runtime_error{"Could not encode detail preview"};
+                 checkCancelled();
+                 reply({{"version", 1}, {"x", region.x()}, {"y", region.y()},
+                   {"width", display.width()}, {"height", display.height()},
+                   {"sourceWidth", geometry.previewWidth}, {"sourceHeight", geometry.previewHeight},
+                   {"png", QString::fromLatin1(encoded.toBase64())}});
+                 continue;
+               }
                if(!session.processedMatches(path, resultId, recipeKey))
                {
                  target = session.process(path, recipe, {}, nullptr, false);

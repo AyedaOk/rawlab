@@ -1,5 +1,34 @@
 import { test, expect } from '@playwright/test';
 
+test('CUDA and settings errors have dismiss buttons', async ({page}) => {
+  await page.addInitScript(() => {
+    const models = {denoise:[],sharpen:[],provider:'cpu'};
+    Object.assign(window, {isTauri:true,__TAURI_INTERNALS__:{invoke:async (command:string,args:any) => {
+      if(command === 'external_session') return null;
+      if(command === 'processing_models') return {models};
+      if(command === 'desktop_control') {
+        switch(args.request.operation) {
+          case 'library_list': return {paths:[]};
+          case 'preset_list': return {names:[]};
+          case 'settings': return {...models,sam:[],activeSamModelId:'',runtimeLibrary:'',deviceId:0,
+            providers:[],runtimeError:'Could not enable CUDA'};
+          case 'settings_save': throw new Error('Could not save processing settings');
+        }
+      }
+      return null;
+    }}});
+  });
+  await page.goto('/');
+  await page.getByRole('button', {name:'Preferences',exact:true}).click();
+  await expect(page.getByText('Could not enable CUDA')).toBeVisible();
+  await page.getByRole('button', {name:'Dismiss runtime error'}).click();
+  await expect(page.getByText('Could not enable CUDA')).toHaveCount(0);
+  await page.getByRole('button', {name:'Save processing settings'}).click();
+  await expect(page.getByRole('alert')).toContainText('Could not save processing settings');
+  await page.getByRole('button', {name:'Dismiss settings error'}).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
 test('editor renders, recipe changes and preset naming dialog works', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -76,23 +105,21 @@ test('mask editing is contextual and Done preserves changes', async ({page}) => 
   await page.mouse.down();
   await page.mouse.move(photoBounds.x + photoBounds.width*.5, photoBounds.y + photoBounds.height*.5, {steps:5});
   await page.mouse.up();
-  await expect(page.locator('.mask-overlay polyline')).toHaveCount(1);
+  await expect(page.locator('.mask-overlay')).toHaveAttribute('data-mark-count', '1');
   await page.keyboard.press('Control+z');
-  await expect(page.getByRole('region', {name:'Mask editing'})).toHaveCount(0);
+  await expect(page.getByRole('region', {name:'Mask editing'})).toBeVisible();
+  await expect(page.locator('.mask-overlay')).toHaveAttribute('data-mark-count', '0');
   await page.keyboard.press('Control+Shift+z');
-  await page.getByRole('button', {name:/^Mask 1 Local adjustment$/}).click();
-  await page.getByRole('button', {name:'Edit Mask',exact:true}).click();
-  await expect(page.locator('.mask-overlay polyline')).toHaveCount(1);
+  await expect(page.locator('.mask-overlay')).toHaveAttribute('data-mark-count', '1');
   await page.getByRole('slider', {name:'Feather', exact:true}).fill('42');
-  await page.getByRole('checkbox', {name:'Invert mask', exact:true}).check();
+  await page.getByRole('switch', {name:'Invert mask', exact:true}).click();
   await page.getByRole('button', {name:'Done', exact:true}).click();
   await expect(page.getByRole('slider', {name:'Feather'})).toHaveCount(0);
   await page.getByRole('button', {name:'Edit Mask', exact:true}).click();
   await expect(page.getByRole('slider', {name:'Feather'})).toHaveValue('42');
-  await expect(page.getByRole('checkbox', {name:'Invert mask', exact:true})).toBeChecked();
+  await expect(page.getByRole('switch', {name:'Invert mask', exact:true})).toHaveAttribute('aria-checked', 'true');
   await page.getByRole('button', {name:'Add mask', exact:true}).click();
-  await expect(page.getByRole('region', {name:'Mask editing'})).toHaveCount(0);
-  await page.getByRole('button', {name:'Edit Mask', exact:true}).click();
+  await expect(page.getByRole('region', {name:'Mask editing'})).toBeVisible();
   await expect(page.getByRole('slider', {name:'Feather'})).toHaveValue('0');
   await page.getByRole('button', {name:'Delete selected mask'}).click();
   await expect(page.getByRole('region', {name:'Mask editing'})).toHaveCount(0);

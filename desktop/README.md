@@ -16,15 +16,28 @@ models produce an error, not a fake result.
    blend changes reuse inference results for the current document/model.
 3. Zoom in and click-drag to pan. Fit restores centering. In mask editing, hold
    Space to pan after focusing the image. The comparison divider remains independently draggable.
-4. Add a mask, select Edit Mask, and draw Brush/Erase, Gradient or Ellipse marks.
+4. Add a mask to start editing, and draw Brush/Erase, Gradient or Ellipse marks.
     AI clicks run SAM using the active model configured in Settings (Shift-click for a
-   negative point). Done keeps the mask. Feather/blur and inversion apply on Update;
-   the immediate editing overlay is a guide rather than a rendered soft-mask preview.
+   negative point). Done keeps the mask. The red overlay previews feather, blur and
+   inversion while editing; press Update to apply the mask to photo processing.
+   Brush and Erase each keep a Size setting; `[` / `]` or Shift + mouse wheel
+   over the image resize the current tool. Wheel up increases size; down decreases it.
+   Size is the diameter as a percentage of the short image edge. Each stroke keeps
+   its own size. The circular cursor previews that diameter. Ellipse and Gradient
+   show drag guides even with Show mask off; hold Space for the pan cursor.
 5. Export DNG opens a native save dialog and writes Bayer CFA or Linear RGB with metadata
    and JPEG previews. Existing files are not overwritten. Cancel requests a stop at
    a processing checkpoint; an in-flight inference or demosaic may need to finish.
 
-Ctrl+Z / Ctrl+Shift+Z restore up to 20 setting/layer/mask snapshots per photograph.
+Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS) restore up to 20 setting/layer/mask snapshots
+per photograph. Undo keeps the selected mask open if it still exists. The mask
+editor also provides Undo, Redo and Clear mask; you can undo Clear mask.
+
+Normal sharpening starts a preview update when selected in Linear RGB mode.
+Strength changes reuse cached sharpening endpoints and keep the last 1:1 tile
+visible until its replacement arrives. Initial processing can still run denoise;
+subsequent strength changes reuse it. Corrected multi-mask detail currently uses
+full-image composition; other detail updates blend cached viewport endpoints.
 Desktop presets persist through the native worker. Browser-mode controls
 remain a non-processing demo.
 

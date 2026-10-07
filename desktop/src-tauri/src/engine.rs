@@ -8,6 +8,36 @@ use tauri::Emitter;
 use tauri_plugin_fs::FsExt;
 use std::time::UNIX_EPOCH;
 
+fn worker_response(response: serde_json::Value) -> Result<serde_json::Value, String> {
+    // A missing recipe/preset is a normal load outcome, with an explanatory message.
+    if response["outcome"].as_str() == Some("missing") {
+        return Ok(response);
+    }
+    if let Some(error) = response["error"].as_str().filter(|error| !error.is_empty()) {
+        return Err(error.to_string());
+    }
+    Ok(response)
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::worker_response;
+    use serde_json::json;
+
+    #[test]
+    fn recipe_outcomes_and_worker_errors() {
+        for response in [
+            json!({"outcome": "loaded", "error": "", "recipe": {"layers": []}}),
+            json!({"outcome": "missing", "error": "Recipe does not exist", "recipe": null}),
+            json!({"saved": true}),
+        ] {
+            assert_eq!(worker_response(response.clone()), Ok(response));
+        }
+        assert_eq!(worker_response(json!({"error": "Recipe JSON is invalid"})),
+                   Err("Recipe JSON is invalid".to_owned()));
+    }
+}
+
 struct Worker {
     child: Child,
     input: ChildStdin,
@@ -129,10 +159,7 @@ impl Engine {
                     let _ = app.emit("rawlab-progress", &response);
                     continue;
                 }
-                if let Some(error) = response["error"].as_str() {
-                    return Err(error.to_string());
-                }
-                return Ok(response);
+                return worker_response(response);
             }
         })();
         *self.cancellation.lock().map_err(|e| e.to_string())? = CancellationState::default();

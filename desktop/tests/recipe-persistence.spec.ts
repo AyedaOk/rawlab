@@ -224,8 +224,8 @@ test('close waits for saves and remains open after a failed write', async ({page
 test('an invalid stored recipe is never overwritten by automatic saving', async ({page}) => {
   await page.addInitScript(() => {
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
-    let saves=0;
-    Object.assign(window,{isTauri:true,__recipeSaves:()=>saves,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
+    let saves=0, repaired=false;
+    Object.assign(window,{isTauri:true,__repairRecipe:()=>{repaired=true;},__recipeSaves:()=>saves,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
       if(command==='external_session') return null;
       if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='render_raw_preview') return {version:1,width:100,height:80,png,quality:'fast',metadata:{rawWidth:100,rawHeight:80}};
@@ -233,7 +233,8 @@ test('an invalid stored recipe is never overwritten by automatic saving', async 
         const request=args.request;
         if(request.operation==='library_list') return {paths:['/photos/a.ARW']};
         if(request.operation==='preset_list') return {names:[]};
-        if(request.operation==='recipe_load') return {outcome:'invalid',error:'Malformed recipe JSON',recipe:null};
+        if(request.operation==='recipe_load') return repaired
+          ? {outcome:'missing',recipe:null} : {outcome:'invalid',error:'Malformed recipe JSON',recipe:null};
         if(request.operation==='recipe_save') {saves++;return {saved:true};}
         if(request.operation==='library_metadata'||request.operation==='library_metadata_save') return {rating:0,labels:[]};
       }
@@ -241,9 +242,13 @@ test('an invalid stored recipe is never overwritten by automatic saving', async 
     }}});
   });
   await page.goto('/');
-  await expect(page.getByText(/Could not restore recipe:.*Malformed recipe JSON/)).toBeVisible();
+  await expect(page.getByText(/Could not restore recipe for a.ARW:.*Malformed recipe JSON/)).toBeVisible();
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
   await page.getByRole('slider',{name:'Blend with denoised'}).fill('44');
   await page.waitForTimeout(900);
   expect(await page.evaluate(() => (window as any).__recipeSaves())).toBe(0);
+  await page.evaluate(() => (window as any).__repairRecipe());
+  await page.getByRole('button', {name:'Retry restore'}).click();
+  await expect(page.getByText(/Could not restore recipe for/)).toHaveCount(0);
+  await expect(page.getByRole('button', {name:'Retry restore'})).toHaveCount(0);
 });

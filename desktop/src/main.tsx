@@ -22,6 +22,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  X,
 } from "lucide-react";
 import "./style.css";
 import { getVersion } from "@tauri-apps/api/app";
@@ -69,8 +70,10 @@ import {
 } from "./desktop";
 import ModelManager from "./ModelManager";
 import { PersistenceQueue } from "./persistence";
+import MaskOverlay, { type MaskOverlayHandle } from "./MaskOverlay";
+import MaskGuides, { type MaskGuidesHandle } from "./MaskGuides";
+import { type Mark } from "./mask";
 
-type Mark = { tool: string; points: [number, number][] };
 type Layer = {
   marks: Mark[];
   points: [number, number, boolean][];
@@ -179,9 +182,19 @@ function App() {
   const panPosition = useRef({ x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
   const [spacePan, setSpacePan] = useState(false);
-  const [liveMark, setLiveMark] = useState<Mark | null>(null);
   const mark = useRef<Mark | null>(null);
-  const liveStroke = useRef<SVGPolylineElement | null>(null);
+  const maskOverlay = useRef<MaskOverlayHandle>(null);
+  const maskGuides = useRef<MaskGuidesHandle>(null);
+  const maskRect = useRef<DOMRect | null>(null);
+  useEffect(() => {
+    const invalidate = () => { maskRect.current = null; };
+    window.addEventListener("resize", invalidate);
+    window.addEventListener("scroll", invalidate, true);
+    return () => {
+      window.removeEventListener("resize", invalidate);
+      window.removeEventListener("scroll", invalidate, true);
+    };
+  }, []);
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (
@@ -219,6 +232,8 @@ function App() {
   const [quality, setQuality] = useState(false);
   const selectionAnchor = useRef<number | null>(null);
   const [exportKind, setExportKind] = useState<"cfa" | "linear-rgb">("cfa");
+  const exportKindRef = useRef(exportKind);
+  exportKindRef.current = exportKind;
   const [rawRefresh, setRawRefresh] = useState(0);
   const [rawView, setRawView] = useState<{
     id: number;
@@ -283,6 +298,7 @@ function App() {
   const processedPreviewRequests = useRef(new Map<string, Promise<RawPreview>>());
   const detailCache = useRef(new Map<string, string>());
   const detailRequest = useRef(0);
+  const detailBusy = useRef(false);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (closing.current) return;
@@ -293,30 +309,8 @@ function App() {
         processing
       )
         return;
-      const h = history.current.get(photo.id);
-      if (!h) return;
-      const from = event.shiftKey ? h.redo : h.undo,
-        to = event.shiftKey ? h.undo : h.redo;
-      const saved = from.pop();
-      if (!saved) return;
       event.preventDefault();
-      photoRevisions.current.set(photo.id, recipeRevision(photo.id) + 1);
-      to.push(photo);
-      setPhotos((ps) =>
-        ps.map((p) =>
-          p.id === photo.id
-            ? {
-                ...saved,
-                url: p.url,
-                metadata: p.metadata,
-                processed: undefined,
-                dirty: true,
-              }
-            : p,
-        ),
-      );
-      setLayerId(0);
-      setEditingMask(false);
+      restoreHistory(event.shiftKey);
     };
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
@@ -426,6 +420,7 @@ function App() {
   const [notice, setNotice] = useState(
     "Ready · Import pictures or a folder to begin",
   );
+  const [recipeError, setRecipeError] = useState<{ id: number; message: string } | null>(null);
   const [failedPersistenceKey, setFailedPersistenceKey] = useState("");
   if (!persistence.current) persistence.current = new PersistenceQueue((key, error) => {
     setFailedPersistenceKey(key);
@@ -544,6 +539,21 @@ function App() {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [editingMask, setEditingMask] = useState(false);
   const [maskTool, setMaskTool] = useState("AI");
+  const [brushSizes, setBrushSizes] = useState({ Brush: 6, Erase: 6 });
+  const brushKind = maskTool === "Erase" ? "Erase" : "Brush";
+  const brushSize = brushSizes[brushKind];
+  useEffect(() => {
+    const resize = (event: KeyboardEvent) => {
+      if (!editingMask || processing || mark.current || (maskTool !== "Brush" && maskTool !== "Erase")
+        || (event.target as HTMLElement).closest("input,textarea,select")
+        || event.ctrlKey || event.metaKey || event.altKey || !["[", "]"].includes(event.key)) return;
+      event.preventDefault();
+      setBrushSizes((sizes) => ({ ...sizes, [brushKind]: Math.max(.2, Math.min(50,
+        sizes[brushKind] + (event.key === "]" ? 1 : -1))) }));
+    };
+    window.addEventListener("keydown", resize);
+    return () => window.removeEventListener("keydown", resize);
+  }, [editingMask, maskTool, brushKind, processing]);
   const presetPanel = useRef<HTMLDivElement>(null);
   const presetButton = useRef<HTMLButtonElement>(null);
   const filterPanel = useRef<HTMLDivElement>(null);
@@ -588,9 +598,18 @@ function App() {
     if (frame.current)
       frame.current.style.transform = `translate(${panPosition.current.x}px, ${panPosition.current.y}px) scale(${zoom})`;
   }
-  function handlePreviewWheel(event: React.WheelEvent<HTMLDivElement>) {
+  function handlePreviewWheel(event: WheelEvent) {
+    if (event.shiftKey && editingMask && active.id !== 0 && (maskTool === "Brush" || maskTool === "Erase")) {
+      event.preventDefault();
+      const delta = event.deltaY || event.deltaX;
+      if (!processing && !mark.current && delta)
+        setBrushSizes((sizes) => ({ ...sizes,
+          [brushKind]: Math.max(.2, Math.min(50, sizes[brushKind] - Math.sign(delta))) }));
+      return;
+    }
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
+    if (mark.current) return;
     const pending = wheelPending.current;
     wheelPending.current = {
       delta: (pending?.delta ?? 0) + event.deltaY,
@@ -637,6 +656,11 @@ function App() {
     });
   }
   useEffect(() => {
+    const element = canvas.current;
+    element?.addEventListener("wheel", handlePreviewWheel, { passive: false });
+    return () => element?.removeEventListener("wheel", handlePreviewWheel);
+  });
+  useEffect(() => {
     setPan((p) => boundPan(p.x, p.y));
   }, [zoom, pixelZoom, imageSize.width, canvasSize.width, canvasSize.height, imageRatio]);
   useEffect(() => {
@@ -669,7 +693,7 @@ function App() {
     setEditingMask(false);
     setMaskTool("AI");
     setPresetsOpen(false);
-  }, [layerId, currentId, library]);
+  }, [currentId, library]);
   useEffect(() => {
     if (!presetsOpen) return;
     const dismiss = (event: PointerEvent) => {
@@ -722,6 +746,10 @@ function App() {
   const photo = photos.find((p) => p.id === currentId) ?? photos[0];
   const selectedRawCount = selection.filter((id) => photos.find((item) => item.id === id)?.rawPath).length;
   const active = photo.layers.find((l) => l.id === layerId) ?? photo.layers[0];
+  useEffect(() => {
+    mark.current = null;
+    maskRect.current = null;
+  }, [photo.id, active.id, editingMask]);
   const previewDimension = Math.max(128, Math.min(4096, Math.ceil(
     Math.max(canvasSize.width, canvasSize.height) * Math.min(window.devicePixelRatio || 1, 2))));
   function retainPreview(cache: Map<string, RawPreview>, key: string, value: RawPreview, limit: number) {
@@ -806,7 +834,9 @@ function App() {
   function previewEndpointKey(recipe: ReturnType<typeof recipeFor>) {
     return JSON.stringify({
       ...recipe,
-      layers: recipe.layers.map((layer) => ({...layer, blend: 0, strength: 0})),
+      outputKind: undefined,
+      layers: recipe.layers.map((layer) => ({...layer, blend: 0, strength: 0,
+        sharpen: layer.sharpen === "Normal" ? "Off" : layer.sharpen})),
     });
   }
   function canRecomposePreview(processed: NonNullable<Photo["processed"]>) {
@@ -883,7 +913,9 @@ function App() {
     image.src = rendered.before;
     void image.decode().catch(() => {});
   }, [rendered?.before]);
-  async function updateProcessing(exporting = false, outputKind: "cfa" | "linear-rgb" = exportKind) {
+  async function updateProcessing(exporting = false, outputKind: "cfa" | "linear-rgb" = exportKind,
+    selectedPhoto: Photo = photo) {
+    const photo = selectedPhoto;
     if (!isDesktop() || !photo.rawPath) {
       if (exporting) showSettings(true);
       else {
@@ -1067,14 +1099,17 @@ function App() {
     const width = Math.min(sourceWidth - x, Math.ceil(canvasSize.width / sourceScale + overscan * 2), 4096);
     const height = Math.min(sourceHeight - y, Math.ceil(canvasSize.height / sourceScale + overscan * 2), 4096);
     if (width <= 0 || height <= 0) return;
-    const target = rendered?.resultId ? "processed" as const : "original" as const;
-    const identity = rendered?.resultId || rawView.sourceVersion || photo.rawPath;
+    const detailResult = photo.processed && canRecomposePreview(photo.processed)
+      && (!rawView.sourceVersion || !photo.processed.sourceVersion || rawView.sourceVersion === photo.processed.sourceVersion)
+      ? photo.processed : rendered;
+    const target = detailResult?.resultId ? "processed" as const : "original" as const;
+    const identity = detailResult?.resultId || rawView.sourceVersion || photo.rawPath;
     const detailRecipe = editingMask && correctedGeometry
       ? recipeFor(photo, "cfa") : recipeFor(photo, exportKind);
     const geometryKey = JSON.stringify(detailRecipe);
     const detailKey = `${identity}:${target}:${geometryKey}:${x}:${y}:${width}:${height}`;
     const beforeKey = target === "processed"
-      ? `${rawView.sourceVersion || photo.rawPath}:original:${geometryKey}:${x}:${y}:${width}:${height}` : detailKey;
+      ? `${rawView.sourceVersion || photo.rawPath}:original:${correctedGeometry}:${photo.chromaticAberration}:${photo.lensCorrection}:${x}:${y}:${width}:${height}` : detailKey;
     const key = `${detailKey}:${beforeKey}`;
     const cached = detailCache.current.get(detailKey);
     const cachedBefore = detailCache.current.get(beforeKey);
@@ -1082,9 +1117,14 @@ function App() {
       setDetailView({key, url: cached, beforeUrl: cachedBefore, x, y, width, height});
       return;
     }
-    setDetailView((current) => current?.key === key ? current : null);
+    setDetailView((current) => current?.key.startsWith(`${identity}:${target}:`)
+      && current.x === x && current.y === y && current.width === width && current.height === height ? current : null);
     const token = ++detailRequest.current;
-    const timer = window.setTimeout(() => {
+    let timer: number;
+    const loadDetail = () => {
+      if (detailRequest.current !== token) return;
+      if (detailBusy.current) { timer = window.setTimeout(loadDetail, 50); return; }
+      detailBusy.current = true;
       const load = (cacheKey: string, requestTarget: "original" | "processed", resultId?: string) => {
         const hit = detailCache.current.get(cacheKey);
         if (hit) return Promise.resolve({url: hit, x, y, width, height, cacheKey: undefined as string | undefined});
@@ -1095,7 +1135,7 @@ function App() {
           return {url, x: result.x, y: result.y, width: result.width, height: result.height, cacheKey};
         });
       };
-      const detail = load(detailKey, target, rendered?.resultId);
+      const detail = load(detailKey, target, detailResult?.resultId);
       void Promise.all([
         detail,
         target === "processed" ? load(beforeKey, "original") : detail,
@@ -1116,16 +1156,37 @@ function App() {
         })
         .catch((error) => {
           if (detailRequest.current === token) setRawError(String(error));
-        });
-    }, 60);
+        }).finally(() => { detailBusy.current = false; });
+    };
+    timer = window.setTimeout(loadDetail, 60);
     return () => {
       window.clearTimeout(timer);
       if (detailRequest.current === token) detailRequest.current++;
     };
   }, [pixelZoom, photo.id, photo.rawPath, rawView?.id, rawView?.sourceWidth,
-      rawView?.sourceHeight, rawView?.sourceVersion, rendered?.resultId,
+       rawView?.sourceHeight, rawView?.sourceVersion, rendered?.resultId, photo.processed?.resultId,
       canvasSize.width, canvasSize.height, pan.x, pan.y, zoom, editingMask,
       correctedGeometry, recipeKey, exportKind]);
+  function restoreHistory(redo = false) {
+    if (closing.current || processing) return;
+    const h = history.current.get(photo.id);
+    if (!h) return;
+    const saved = (redo ? h.redo : h.undo).pop();
+    if (!saved) return;
+    (redo ? h.undo : h.redo).push(photo);
+    photoRevisions.current.set(photo.id, recipeRevision(photo.id) + 1);
+    mark.current = null;
+    maskRect.current = null;
+    maskOverlay.current?.draw(null);
+    maskGuides.current?.move([0, 0], null);
+    maskGuides.current?.hide();
+    setPhotos((items) => items.map((p) => p.id === photo.id
+      ? { ...saved, url: p.url, metadata: p.metadata, processed: undefined, dirty: true } : p));
+    if (!saved.layers.some((layer) => layer.id === layerId)) {
+      setLayerId(0);
+      setEditingMask(false);
+    }
+  }
   function patchPhoto(values: Partial<Photo>) {
     if (closing.current) return;
     photoRevisions.current.set(photo.id, (photoRevisions.current.get(photo.id) ?? 0) + 1);
@@ -1150,7 +1211,8 @@ function App() {
     );
   }
   function change(values: Partial<Layer>) {
-    const autoRecompose = values.blend !== undefined || values.strength !== undefined;
+    const autoRecompose = values.blend !== undefined || values.strength !== undefined
+      || values.sharpen === "Normal" || values.sharpen === "Off";
     const nextLayers = photo.layers.map((l) =>
       l.id === active.id ? { ...l, ...values } : l,
     );
@@ -1158,6 +1220,11 @@ function App() {
       layers: nextLayers,
       dirty: true,
     });
+    if (values.sharpen === "Normal" && isDesktop() && photo.rawPath
+      && (!photo.processed || !canRecomposePreview(photo.processed))) {
+      void updateProcessing(false, exportKind, { ...photo, layers: nextLayers });
+      return;
+    }
     if (autoRecompose && isDesktop() && photo.rawPath && photo.processed
       && canRecomposePreview(photo.processed)) {
       if (recomposeTimer.current !== undefined) window.clearTimeout(recomposeTimer.current);
@@ -1175,8 +1242,7 @@ function App() {
         processingRequest.current = true;
         setProcessing(true);
         setProgress("Updating preview…");
-        const previewSize = Math.min(2048, Math.max(1024,
-          Math.ceil(Math.max(canvasSize.width, canvasSize.height) * Math.min(window.devicePixelRatio || 1, 2))));
+        const previewSize = previewDimension;
         void recomposeRaw(path, recipe, quality, previewSize, photo.processed!.resultId)
           .then((result) => {
             if (token !== recomposeToken.current) return;
@@ -1208,11 +1274,28 @@ function App() {
     patchPhoto({ [key]: enabled, dirty: true });
     if (!isDesktop() || exportKind !== "linear-rgb" || !photo.rawPath || !photo.processed?.resultId
       || photo.processed.key !== JSON.stringify(recipeFor(photo, exportKind))) return;
+    refreshProcessed(nextPhoto, exportKind);
+  }
+  function changeExportKind(kind: "cfa" | "linear-rgb") {
+    if (kind === exportKind) return;
+    setExportKind(kind);
+    exportKindRef.current = kind;
+    if (!photo.processed || photo.dirty || !processedCurrent) return;
+    const hasLinearEffects = photo.chromaticAberration || photo.lensCorrection
+      || photo.layers.some((layer) => layer.enabled && layer.blend > 0 && layer.sharpen !== "Off" && layer.strength > 0);
+    if (!hasLinearEffects) {
+      patchPhoto({ processed: { ...photo.processed, key: JSON.stringify(recipeFor(photo, kind)) } });
+      return;
+    }
+    if (isDesktop() && photo.rawPath) refreshProcessed(photo, kind);
+  }
+  function refreshProcessed(nextPhoto: Photo, kind: "cfa" | "linear-rgb") {
+    if (!photo.rawPath || !photo.processed?.resultId) return;
     if (recomposeTimer.current !== undefined) window.clearTimeout(recomposeTimer.current);
     const id = photo.id;
     const path = photo.rawPath;
     const resultId = photo.processed.resultId;
-    const recipe = recipeFor(nextPhoto, exportKind);
+    const recipe = recipeFor(nextPhoto, kind);
     const recipeIdentity = JSON.stringify(recipe);
     const token = ++recomposeToken.current;
     const refresh = () => {
@@ -1223,12 +1306,12 @@ function App() {
       }
       processingRequest.current = true;
       setProcessing(true);
-      setProgress("Updating optics preview...");
+      setProgress("Updating preview…");
       void renderProcessed(path, quality, resultId, recipe, previewDimension)
         .then((result) => {
-          if (token !== recomposeToken.current) return;
+          if (token !== recomposeToken.current || exportKindRef.current !== kind) return;
           setPhotos((items) => items.map((item) => {
-            if (item.id !== id || JSON.stringify(recipeFor(item, exportKind)) !== recipeIdentity) return item;
+            if (item.id !== id || JSON.stringify(recipeFor(item, kind)) !== recipeIdentity) return item;
             return { ...item, dirty: false, processed: {
               url: `data:image/png;base64,${result.png}`,
               before: `data:image/png;base64,${result.before ?? item.processed?.before ?? ""}`,
@@ -1273,6 +1356,8 @@ function App() {
       if (cancelled()) return;
       const stored = (await loadRecipe(path, width, height)).recipe;
       loadSucceeded = true;
+      if (recipeLoadTokens.current.get(id) === token && !cancelled())
+        setRecipeError((error) => error?.id === id ? null : error);
       if (!stored || !Array.isArray(stored.layers) || recipeRevision(id) !== revision
         || recipeLoadTokens.current.get(id) !== token || cancelled()) return;
       setPhotos((items) => items.map((item) => item.id === id && item.rawPath === path ? {
@@ -1288,7 +1373,8 @@ function App() {
       } : item));
     } catch (error) {
       if (recipeLoadTokens.current.get(id) === token) {
-        if (!cancelled()) setNotice(`Could not restore recipe: ${String(error)}`);
+        if (!cancelled()) setRecipeError({ id,
+          message: `Could not restore recipe for ${selected.name}: ${String(error).trim() || "No error details from the worker"}` });
       }
     } finally {
       if (recipeLoadTokens.current.get(id) === token) {
@@ -1643,7 +1729,7 @@ function App() {
     if (rect?.width) applyDividerVisual(((clientX - rect.left) / rect.width) * 100);
   }
   function maskPoint(x: number, y: number): [number, number] {
-    const r = frame.current!.getBoundingClientRect();
+    const r = maskRect.current ?? frame.current!.getBoundingClientRect();
     return [
       Math.max(0, Math.min(1, (x - r.left) / r.width)),
       Math.max(0, Math.min(1, (y - r.top) / r.height)),
@@ -2019,7 +2105,6 @@ function App() {
               <div
                   className={`canvas ${zoom > 1 || pixelZoom ? "can-pan" : ""} ${panning ? "panning" : ""} ${editingMask && active.id !== 0 ? "mask-pointing" : ""}`}
                  ref={canvas}
-                 onWheel={handlePreviewWheel}
                  onPointerDown={(e) => {
                   if (
                     e.button !== 0 ||
@@ -2069,7 +2154,7 @@ function App() {
               >
                 <div
                   ref={frame}
-                  className={`photo-frame ${pixelZoom ? "pixel-zoom" : ""}`}
+                  className={`photo-frame ${pixelZoom ? "pixel-zoom" : ""} ${editingMask && active.id !== 0 && !processing ? spacePan ? "mask-pan" : "mask-drawing" : ""}`}
                   tabIndex={0}
                   onPointerDown={(e) => {
                     if (
@@ -2084,45 +2169,65 @@ function App() {
                     e.stopPropagation();
                     e.preventDefault();
                     e.currentTarget.focus();
+                    maskRect.current = frame.current!.getBoundingClientRect();
                     const p = maskPoint(e.clientX, e.clientY);
                     if (maskTool === "AI") {
+                      maskRect.current = null;
                       void addSamPoint(p, !e.shiftKey);
                       return;
                     }
                     e.currentTarget.setPointerCapture(e.pointerId);
-                    mark.current = { tool: maskTool, points: [p] };
-                    setLiveMark({ ...mark.current });
+                    mark.current = { tool: maskTool, points: [p],
+                      ...((maskTool === "Brush" || maskTool === "Erase") ? { radius: brushSize / 200 } : {}) };
+                    maskOverlay.current?.draw(mark.current);
+                    maskGuides.current?.move(p, mark.current);
                   }}
                    onPointerMove={(e) => {
+                     if (editingMask && active.id !== 0 && !spacePan && !processing) {
+                       if ((e.target as HTMLElement).closest("button")) maskGuides.current?.hide();
+                        else maskGuides.current?.hover(e.clientX, e.clientY);
+                     }
                      if (mark.current) {
                        e.stopPropagation();
                        const p = maskPoint(e.clientX, e.clientY);
-                       mark.current.points =
-                        mark.current.tool === "Brush" ||
-                        mark.current.tool === "Erase"
-                          ? [...mark.current.points, p]
-                          : [mark.current.points[0], p];
-                       if (mark.current.tool === "Brush" || mark.current.tool === "Erase") {
-                         liveStroke.current?.setAttribute(
-                           "points",
-                           mark.current.points.map((point) => `${point[0] * 1000},${(point[1] * 1000) / imageRatio}`).join(" "),
-                         );
-                       } else setLiveMark({ ...mark.current });
+                       if (mark.current.tool === "Brush" || mark.current.tool === "Erase")
+                         mark.current.points.push(p);
+                       else mark.current.points = [mark.current.points[0], p];
+                        maskOverlay.current?.draw(mark.current);
+                        maskGuides.current?.move(p, mark.current);
                     }
                   }}
-                  onPointerUp={(e) => {
+                   onPointerLeave={() => maskGuides.current?.hide()}
+                   onPointerUp={(e) => {
                     if (mark.current) {
                       e.stopPropagation();
+                      const p = maskPoint(e.clientX, e.clientY);
+                      if (mark.current.tool === "Brush" || mark.current.tool === "Erase") {
+                        const last = mark.current.points[mark.current.points.length - 1];
+                        if (last[0] !== p[0] || last[1] !== p[1]) mark.current.points.push(p);
+                      } else mark.current.points = [mark.current.points[0], p];
                       change({ marks: [...active.marks, mark.current] });
                       mark.current = null;
-                      setLiveMark(null);
+                      maskGuides.current?.move(p, null);
+                      maskRect.current = null;
                       if (e.currentTarget.hasPointerCapture(e.pointerId))
                         e.currentTarget.releasePointerCapture(e.pointerId);
                     }
                   }}
                   onPointerCancel={() => {
                     mark.current = null;
-                    setLiveMark(null);
+                    maskGuides.current?.move([0, 0], null);
+                    maskGuides.current?.hide();
+                    maskRect.current = null;
+                    maskOverlay.current?.draw(null);
+                  }}
+                  onLostPointerCapture={() => {
+                    if (!mark.current) return;
+                    mark.current = null;
+                    maskGuides.current?.move([0, 0], null);
+                    maskGuides.current?.hide();
+                    maskRect.current = null;
+                    maskOverlay.current?.draw(null);
                   }}
                   style={{
                     "--comparison-split": `${split}%`,
@@ -2229,132 +2334,12 @@ function App() {
                       </button>
                     </>
                   )}
-                  {editingMask && active.id !== 0 && active.showMask && (
-                    <svg
-                      className="mask-overlay"
-                      viewBox={`0 0 1000 ${1000 / imageRatio}`}
-                      preserveAspectRatio="none"
-                    >
-                      <defs>
-                        <mask
-                          id="paint-mask"
-                          maskUnits="userSpaceOnUse"
-                          x="0"
-                          y="0"
-                          width="1000"
-                          height={1000 / imageRatio}
-                        >
-                          <rect
-                            width="1000"
-                            height={1000 / imageRatio}
-                            fill="black"
-                          />
-                          {active.aiMask && (
-                            <image
-                              href={`data:image/png;base64,${active.aiMask}`}
-                              width="1000"
-                              height={1000 / imageRatio}
-                            />
-                          )}
-                          {[
-                            ...active.marks,
-                            ...(liveMark ? [liveMark] : []),
-                          ].map((m, i) => {
-                            const a = m.points[0],
-                              b = m.points[m.points.length - 1];
-                            if (m.tool === "Ellipse")
-                              return (
-                                <ellipse
-                                  key={i}
-                                  cx={(a[0] + b[0]) * 500}
-                                  cy={((a[1] + b[1]) * 500) / imageRatio}
-                                  rx={Math.abs(a[0] - b[0]) * 500}
-                                  ry={
-                                    (Math.abs(a[1] - b[1]) * 500) / imageRatio
-                                  }
-                                  fill="white"
-                                />
-                              );
-                            if (m.tool === "Gradient")
-                              return (
-                                <g key={i}>
-                                  <linearGradient
-                                    id={`gradient-${i}`}
-                                    gradientUnits="userSpaceOnUse"
-                                    x1={a[0] * 1000}
-                                    y1={(a[1] * 1000) / imageRatio}
-                                    x2={b[0] * 1000}
-                                    y2={(b[1] * 1000) / imageRatio}
-                                  >
-                                    <stop stopColor="black" />
-                                    <stop offset="1" stopColor="white" />
-                                  </linearGradient>
-                                  <rect
-                                    width="1000"
-                                    height={1000 / imageRatio}
-                                    fill={`url(#gradient-${i})`}
-                                  />
-                                </g>
-                              );
-                            return (
-                               <polyline
-                                 ref={(element) => {
-                                   if (i === active.marks.length) liveStroke.current = element;
-                                 }}
-                                 key={i}
-                                points={(m.points.length === 1
-                                  ? [m.points[0], m.points[0]]
-                                  : m.points
-                                )
-                                  .map(
-                                    (p) =>
-                                      `${p[0] * 1000},${(p[1] * 1000) / imageRatio}`,
-                                  )
-                                  .join(" ")}
-                                fill="none"
-                                stroke={m.tool === "Erase" ? "black" : "white"}
-                                strokeWidth={
-                                  0.06 * Math.min(1000, 1000 / imageRatio)
-                                }
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                              />
-                            );
-                          })}
-                        </mask>
-                        <mask
-                          id="paint-mask-inverted"
-                          maskUnits="userSpaceOnUse"
-                          x="0"
-                          y="0"
-                          width="1000"
-                          height={1000 / imageRatio}
-                        >
-                          <rect
-                            width="1000"
-                            height={1000 / imageRatio}
-                            fill="white"
-                          />
-                          <rect
-                            width="1000"
-                            height={1000 / imageRatio}
-                            fill="black"
-                            mask="url(#paint-mask)"
-                          />
-                        </mask>
-                      </defs>
-                      <rect
-                        width="1000"
-                        height={1000 / imageRatio}
-                         fill="#e34f5f"
-                        opacity=".4"
-                        mask={
-                          active.inverted
-                            ? "url(#paint-mask-inverted)"
-                            : "url(#paint-mask)"
-                        }
-                      />
-                    </svg>
+                  {editingMask && active.id !== 0 && (
+                    <MaskOverlay key={`${photo.id}:${active.id}`} ref={maskOverlay} {...active} />
+                  )}
+                  {editingMask && active.id !== 0 && !spacePan && !processing && (
+                    <MaskGuides key={`guides:${photo.id}:${active.id}`} ref={maskGuides}
+                      tool={maskTool} radius={brushSize / 200} ratio={imageRatio} zoom={zoom} />
                   )}
                 </div>
                 {(processing || rawBusy || rawError) && (
@@ -2363,7 +2348,9 @@ function App() {
                       ? progress
                       : rawBusy
                         ? `Rendering ${quality ? "High Quality" : "Fast"} RAW preview…`
-                        : rawError}
+                         : rawError}
+                    {!processing && !rawBusy && rawError && <IconButton label="Dismiss preview error"
+                      onClick={() => setRawError("")}><X size={14} /></IconButton>}
                     {processing && (
                       <button
                         className="subtle"
@@ -2606,7 +2593,7 @@ function App() {
                       >
                         <button
                           className="layer-select"
-                          onClick={() => setLayerId(layer.id)}
+                          onClick={() => { setLayerId(layer.id); setEditingMask(false); }}
                         >
                           <Aperture size={17} />
                           <span>
@@ -2657,6 +2644,7 @@ function App() {
                           dirty: true,
                         });
                         setLayerId(id);
+                        setEditingMask(true);
                       }}
                     >
                       <Plus size={14} /> Add mask
@@ -2724,11 +2712,11 @@ function App() {
                         ),
                       )}
                     </div>
-                    <p className="hint">
-                      {maskTool} tool selected · Hold Space to pan. AI uses the
-                      SAM model configured in Settings.
-                      {correctedGeometry && " Optical corrections resume when mask editing ends."}
-                    </p>
+                    {(maskTool === "Brush" || maskTool === "Erase") && <label className="brush-size">
+                      <span>Size <output>{brushSize.toFixed(1)}%</output></span>
+                      <input type="range" aria-label="Brush size" min="0.2" max="50" step="0.2"
+                        value={brushSize} onChange={(event) => setBrushSizes((sizes) => ({ ...sizes, [brushKind]: +event.target.value }))} />
+                    </label>}
                     <Slider
                       label="Feather"
                       value={active.feather}
@@ -2739,22 +2727,26 @@ function App() {
                       value={active.blur}
                       change={(blur) => change({ blur })}
                     />
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={active.inverted}
-                        onChange={(e) => change({ inverted: e.target.checked })}
-                      />{" "}
-                      Invert mask
-                    </label>
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={active.showMask}
-                        onChange={(e) => change({ showMask: e.target.checked })}
-                      />{" "}
-                      Show mask
-                    </label>
+                    <button type="button" role="switch" aria-checked={active.inverted}
+                      className={`quality-toggle ${active.inverted ? "on" : ""}`}
+                      onClick={() => change({ inverted: !active.inverted })}>
+                      <span className="quality-track"><span /></span><span>Invert mask</span>
+                    </button>
+                    <button type="button" role="switch" aria-checked={active.showMask}
+                      className={`quality-toggle ${active.showMask ? "on" : ""}`}
+                      onClick={() => change({ showMask: !active.showMask })}>
+                      <span className="quality-track"><span /></span><span>Show mask</span>
+                    </button>
+                    <div className="mask-history" role="group" aria-label="Mask history">
+                      <button className="subtle" disabled={processing || !history.current.get(photo.id)?.undo.length}
+                        onClick={() => restoreHistory()}>Undo</button>
+                      <button className="subtle" disabled={processing || !history.current.get(photo.id)?.redo.length}
+                        onClick={() => restoreHistory(true)}>Redo</button>
+                      <button className="subtle" disabled={processing || (!active.marks.length && !active.points.length && !active.aiMask)}
+                        onClick={() => { samRequest.current++; change({ marks: [], points: [], aiMask: undefined }); }}>
+                        Clear mask
+                      </button>
+                    </div>
                   </section>
                 )}
                 <Section title="Denoise" icon={<SlidersHorizontal size={16} />}>
@@ -2890,12 +2882,14 @@ function App() {
                     <button
                       className={exportKind === "cfa" ? "chosen" : ""}
                       aria-pressed={exportKind === "cfa"}
-                      onClick={() => { setExportKind("cfa"); patchPhoto({ dirty: true }); }}
+                      disabled={processing}
+                      onClick={() => changeExportKind("cfa")}
                     >Raw</button>
                     <button
                       className={exportKind === "linear-rgb" ? "chosen" : ""}
                       aria-pressed={exportKind === "linear-rgb"}
-                      onClick={() => { setExportKind("linear-rgb"); patchPhoto({ dirty: true }); }}
+                      disabled={processing}
+                      onClick={() => changeExportKind("linear-rgb")}
                     >Linear RGB</button>
                   </div>
                 </div>
@@ -2930,7 +2924,15 @@ function App() {
         </div>
       )}
       <footer className="status" aria-live="polite">
-        <span>{notice}</span>
+        <span className="status-message" title={recipeError?.id === photo.id ? recipeError.message : notice}>
+          {recipeError?.id === photo.id ? recipeError.message : notice}
+        </span>
+        {recipeError?.id === photo.id && <button className="subtle"
+          onClick={() => void restorePhotoRecipe(photo)}>Retry restore</button>}
+        {(notice || recipeError?.id === photo.id) && <IconButton label="Dismiss notification"
+          onClick={() => { setNotice(""); setRecipeError((error) => error?.id === photo.id ? null : error); }}>
+          <X size={14} />
+        </IconButton>}
         {failedPersistenceKey && <button className="subtle" onClick={() => {
           setNotice("Retrying save...");
           void persistence.current?.retry(failedPersistenceKey).then((saved) => {

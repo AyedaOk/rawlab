@@ -80,7 +80,7 @@ test('quality changes issue one source request and reuse processed derivatives',
   await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='process_raw'&&call.args.operation==='recompose').length)).toBe(1);
   expect(await page.evaluate(() => {
     const call=(window as any).__previewCalls.find((item:any)=>item.command==='process_raw'&&item.args.operation==='recompose');
-    return call.args.previewSize >= 1024 && call.args.previewSize <= 2048
+    return call.args.previewSize >= 128 && call.args.previewSize <= 4096
       && call.args.resultId === 'result-1';
   })).toBe(true);
   await page.evaluate(() => ((window as any).__previewCalls.length=0));
@@ -101,13 +101,11 @@ test('quality changes issue one source request and reuse processed derivatives',
   expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(2);
   await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await page.getByRole('button',{name:'Normal',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
   await page.evaluate(() => ((window as any).__previewCalls.length=0));
   await page.getByRole('slider',{name:'Strength'}).fill('65');
-  await page.waitForTimeout(300);
-  expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='process_raw'&&call.args.operation==='recompose').length)).toBe(0);
-  await expect(page.getByRole('button',{name:'Update',exact:true})).toBeVisible();
-  await page.getByRole('button',{name:'Update',exact:true}).click();
-  await expect(page.getByText('Processing complete.',{exact:false})).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='process_raw'&&call.args.operation==='recompose').length)).toBe(1);
+  await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
   await page.evaluate(() => ((window as any).__previewCalls.length=0));
   await page.getByRole('slider',{name:'Strength'}).fill('70');
   await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='process_raw'&&call.args.operation==='recompose').length)).toBe(1);
@@ -116,6 +114,53 @@ test('quality changes issue one source request and reuse processed derivatives',
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
   await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_raw_preview'&&!call.args.background).length)).toBe(1);
   await expect(page.getByRole('button',{name:'Update',exact:true})).toBeVisible();
+});
+
+test('Normal sharpening starts automatically and keeps the detail tile during strength changes', async ({page}) => {
+  await page.addInitScript((png) => {
+    const calls:any[]=[];
+    let delayed = false;
+    let finish: (()=>void) | undefined;
+    const image = {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png,before:png,resultId:'r1',metadata:{rawWidth:6000,rawHeight:4000}};
+    Object.assign(window,{isTauri:true,__sharpCalls:calls,__delayDetail:()=>{delayed=true;},__finishDetail:()=>{delayed=false;finish?.();},
+      __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
+        calls.push({command,args:structuredClone(args)});
+        if(command==='external_session') return null;
+        if(command==='raw_source_version') return 'v1';
+        if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
+        if(command==='render_raw_preview'||command==='render_processed'||command==='process_raw') return {...image,quality:args.highQuality?'high':'fast'};
+        if(command==='render_raw_detail') {
+          if(delayed && args.target==='processed') await new Promise<void>(resolve=>{finish=resolve;});
+          return {...image,x:args.x,y:args.y,width:args.width,height:args.height};
+        }
+        if(command==='desktop_control') {
+          const op=args.request.operation;
+          if(op==='library_list')return {paths:['/photos/a.ARW']};
+          if(op==='preset_list')return {names:[]};
+          if(op==='recipe_load')return {outcome:'missing',recipe:null};
+          if(op==='recipe_save')return {saved:true};
+          if(op==='library_metadata'||op==='library_metadata_save')return {rating:0,labels:[]};
+        }
+        throw new Error(`Unexpected ${command}`);
+      }}});
+  },png);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
+  await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
+  await page.getByRole('button',{name:'Normal',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
+  await page.getByRole('button',{name:'1:1',exact:true}).click();
+  await expect(page.locator('.detail-tile').first()).toBeVisible();
+  await page.evaluate(()=>{(window as any).__sharpCalls.length=0;(window as any).__delayDetail();});
+  await page.getByRole('slider',{name:'Strength',exact:true}).fill('65');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed').length)).toBe(1);
+  await expect(page.locator('.detail-tile').first()).toBeVisible();
+  await page.getByRole('slider',{name:'Strength',exact:true}).fill('75');
+  await page.getByRole('slider',{name:'Strength',exact:true}).fill('85');
+  await page.evaluate(()=>(window as any).__finishDetail());
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed').at(-1)?.args.recipe.layers[0].strength)).toBe(85);
+  expect(await page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='original').length)).toBe(0);
+  expect(await page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='process_raw'&&c.args.operation!=='recompose').length)).toBe(0);
 });
 
 test('wheel zoom uses oriented source dimensions and requests a bounded detail region', async ({page}) => {

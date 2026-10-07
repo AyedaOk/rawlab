@@ -44,6 +44,10 @@ test('RAW thumbnails, metadata and quality changes use the native renderer', asy
           return {version:1, width:1, height:1, png, quality:args.highQuality ? 'high':'fast', metadata:{make:'SONY', model:'ILCE-7CM2', lens:'Test lens', iso:640, aperture:2.8, exposureBiasEv:-1, rawWidth:7008, rawHeight:4672, optics:{lensfunAvailable:true,profileMatched:true,chromaticAberrationAvailable:true,lensCorrectionAvailable:true,message:'Test lens'}}};
         }
         if(command === 'processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
+        if(command === 'desktop_control') {
+          if(args.request.operation === 'recipe_load') return {outcome:'missing',recipe:null};
+          if(args.request.operation === 'recipe_save') return {saved:true};
+        }
         if(command === 'process_raw') {
           if(args.recipe.layers[0].modelId !== 'hf:rawdenoise-okeinla') throw new Error('Wrong processing model');
           return {version:1,width:1,height:1,png,before:png,resultId:'result-1',output:args.output,quality:'high',metadata:{}};
@@ -71,14 +75,19 @@ test('RAW thumbnails, metadata and quality changes use the native renderer', asy
   await expect(page.getByText('Processing complete.',{exact:false})).toBeVisible();
   expect(await page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='process_raw').at(-1).recipe.outputKind)).toBe('cfa');
   await page.getByRole('button', {name:'Linear RGB'}).click();
-  await page.getByRole('button', {name:'Update',exact:true}).click();
-  await expect.poll(() => page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='process_raw').at(-1).recipe.outputKind)).toBe('linear-rgb');
   await expect(page.getByRole('button', {name:'Update',exact:true})).toHaveCount(0);
   const processCount = await page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='process_raw').length);
   await page.getByRole('group', {name:'Lens correction'}).getByRole('button', {name:'On'}).click();
   await expect.poll(() => page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='render_processed').at(-1)?.recipe.lensCorrection)).toBe(true);
   expect(await page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='process_raw').length)).toBe(processCount);
   await expect(page.getByRole('button', {name:'Update',exact:true})).toHaveCount(0);
+  await page.getByRole('button', {name:'Raw',exact:true}).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='render_processed').at(-1)?.recipe.outputKind)).toBe('cfa');
+  await expect(page.getByRole('button', {name:'Update',exact:true})).toHaveCount(0);
+  await page.getByRole('button', {name:'Linear RGB',exact:true}).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='render_processed').at(-1)?.recipe.outputKind)).toBe('linear-rgb');
+  await expect(page.getByRole('button', {name:'Update',exact:true})).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__processingCalls.filter((call:any)=>call.command==='process_raw').length)).toBe(processCount);
   await page.getByRole('button', {name:'Before and after'}).click();
   await expect(page.locator('.after-tag')).toHaveText('After');
   await expect(page.getByAltText('Original before processing')).toHaveAttribute('src',/^data:image\/png/);
