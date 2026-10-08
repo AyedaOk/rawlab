@@ -19,12 +19,23 @@ Preserve source CFA samples through decoding, denoising, and layer composition.
 Derive RGB previews from that composition; never use display pixels as export input.
 Use `RawProcessingPipeline` for shared processing and keep CLI commands thin.
 
-`CfaRestoreModel` adapters own model-specific normalization and tensor contracts.
-The RawNIND Bayer adapter packs float32 `[1, 4, T, T]` in R/G1/G2/B order after
-black subtraction, range and white-balance normalization. It shifts to the red
-origin for RGGB input and mirror-pads within the effective crop. Its temporary
-camRGB output has shape `[1, 3, 2T, 2T]`; gain matching, inverse normalization, and
-re-mosaicing produce sensor-order CFA again.
+Use `RawProcessingPipeline` for Okeinla/RawNIND denoising. Pack float32
+`[1, 4, 512, 512]` in R/G1/G2/B order after black subtraction and range
+normalization. Align to the red origin and mirror-pad within the effective crop.
+Reflect without repeating the edge pixel to preserve Bayer row and column parity.
+Recover one signed gain per `[1, 3, 1024, 1024]` camRGB tile with
+`sum(predicted_cfa * source_cfa) / sum(predicted_cfa²)` in double precision.
+Sample RGB at corresponding CFA sites and exclude reflected padding from the fit.
+Use finite source values in `(0.001, 0.999)` and require 10% valid support within
+the real tile area. Reject insufficient support, zero-energy predictions,
+zero/nonfinite gain, nonfinite RGB, and overflow. Apply the scalar to RGB before
+inverse normalization, remosaicing, and overlap blending. Keep this arbitrary-scale
+recovery specific to the denoiser; absolute-scale sharpeners must retain their scale.
+
+Run `ctest --preset dev -R rawlab_rawnind_gain_test --output-on-failure` for the
+model-free gain and tile-boundary regression. After a gain-recovery correction,
+restart RawLab to clear worker-memory CFA and preview caches, then reprocess and
+re-export affected images.
 
 Cache denoised CFA by model. Apply highlight preservation, blend-with-original,
 and mask composition outside ONNX inference. Compose Global first, then local

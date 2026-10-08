@@ -11,6 +11,12 @@ rawlab_enable_warnings(rawlab_smoke_test)
 
 add_test(NAME rawlab_smoke_test COMMAND rawlab_smoke_test)
 
+add_executable(rawlab_rawnind_gain_test rawnind_gain_test.cpp)
+target_include_directories(rawlab_rawnind_gain_test PRIVATE ${CMAKE_SOURCE_DIR}/src/rawlab_core/src)
+target_link_libraries(rawlab_rawnind_gain_test PRIVATE rawlab::core)
+rawlab_enable_warnings(rawlab_rawnind_gain_test)
+add_test(NAME rawlab_rawnind_gain_test COMMAND rawlab_rawnind_gain_test)
+
 add_executable(rawlab_picture_recipe_test
   picture_recipe_test.cpp
 )

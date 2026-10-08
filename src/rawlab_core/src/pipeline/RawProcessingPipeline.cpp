@@ -1,5 +1,6 @@
 #include "rawlab/pipeline/RawProcessingPipeline.h"
 
+#include "RawNindDenoise.h"
 #include "rawlab/pipeline/MaskedBlend.h"
 #include "rawlab/raw/BayerProcessing.h"
 
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -32,7 +34,8 @@ int mirrorInRange(int value, const int low, const int high)
   while(value < low || value >= high)
   {
     if(value < low) value = low + (low - value);
-    if(value >= high) value = high - 1 - (value - high);
+    // Reflect around the last sample without changing Bayer row/column parity.
+    if(value >= high) value = high - 2 - (value - high);
   }
   return value;
 }
@@ -42,23 +45,58 @@ float cfaBlackLevel(const raw::RawImage &image, const int x, const int y)
   return image.metadata().blackLevel[static_cast<std::size_t>(raw::siteIndex(x, y))];
 }
 
-double meanOf(const std::vector<float> &values)
+void recoverRawNindGain(const std::vector<float> &packedInput,
+                        std::vector<float> &modelOutput,
+                        const int packedTileSize,
+                        const raw::ActiveArea &validPackedArea)
 {
-  double sum = 0.0;
-  for(const float value : values) sum += value;
-  return values.empty() ? 0.0 : sum / static_cast<double>(values.size());
-}
+  if(!std::all_of(modelOutput.begin(), modelOutput.end(), [](const float value) {
+       return std::isfinite(value);
+     }))
+    throw std::runtime_error{"RawNIND gain recovery: nonfinite model output"};
 
-void matchGain(const std::vector<float> &packedInput, std::vector<float> &modelOutput)
-{
-  const double inputMean = meanOf(packedInput);
-  const double outputMean = meanOf(modelOutput);
-  const double threshold = 1e-6 * std::fabs(inputMean);
-  const float gain = std::fabs(outputMean) > threshold
-    ? static_cast<float>(inputMean / outputMean) : 1.0f;
-  if(gain != 1.0f)
+  const int sensorTileSize = 2 * packedTileSize;
+  const std::size_t packedPlane = static_cast<std::size_t>(packedTileSize) * packedTileSize;
+  const std::size_t modelPlane = static_cast<std::size_t>(sensorTileSize) * sensorTileSize;
+  constexpr int channels[]{0, 1, 1, 2};
+  double numerator = 0.0;
+  double denominator = 0.0;
+  std::size_t validSamples = 0;
+  // Packing aligns the tile origin to red. Compare R/G1/G2/B at the same
+  // sensor sites; interpolated RGB values and reflected padding cannot set gain.
+  for(int k = 0; k < 4; ++k)
   {
-    for(float &value : modelOutput) value *= gain;
+    for(int py = validPackedArea.top; py < validPackedArea.top + validPackedArea.height; ++py)
+      for(int px = validPackedArea.left; px < validPackedArea.left + validPackedArea.width; ++px)
+      {
+        const float source = packedInput[k * packedPlane + py * packedTileSize + px];
+        if(!std::isfinite(source) || source <= 0.001f || source >= 0.999f) continue;
+        const int modelX = 2 * px + (k & 1);
+        const int modelY = 2 * py + (k >> 1);
+        const double predicted = modelOutput[channels[k] * modelPlane + modelY * sensorTileSize + modelX];
+        numerator += predicted * static_cast<double>(source);
+        denominator += predicted * predicted;
+        ++validSamples;
+      }
+  }
+  const std::size_t realSamples = 4 * static_cast<std::size_t>(validPackedArea.width)
+                                   * validPackedArea.height;
+  if(realSamples == 0 || validSamples < (realSamples + 9) / 10)
+    throw std::runtime_error{"RawNIND gain recovery: too few valid CFA samples (need 10% of real tile area)"};
+  if(denominator == 0.0)
+    throw std::runtime_error{"RawNIND gain recovery: model output has zero energy"};
+  const double gain = numerator / denominator;
+  if(!std::isfinite(gain) || gain == 0.0)
+    throw std::runtime_error{"RawNIND gain recovery: zero or nonfinite gain"};
+
+  // RawNIND can emit either sign and widely varying scales. Keep the scalar and
+  // multiplication in double; this recovery belongs only to this denoiser.
+  for(float &value : modelOutput)
+  {
+    const double scaled = static_cast<double>(value) * gain;
+    if(!std::isfinite(scaled) || std::fabs(scaled) > std::numeric_limits<float>::max())
+      throw std::runtime_error{"RawNIND gain recovery: scaled model output overflow"};
+    value = static_cast<float>(scaled);
   }
 }
 
@@ -170,6 +208,16 @@ raw::RawImage RawProcessingPipeline::runRawNindDenoise(const raw::RawImage &sour
                                                        const ai::OnnxSession &session,
                                                        const ProgressCallback &progress) const
 {
+  return detail::runRawNindDenoiseTiles(source, [&session](const std::vector<float> &input) {
+    return session.runSingleFloat(input, {1, 4, 512, 512});
+  }, progress);
+}
+
+raw::RawImage detail::runRawNindDenoiseTiles(
+  const raw::RawImage &source,
+  const RawNindInference &infer,
+  const RawProcessingPipeline::ProgressCallback &progress)
+{
   constexpr int packedTileSize = 512;
   constexpr int packedOverlap = 32;
   constexpr int packedStep = packedTileSize - 2 * packedOverlap;
@@ -198,6 +246,8 @@ raw::RawImage RawProcessingPipeline::runRawNindDenoise(const raw::RawImage &sour
   {
     throw std::runtime_error{"raw-denoise has no Bayer-aligned working area"};
   }
+  const int workRight = workLeft + 2 * packedWidth;
+  const int workBottom = workTop + 2 * packedHeight;
 
   const int cols = (packedWidth + packedStep - 1) / packedStep;
   const int rows = (packedHeight + packedStep - 1) / packedStep;
@@ -233,26 +283,30 @@ raw::RawImage RawProcessingPipeline::runRawNindDenoise(const raw::RawImage &sour
                                                      sensorOriginY,
                                                      workLeft,
                                                      workTop,
-                                                     workLeft + 2 * packedWidth,
-                                                     workTop + 2 * packedHeight,
+                                                     workRight,
+                                                     workBottom,
                                                      packedTileSize);
 
-      ai::OnnxFloatRunResult result = session.runSingleFloat(
-        tileInput,
-        std::vector<std::int64_t>{1, 4, packedTileSize, packedTileSize});
-      if(result.shape != std::vector<std::int64_t>{1, 3, sensorTileSize, sensorTileSize})
+      ai::OnnxFloatRunResult result = infer(tileInput);
+      const std::size_t modelPlaneSize = static_cast<std::size_t>(sensorTileSize)
+                                         * static_cast<std::size_t>(sensorTileSize);
+      if(result.shape != std::vector<std::int64_t>{1, 3, sensorTileSize, sensorTileSize}
+         || result.values.size() != 3 * modelPlaneSize)
       {
         throw std::runtime_error{"RawNIND model returned an unexpected output shape"};
       }
 
-      matchGain(tileInput, result.values);
+      const int validLeft = std::max(0, packedOverlap - pxBase);
+      const int validTop = std::max(0, packedOverlap - pyBase);
+      const int validRight = std::min(packedTileSize, packedWidth + packedOverlap - pxBase);
+      const int validBottom = std::min(packedTileSize, packedHeight + packedOverlap - pyBase);
+      recoverRawNindGain(tileInput, result.values, packedTileSize,
+                        {validLeft, validTop, validRight - validLeft, validBottom - validTop});
 
-      const std::size_t modelPlaneSize = static_cast<std::size_t>(sensorTileSize)
-                                         * static_cast<std::size_t>(sensorTileSize);
       const int writeX0 = hasLeft ? sensorCoreX0 - sensorOverlap : sensorCoreX0;
       const int writeY0 = hasTop ? sensorCoreY0 - sensorOverlap : sensorCoreY0;
-      const int writeX1 = hasRight ? sensorCoreX1 + sensorOverlap : sensorCoreX1;
-      const int writeY1 = hasBottom ? sensorCoreY1 + sensorOverlap : sensorCoreY1;
+      const int writeX1 = std::min(workRight, hasRight ? sensorCoreX1 + sensorOverlap : sensorCoreX1);
+      const int writeY1 = std::min(workBottom, hasBottom ? sensorCoreY1 + sensorOverlap : sensorCoreY1);
 
       for(int y = writeY0; y < writeY1; ++y)
       {
@@ -279,6 +333,8 @@ raw::RawImage RawProcessingPipeline::runRawNindDenoise(const raw::RawImage &sour
           const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(source.width())
                                   + static_cast<std::size_t>(x);
           accum[idx] += rawValue * weight;
+          if(!std::isfinite(accum[idx]))
+            throw std::runtime_error{"RawNIND gain recovery: CFA composition overflow"};
           weights[idx] += weight;
         }
       }
