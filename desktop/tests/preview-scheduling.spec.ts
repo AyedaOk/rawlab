@@ -9,7 +9,7 @@ test('the latest active photograph owns the visible preview', async ({page}) => 
     Object.assign(window,{isTauri:true,__previewCalls:calls,
       __resolveActive:(path:string) => active.get(path)?.({version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,png:`${png}${path.endsWith('b.ARW')?'B':'A'}`,quality:'high',metadata:{model:path,rawWidth:6000,rawHeight:4000}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-        if(command==='external_session') return null;
+        if(command==='external_session'||command==='supersede_previews') return null;
        if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
         if(command==='render_raw_preview') {
           calls.push(structuredClone(args));
@@ -49,7 +49,7 @@ test('quality changes issue one source request and reuse processed derivatives',
       __setSourceVersion:(value:string)=>{sourceVersion=value;},
       __resolveProcessed:()=>resolveFirst({version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png:`${png}F`,quality:'fast',metadata:{rawWidth:6000,rawHeight:4000}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       calls.push({command,args:structuredClone(args)});
       if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='raw_source_version') return sourceVersion;
@@ -95,10 +95,10 @@ test('quality changes issue one source request and reuse processed derivatives',
   await expect(page.locator('.main-photo')).toHaveAttribute('src',/F$/);
   expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(1);
   await quality.click();
-  await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(2);
+  await expect(page.locator('.main-photo')).not.toHaveAttribute('src',/F$/);
   await quality.click();
   await expect(page.locator('.main-photo')).toHaveAttribute('src',/F$/);
-  expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(1);
   await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await page.getByRole('button',{name:'Normal',exact:true}).click();
   await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
@@ -120,18 +120,35 @@ test('Normal sharpening starts automatically and keeps the detail tile during st
   await page.addInitScript((png) => {
     const calls:any[]=[];
     let delayed = false;
-    let finish: (()=>void) | undefined;
+    const pending = new Map<number,()=>void>();
+    let finishBefore: (()=>void) | undefined;
+    let delayBefore = false;
+    let finishOverview: (()=>void) | undefined;
+    let delayOverview = false;
+    let failOverview = false;
+    let results = 0;
     const image = {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png,before:png,resultId:'r1',metadata:{rawWidth:6000,rawHeight:4000}};
-    Object.assign(window,{isTauri:true,__sharpCalls:calls,__delayDetail:()=>{delayed=true;},__finishDetail:()=>{delayed=false;finish?.();},
+    Object.assign(window,{isTauri:true,__sharpCalls:calls,__delayDetail:()=>{delayed=true;},
+      __finishDetail:(strength:number)=>{delayed=false;pending.get(strength)?.();},
+      __delayBefore:()=>{delayBefore=true;},__finishBefore:()=>{delayBefore=false;finishBefore?.();},
+      __delayOverview:()=>{delayOverview=true;},__finishOverview:()=>{delayOverview=false;finishOverview?.();},
+      __failOverview:()=>{failOverview=true;},
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
         calls.push({command,args:structuredClone(args)});
-        if(command==='external_session') return null;
+        if(command==='external_session'||command==='supersede_previews') return null;
         if(command==='raw_source_version') return 'v1';
         if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
+        if(command==='process_raw'&&args.operation!=='recompose') return {...image,resultId:`r${++results}`,quality:args.highQuality?'high':'fast'};
+        if(command==='process_raw'&&args.operation==='recompose') {
+          if(failOverview) {failOverview=false;throw new Error('Preview cache expired');}
+          if(delayOverview) await new Promise<void>(resolve=>{finishOverview=resolve;});
+        }
         if(command==='render_raw_preview'||command==='render_processed'||command==='process_raw') return {...image,quality:args.highQuality?'high':'fast'};
         if(command==='render_raw_detail') {
-          if(delayed && args.target==='processed') await new Promise<void>(resolve=>{finish=resolve;});
-          return {...image,x:args.x,y:args.y,width:args.width,height:args.height};
+          const strength = args.recipe.layers[0].strength;
+          if(delayed && args.target==='processed') await new Promise<void>(resolve=>{pending.set(strength,resolve);});
+          if(delayBefore && args.target==='original') await new Promise<void>(resolve=>{finishBefore=resolve;});
+          return {...image,png:`${png}#${strength}`,x:args.x,y:args.y,width:args.width,height:args.height};
         }
         if(command==='desktop_control') {
           const op=args.request.operation;
@@ -151,16 +168,61 @@ test('Normal sharpening starts automatically and keeps the detail tile during st
   await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:'1:1',exact:true}).click();
   await expect(page.locator('.detail-tile').first()).toBeVisible();
-  await page.evaluate(()=>{(window as any).__sharpCalls.length=0;(window as any).__delayDetail();});
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now()+1000));
+  await page.evaluate(()=>{(window as any).__sharpCalls.length=0;(window as any).__delayDetail();(window as any).__delayOverview();});
   await page.getByRole('slider',{name:'Strength',exact:true}).fill('65');
+  const update=page.getByRole('button',{name:'Update',exact:true});
+  const status=page.locator('.update-pill');
+  await expect(status).toHaveText('Updating preview…');
+  await expect(update).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).__sharpCalls.some((c:any)=>c.command==='render_raw_detail'))).toBe(false);
+  await page.clock.resume();
   await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed').length)).toBe(1);
+  await expect(status).toHaveText('Updating preview…');
+  await expect(update).toHaveCount(0);
   await expect(page.locator('.detail-tile').first()).toBeVisible();
   await page.getByRole('slider',{name:'Strength',exact:true}).fill('75');
   await page.getByRole('slider',{name:'Strength',exact:true}).fill('85');
-  await page.evaluate(()=>(window as any).__finishDetail());
   await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed').at(-1)?.args.recipe.layers[0].strength)).toBe(85);
+  await page.evaluate(()=>(window as any).__finishDetail(85));
+  await expect(page.getByAltText('Source-resolution detail')).toHaveAttribute('src',/85$/);
+  await page.evaluate(()=>(window as any).__finishDetail(65));
+  await expect(page.getByAltText('Source-resolution detail')).toHaveAttribute('src',/85$/);
   expect(await page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='original').length)).toBe(0);
   expect(await page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='process_raw'&&c.args.operation!=='recompose').length)).toBe(0);
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='process_raw'&&c.args.operation==='recompose').at(-1)?.args.recipe.layers[0].strength)).toBe(85);
+  await expect(status).toHaveText('Updating preview…');
+  await expect(update).toHaveCount(0);
+  await page.evaluate(()=>(window as any).__finishOverview());
+  await expect(status).toHaveCount(0);
+  expect(await page.evaluate(()=>(window as any).__sharpCalls.some((c:any)=>c.command==='process_raw'&&c.args.recipe?.layers[0].strength===65))).toBe(false);
+  await page.evaluate(()=>(window as any).__delayBefore());
+  await page.getByRole('button',{name:'Before and after'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='original').length)).toBe(1);
+  await expect(page.getByAltText('Source-resolution detail')).toHaveAttribute('src',/85$/);
+  await page.evaluate(()=>(window as any).__finishBefore());
+  await expect(page.locator('.detail-tile')).toHaveCount(2);
+  await page.getByRole('button',{name:'Before and after'}).click();
+  await page.getByRole('group',{name:'Sharpening mode'}).getByRole('button',{name:'AI',exact:true}).click();
+  await page.getByRole('button',{name:'Update',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
+  await page.evaluate(()=>{(window as any).__sharpCalls.length=0;(window as any).__delayDetail();});
+  await page.getByRole('button',{name:'Normal',exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.some((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed'))).toBe(true);
+  await page.getByRole('slider',{name:'Strength',exact:true}).fill('95');
+  await expect.poll(()=>page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='render_raw_detail'&&c.args.target==='processed').at(-1)?.args.recipe.layers[0].strength)).toBe(95);
+  await page.evaluate(()=>(window as any).__finishDetail(95));
+  await expect(page.getByAltText('Source-resolution detail')).toHaveAttribute('src',/95$/);
+  expect(await page.evaluate(()=>(window as any).__sharpCalls.filter((c:any)=>c.command==='process_raw'&&c.args.operation!=='recompose').length)).toBe(0);
+  await expect(status).toHaveCount(0);
+  await page.evaluate(()=>(window as any).__failOverview());
+  await page.getByRole('slider',{name:'Strength',exact:true}).fill('90');
+  await expect(page.locator('.raw-progress')).toContainText('Preview cache expired');
+  await expect(update).toBeVisible();
+  await expect(status).toContainText('Changes pending');
+  await update.click();
+  await expect(status).toHaveCount(0);
 });
 
 test('wheel zoom uses oriented source dimensions and requests a bounded detail region', async ({page}) => {
@@ -168,7 +230,7 @@ test('wheel zoom uses oriented source dimensions and requests a bounded detail r
   await page.addInitScript((png) => {
     const details:any[]=[];
     Object.assign(window,{isTauri:true,__details:details,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='render_raw_preview') return {version:1,width:1400,height:934,sourceWidth:7008,sourceHeight:4672,sourceVersion:'v1',png,quality:'high',metadata:{rawWidth:7008,rawHeight:4672}};
       if(command==='render_raw_detail') {details.push(structuredClone(args));return {version:1,x:args.x,y:args.y,width:args.width,height:args.height,sourceWidth:7008,sourceHeight:4672,png};}

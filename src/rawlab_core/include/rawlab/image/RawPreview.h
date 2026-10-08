@@ -35,6 +35,8 @@ struct LinearRawPreview
   PreviewGeometry geometry;
 };
 
+PreviewGeometry rawPreviewGeometry(const raw::RawImage &source, int maxDimension);
+
 LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, int maxDimension = 2048,
                                         PreviewQuality quality = PreviewQuality::Fast);
 

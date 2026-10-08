@@ -50,9 +50,9 @@ int main(int argc,char **argv)
     }
     const QRect tile{7, 9, 20, 16};
     QElapsedTimer timer; timer.start();
-    const auto cold = session.preview(path, recipe, {}, *source, 2048, rawlab::image::PreviewQuality::High, tile);
+    const auto cold = session.detail(path, recipe, tile);
     const auto coldNs = timer.nsecsElapsed(); timer.restart();
-    const auto warm = session.preview(path, recipe, {}, *source, 2048, rawlab::image::PreviewQuality::High, tile);
+    const auto warm = session.detail(path, recipe, tile);
     std::cout << "Detail endpoint cold/warm ms: " << coldNs / 1e6 << '/' << timer.nsecsElapsed() / 1e6 << '\n';
     if(cold.pixels != unsharpDetail.pixels || cold.pixels != warm.pixels) return 1;
     if(session.process(path,recipe,{})!=source || source->metadata().exposureBiasEv!=std::optional<double>{-1}) return 1;
@@ -100,13 +100,11 @@ int main(int argc,char **argv)
        if(unsharpened->samples()==fullySharpened->samples())
        { std::cerr<<"Sharpening strength did not change CFA output\n";return 1; }
        timer.restart();
-       const auto fullDetail = session.preview(path, recipe, {}, *fullySharpened, 2048,
-                                               rawlab::image::PreviewQuality::High, tile);
+        const auto fullDetail = session.detail(path, recipe, tile);
        const auto coldSharpNs = timer.nsecsElapsed();
        global["strength"]=0;recipe["layers"]=QJsonArray{global};
        timer.restart();
-       const auto zeroDetail = session.preview(path, recipe, {}, *fullySharpened, 2048,
-                                               rawlab::image::PreviewQuality::High, tile);
+        const auto zeroDetail = session.detail(path, recipe, tile);
        std::cout << "Sharpening detail cold/warm ms: " << coldSharpNs / 1e6 << '/' << timer.nsecsElapsed() / 1e6 << '\n';
        const auto expectedFull = rawlab::image::renderLinearRawPreviewRegion(*fullySharpened, 7, 9, 20, 16);
        const auto expectedZero = rawlab::image::renderLinearRawPreviewRegion(*unsharpened, 7, 9, 20, 16);
@@ -122,9 +120,41 @@ int main(int argc,char **argv)
       if(zero->samples()!=source->samples() || inferenceProgress)return 1;
       auto local=global;local["id"]=1;local["blend"]=100;local["marks"]=QJsonArray{QJsonObject{{"tool","Brush"},{"points",QJsonArray{QJsonArray{0.5,0.5}}}}};
       global["enabled"]=false;recipe["layers"]=QJsonArray{global,local};
-      auto masked=session.process(path,recipe,{});
-      if(masked->sample(0,0)!=source->sample(0,0))return 1;
-      std::cout<<"Real denoise/sharpen, cache reuse, zero blend and local mask checks passed\n";
+       auto masked=session.process(path,recipe,{});
+       if(masked->sample(0,0)!=source->sample(0,0))return 1;
+       const auto maskedFull = rawlab::image::renderLinearRawPreviewRegion(*masked, 0, 0, 64, 64);
+       const auto maskedRegion = session.detail(path, recipe, tile);
+       for(int y = 0; y < tile.height(); ++y) for(int x = 0; x < tile.width(); ++x) for(int c = 0; c < 3; ++c)
+         if(std::fabs(maskedRegion.pixels[(y * tile.width() + x) * 3 + c]
+           - maskedFull.pixels[((y + tile.y()) * 64 + x + tile.x()) * 3 + c]) > 1e-5f) return 1;
+
+       // More than three CFA entries must survive, and switching photos must
+       // retain model output without reusing it for the wrong source.
+       for(int i = 0; i < 4; ++i) {
+         const auto modelPath = directory.filePath(QStringLiteral("model-%1.onnx").arg(i));
+         if(!QFile::link(QString::fromLocal8Bit(argv[1]), modelPath)) return 1;
+         settings.denoiseModels.push_back({QString::number(i), "Cache test", modelPath, "rawnind-bayer-v1"});
+       }
+       ApplicationSettingsStore{}.save(settings);
+       global["enabled"] = true; global["blend"] = 100; global["sharpen"] = "Off";
+       for(int i = 0; i < 4; ++i) {
+         global["modelId"] = QString::number(i); recipe["layers"] = QJsonArray{global};
+         session.process(path, recipe, {});
+       }
+       const auto otherPath = directory.filePath("other.dng");
+       rawlab::dng::TiffDngWriter{}.writeCfaDng(otherPath.toStdString(), {64, 64, std::vector<float>(4096, 1000), metadata});
+       if(session.source(otherPath) == source || session.source(path) != source) return 1;
+       for(int i = 0; i < 4; ++i) {
+         global["modelId"] = QString::number(i); recipe["layers"] = QJsonArray{global};
+         int runs = 0;
+         session.process(path, recipe, [&](int, int) { ++runs; }, nullptr, false);
+         if(runs) throw std::runtime_error{"Denoise ran again after a photo switch"};
+       }
+       bool needsInference = false;
+       try { session.process(otherPath, recipe, {}, nullptr, false); }
+       catch(const std::runtime_error &) { needsInference = true; }
+       if(!needsInference) throw std::runtime_error{"Used another photo's denoise cache"};
+       std::cout<<"Real denoise/sharpen, cache reuse, zero blend and local mask checks passed\n";
     }
   }
   catch(const std::exception &error){std::cerr<<error.what()<<'\n';return 1;}

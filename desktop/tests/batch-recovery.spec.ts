@@ -3,7 +3,7 @@ import {test,expect} from '@playwright/test';
 test('batch controls are scoped to export instead of the Library workspace', async ({page}) => {
   await page.addInitScript(() => {
     Object.assign(window, {isTauri:true,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       if(command === 'processing_models') return {models:{denoise:[],sharpen:[],provider:'cpu'}};
       if(command === 'desktop_control') {
         const operation = args.request.operation;

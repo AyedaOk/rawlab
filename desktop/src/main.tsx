@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Aperture,
@@ -39,6 +39,7 @@ import {
   type ModelCatalog,
   processRaw,
   recomposeRaw,
+  supersedePreviews,
   exportDestination,
   exportLinearDestination,
   chooseOutputDirectory,
@@ -232,8 +233,6 @@ function App() {
   const [quality, setQuality] = useState(false);
   const selectionAnchor = useRef<number | null>(null);
   const [exportKind, setExportKind] = useState<"cfa" | "linear-rgb">("cfa");
-  const exportKindRef = useRef(exportKind);
-  exportKindRef.current = exportKind;
   const [rawRefresh, setRawRefresh] = useState(0);
   const [rawView, setRawView] = useState<{
     id: number;
@@ -251,10 +250,9 @@ function App() {
   } | null>(null);
   const [rawBusy, setRawBusy] = useState(false);
   const [rawError, setRawError] = useState("");
+  const [failedPreviewKey, setFailedPreviewKey] = useState("");
   const [processing, setProcessing] = useState(false);
   const processingRequest = useRef(false);
-  const recomposeTimer = useRef<number | undefined>(undefined);
-  const recomposeToken = useRef(0);
   const samRequest = useRef(0);
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
@@ -288,17 +286,14 @@ function App() {
   const [restoreEpoch, setRestoreEpoch] = useState(0);
   const recipeRevision = (id: number) => photoRevisions.current.get(id) ?? 0;
   useEffect(() => () => {
-    if (recomposeTimer.current !== undefined) window.clearTimeout(recomposeTimer.current);
     void persistence.current?.flushAll();
   }, []);
   const loadingRecipes = useRef(new Set<number>());
   const recipeLoadTokens = useRef(new Map<number, number>());
   const rawPreviewCache = useRef(new Map<string, RawPreview>());
   const processedPreviewCache = useRef(new Map<string, RawPreview>());
-  const processedPreviewRequests = useRef(new Map<string, Promise<RawPreview>>());
   const detailCache = useRef(new Map<string, string>());
   const detailRequest = useRef(0);
-  const detailBusy = useRef(false);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (closing.current) return;
@@ -564,13 +559,16 @@ function App() {
   const frame = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
-  const [imageRatio, setImageRatio] = useState(1600 / 1060);
   const [imageSize, setImageSize] = useState({ width: 1600, height: 1060 });
+  const sourceSize = rawView?.id === currentId
+    ? { width: rawView.sourceWidth, height: rawView.sourceHeight } : imageSize;
+  const imageRatio = sourceSize.width / sourceSize.height;
+  const fitWidth = Math.min(canvasSize.width, canvasSize.height * imageRatio);
+  const frameWidth = pixelZoom ? sourceSize.width : fitWidth;
+  const frameHeight = frameWidth / imageRatio;
   function boundPan(x: number, y: number, zoomValue = zoom, pixelMode = pixelZoom) {
-    const fitWidth = Math.min(canvasSize.width, canvasSize.height * imageRatio);
-    const width = pixelMode && rawView?.id === currentId ? rawView.sourceWidth
-      : pixelMode ? imageSize.width : fitWidth;
-    const height = pixelMode && rawView?.id === currentId ? rawView.sourceHeight : width / imageRatio;
+    const width = pixelMode ? sourceSize.width : fitWidth;
+    const height = width / imageRatio;
     const maxX = Math.max(0, (width * zoomValue - canvasSize.width) / 2);
     const maxY = Math.max(
       0,
@@ -581,13 +579,14 @@ function App() {
       y: Math.max(-maxY, Math.min(maxY, y)),
     };
   }
-  function applyPanVisual(value: { x: number; y: number }, zoomValue = zoom) {
+  function applyPanVisual(value: { x: number; y: number }) {
     panPosition.current = value;
+    maskRect.current = null;
     if (panFrame.current !== null) return;
     panFrame.current = requestAnimationFrame(() => {
       panFrame.current = null;
       if (frame.current)
-        frame.current.style.transform = `translate(${panPosition.current.x}px, ${panPosition.current.y}px) scale(${zoomValue})`;
+        frame.current.style.transform = `translate(${panPosition.current.x}px, ${panPosition.current.y}px) scale(${zoom})`;
     });
   }
   function flushPanVisual() {
@@ -597,6 +596,32 @@ function App() {
     }
     if (frame.current)
       frame.current.style.transform = `translate(${panPosition.current.x}px, ${panPosition.current.y}px) scale(${zoom})`;
+  }
+  function finishPan() {
+    if (!panStart.current) return;
+    panStart.current = null;
+    setPanning(false);
+    panPosition.current = boundPan(panPosition.current.x, panPosition.current.y);
+    flushPanVisual();
+    setPan(panPosition.current);
+  }
+  function changeZoom(value: number, pixelMode = pixelZoom, anchor = { x: 0, y: 0 }) {
+    if (wheelFrame.current !== null) cancelAnimationFrame(wheelFrame.current);
+    wheelFrame.current = null;
+    wheelPending.current = null;
+    if (value === zoom && pixelMode === pixelZoom) return;
+    finishPan();
+    const factor = (pixelMode ? sourceSize.width : fitWidth) * value / (frameWidth * zoom);
+    const nextPan = boundPan(
+      anchor.x - (anchor.x - panPosition.current.x) * factor,
+      anchor.y - (anchor.y - panPosition.current.y) * factor, value, pixelMode);
+    setPixelZoom(pixelMode);
+    setZoom(value);
+    setPan(nextPan);
+  }
+  function fitImage() {
+    changeZoom(1, false);
+    setPan({ x: 0, y: 0 });
   }
   function handlePreviewWheel(event: WheelEvent) {
     if (event.shiftKey && editingMask && active.id !== 0 && (maskTool === "Brush" || maskTool === "Erase")) {
@@ -622,37 +647,22 @@ function App() {
       const next = wheelPending.current;
       wheelPending.current = null;
       if (!next || !frame.current) return;
-      const currentPan = panPosition.current;
       const currentZoom = zoom;
-      const minimumZoom = pixelZoom && rawView?.id === currentId
-        ? Math.min(1, Math.min(canvasSize.width, canvasSize.height * imageRatio) / rawView.sourceWidth)
-        : 0.5;
+      const minimumZoom = pixelZoom ? Math.min(1, fitWidth / sourceSize.width) : 0.5;
       let nextZoom = Math.max(minimumZoom, Math.min(3, currentZoom * Math.pow(1.0015, -next.delta)));
       if (nextZoom === currentZoom) return;
-      const bounds = frame.current.getBoundingClientRect();
-      const originX = bounds.left + bounds.width / 2 - currentPan.x;
-      const originY = bounds.top + bounds.height / 2 - currentPan.y;
-      const contentX = (next.x - originX - currentPan.x) / currentZoom;
-      const contentY = (next.y - originY - currentPan.y) / currentZoom;
       let nextPixelZoom = pixelZoom;
-      let nextPan = boundPan(
-        next.x - originX - contentX * nextZoom,
-        next.y - originY - contentY * nextZoom,
-        nextZoom,
-        pixelZoom,
-      );
       if (!pixelZoom && rawView?.id === currentId) {
-        const fitWidth = Math.min(canvasSize.width, canvasSize.height * imageRatio);
         if (fitWidth * nextZoom >= imageSize.width) {
           nextZoom = fitWidth * nextZoom / rawView.sourceWidth;
           nextPixelZoom = true;
-          nextPan = boundPan(nextPan.x, nextPan.y, nextZoom, true);
         }
       }
-      setPixelZoom(nextPixelZoom);
-      setZoom(nextZoom);
-       applyPanVisual(nextPan, nextZoom);
-      setPan(nextPan);
+      const bounds = canvas.current!.getBoundingClientRect();
+      changeZoom(nextZoom, nextPixelZoom, {
+        x: next.x - bounds.left - bounds.width / 2,
+        y: next.y - bounds.top - bounds.height / 2,
+      });
     });
   }
   useEffect(() => {
@@ -660,12 +670,16 @@ function App() {
     element?.addEventListener("wheel", handlePreviewWheel, { passive: false });
     return () => element?.removeEventListener("wheel", handlePreviewWheel);
   });
-  useEffect(() => {
-    setPan((p) => boundPan(p.x, p.y));
-  }, [zoom, pixelZoom, imageSize.width, canvasSize.width, canvasSize.height, imageRatio]);
-  useEffect(() => {
-    panPosition.current = pan;
-  }, [pan]);
+  useLayoutEffect(() => {
+    // Dragging owns the live transform; preview renders must not restore the
+    // last committed pan. Commit zoom/resize changes before the next paint.
+    if (panStart.current) return;
+    const bounded = boundPan(pan.x, pan.y);
+    panPosition.current = bounded;
+    maskRect.current = null;
+    flushPanVisual();
+    if (bounded.x !== pan.x || bounded.y !== pan.y) setPan(bounded);
+  }, [pan, zoom, frameWidth, frameHeight, canvasSize.width, canvasSize.height, library]);
   useEffect(() => () => {
     if (panFrame.current !== null) cancelAnimationFrame(panFrame.current);
     if (dividerFrame.current !== null) cancelAnimationFrame(dividerFrame.current);
@@ -835,14 +849,16 @@ function App() {
     return JSON.stringify({
       ...recipe,
       outputKind: undefined,
-      layers: recipe.layers.map((layer) => ({...layer, blend: 0, strength: 0,
-        sharpen: layer.sharpen === "Normal" ? "Off" : layer.sharpen})),
+      chromaticAberration: false,
+      lensCorrection: false,
+      layers: recipe.layers.map((layer) => ({...layer, blend: 0, strength: 0, sharpen: "Off"})),
     });
   }
   function canRecomposePreview(processed: NonNullable<Photo["processed"]>) {
     try {
-      return previewEndpointKey(JSON.parse(processed.key) as ReturnType<typeof recipeFor>)
-        === previewEndpointKey(recipeFor(photo, exportKind));
+      const previous = JSON.parse(processed.key) as ReturnType<typeof recipeFor>;
+      return previewEndpointKey(previous) === previewEndpointKey(recipeFor(photo, exportKind))
+        && photo.layers.every((layer, i) => layer.sharpen !== "AI" || previous.layers[i]?.sharpen === "AI");
     } catch {
       return false;
     }
@@ -887,26 +903,20 @@ function App() {
       ? photo.processed
       : undefined;
   const rendered = processedCurrent?.high === quality ? processedCurrent : undefined;
+  const previewSource = photo.processed && rawView?.id === photo.id && canRecomposePreview(photo.processed)
+    && (!rawView.sourceVersion || !photo.processed.sourceVersion || rawView.sourceVersion === photo.processed.sourceVersion)
+    ? photo.processed : undefined;
+  const previewKey = `${previewSource?.resultId ?? ""}:${recipeKey}:${quality}:${previewDimension}`;
+  const pendingChanges = photo.rawPath ? !processedCurrent : photo.dirty;
+  // Derive this before effects run so the debounce never flashes a manual Update.
+  const updatingPreview = isDesktop() && !library && !processing && pendingChanges
+    && !!previewSource && failedPreviewKey !== previewKey;
   const correctedGeometry = exportKind === "linear-rgb"
     && (photo.chromaticAberration || photo.lensCorrection);
   const maskGeometryKey = `${photo.id}:${photo.processed?.resultId ?? ""}:${quality}:${previewDimension}`;
   const displayUrl = editingMask && correctedGeometry
     ? maskGeometryView?.key === maskGeometryKey ? maskGeometryView.url : originalUrl
     : rendered?.url ?? photo.processed?.url ?? originalUrl;
-  useEffect(() => {
-    if (!editingMask || !correctedGeometry || !photo.rawPath || !photo.processed?.resultId) {
-      setMaskGeometryView(null);
-      return;
-    }
-    let cancelled = false;
-    void renderProcessed(photo.rawPath, quality, photo.processed.resultId, recipeFor(photo, "cfa"), previewDimension)
-      .then((result) => {
-        if (!cancelled) setMaskGeometryView({key: maskGeometryKey, url: `data:image/png;base64,${result.png}`});
-      })
-      .catch((error) => { if (!cancelled) setNotice(String(error)); });
-    return () => { cancelled = true; };
-  }, [editingMask, correctedGeometry, photo.id, photo.rawPath, photo.processed?.resultId,
-      quality, maskGeometryKey, previewDimension]);
   useEffect(() => {
     if (!rendered?.before) return;
     const image = new Image();
@@ -927,11 +937,6 @@ function App() {
       return;
     }
     if (processingRequest.current) return;
-    if (recomposeTimer.current !== undefined) {
-      window.clearTimeout(recomposeTimer.current);
-      recomposeTimer.current = undefined;
-      recomposeToken.current++;
-    }
     if (exporting && externalSession?.mode === "batch") {
       processingRequest.current = true;
       setProcessing(true);
@@ -1031,63 +1036,16 @@ function App() {
     }
   }
   useEffect(() => {
-    // Quality changes only re-render the existing processed CFA. Pending edits
-    // still require Update so a preview toggle cannot apply them accidentally.
-    const processed = photo.processed;
-    if (
-      !isDesktop() ||
-      !photo.rawPath ||
-      photo.dirty ||
-      !processed ||
-      processed.key !== recipeKey ||
-      processed.high === quality ||
-      processing ||
-      rawView?.id !== photo.id ||
-      rawView.high !== quality
-    ) return;
-    const cacheKey = `${processed.resultId}:${recipeKey}:${quality ? "high" : "fast"}:${previewDimension}`;
-     let cancelled = false;
-     const cached = processedPreviewCache.current.get(cacheKey);
-     let request = cached ? Promise.resolve(cached) : processedPreviewRequests.current.get(cacheKey);
-     if (!request) {
-       request = renderProcessed(photo.rawPath, quality, processed.resultId, recipeFor(photo, exportKind), previewDimension);
-       processedPreviewRequests.current.set(cacheKey, request);
-       void request.then(
-         (result) => {
-           retainPreview(processedPreviewCache.current, cacheKey, result, 4);
-           processedPreviewRequests.current.delete(cacheKey);
-         },
-         () => processedPreviewRequests.current.delete(cacheKey),
-       );
-     }
-     void request
-       .then((after) => {
-          if (cancelled) return;
-          if (!processedPreviewCache.current.has(cacheKey))
-            retainPreview(processedPreviewCache.current, cacheKey, after, 4);
-          setPhotos((items) => items.map((item) => item.id === photo.id ? {
-            ...item,
-            processed: {
-              url: `data:image/png;base64,${after.png}`,
-               before: after.before ? `data:image/png;base64,${after.before}`
-                 : rawView?.id === photo.id && rawView.high === quality ? rawView.url : processed.before,
-              key: recipeKey,
-              high: quality,
-              resultId: processed.resultId,
-              sourceVersion: after.sourceVersion ?? processed.sourceVersion,
-            },
-          } : item));
-        })
-       .catch((error) => { if (!cancelled) setNotice(String(error)); });
-     return () => { cancelled = true; };
-  }, [photo.id, photo.rawPath, photo.dirty, photo.processed?.key, photo.processed?.high,
-       photo.processed?.resultId, recipeKey, quality, processing, rawView?.id, rawView?.high,
-       rawView?.url, previewDimension]);
-  useEffect(() => {
-    if (!pixelZoom || !photo.rawPath || rawView?.id !== photo.id) {
-      setDetailView(null);
+    if (!pixelZoom || rawView?.id !== photo.id) setDetailView(null);
+    if (!editingMask || !correctedGeometry) setMaskGeometryView(null);
+    if (!isDesktop()) return;
+    if (library || !photo.rawPath || rawView?.id !== photo.id || processing) {
+      void supersedePreviews().catch(() => {});
+      if (!processing) setProgress("");
       return;
     }
+    const path = photo.rawPath;
+    const processed = previewSource;
     const sourceWidth = rawView.sourceWidth;
     const sourceHeight = rawView.sourceHeight;
     const sourceScale = Math.max(zoom, 0.0001);
@@ -1098,73 +1056,102 @@ function App() {
     const y = Math.max(0, Math.floor(-frameTop / sourceScale - overscan));
     const width = Math.min(sourceWidth - x, Math.ceil(canvasSize.width / sourceScale + overscan * 2), 4096);
     const height = Math.min(sourceHeight - y, Math.ceil(canvasSize.height / sourceScale + overscan * 2), 4096);
-    if (width <= 0 || height <= 0) return;
-    const detailResult = photo.processed && canRecomposePreview(photo.processed)
-      && (!rawView.sourceVersion || !photo.processed.sourceVersion || rawView.sourceVersion === photo.processed.sourceVersion)
-      ? photo.processed : rendered;
-    const target = detailResult?.resultId ? "processed" as const : "original" as const;
-    const identity = detailResult?.resultId || rawView.sourceVersion || photo.rawPath;
+    const target = processed?.resultId ? "processed" as const : "original" as const;
+    const originalIdentity = `${path}:${rawView.sourceVersion ?? ""}`;
+    const identity = processed?.resultId || originalIdentity;
     const detailRecipe = editingMask && correctedGeometry
       ? recipeFor(photo, "cfa") : recipeFor(photo, exportKind);
     const geometryKey = JSON.stringify(detailRecipe);
     const detailKey = `${identity}:${target}:${geometryKey}:${x}:${y}:${width}:${height}`;
     const beforeKey = target === "processed"
-      ? `${rawView.sourceVersion || photo.rawPath}:original:${correctedGeometry}:${photo.chromaticAberration}:${photo.lensCorrection}:${x}:${y}:${width}:${height}` : detailKey;
+      ? `${originalIdentity}:original:${detailRecipe.outputKind}:${photo.chromaticAberration}:${photo.lensCorrection}:${x}:${y}:${width}:${height}` : detailKey;
     const key = `${detailKey}:${beforeKey}`;
-    const cached = detailCache.current.get(detailKey);
-    const cachedBefore = detailCache.current.get(beforeKey);
-    if (cached && cachedBefore) {
-      setDetailView({key, url: cached, beforeUrl: cachedBefore, x, y, width, height});
-      return;
-    }
-    setDetailView((current) => current?.key.startsWith(`${identity}:${target}:`)
-      && current.x === x && current.y === y && current.width === width && current.height === height ? current : null);
+    if (pixelZoom) setDetailView((current) => current?.key.startsWith(`${identity}:${target}:`)
+      ? current : null);
     const token = ++detailRequest.current;
-    let timer: number;
-    const loadDetail = () => {
-      if (detailRequest.current !== token) return;
-      if (detailBusy.current) { timer = window.setTimeout(loadDetail, 50); return; }
-      detailBusy.current = true;
-      const load = (cacheKey: string, requestTarget: "original" | "processed", resultId?: string) => {
-        const hit = detailCache.current.get(cacheKey);
-        if (hit) return Promise.resolve({url: hit, x, y, width, height, cacheKey: undefined as string | undefined});
-        return renderRawDetail(photo.rawPath!, requestTarget, resultId, x, y, width, height, detailRecipe).then((result) => {
+    setFailedPreviewKey("");
+    let cancelled = false;
+    const current = () => !cancelled && detailRequest.current === token;
+    const refresh = async () => {
+      await supersedePreviews();
+      if (!current()) return;
+      const load = async (cacheKey: string, requestTarget: "original" | "processed", resultId?: string) => {
+        let url = detailCache.current.get(cacheKey);
+        if (!url) {
+          const result = await renderRawDetail(path, requestTarget, resultId, x, y, width, height, detailRecipe);
           if (result.sourceVersion && rawView.sourceVersion && result.sourceVersion !== rawView.sourceVersion)
             throw new Error("Source changed while rendering detail; retry");
-          const url = `data:image/png;base64,${result.png}`;
-          return {url, x: result.x, y: result.y, width: result.width, height: result.height, cacheKey};
-        });
+          url = `data:image/png;base64,${result.png}`;
+        }
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        detailCache.current.delete(cacheKey);
+        detailCache.current.set(cacheKey, url);
+        let bytes = [...detailCache.current.values()].reduce((sum, value) => sum + value.length, 0);
+        while (detailCache.current.size > 12 || bytes > 32 * 1024 * 1024) {
+          const oldest = detailCache.current.keys().next().value!;
+          bytes -= detailCache.current.get(oldest)!.length;
+          detailCache.current.delete(oldest);
+        }
+        return url;
       };
-      const detail = load(detailKey, target, detailResult?.resultId);
-      void Promise.all([
-        detail,
-        target === "processed" ? load(beforeKey, "original") : detail,
-      ])
-        .then(([result, before]) => {
-          if (detailRequest.current !== token) return;
-          if (result.cacheKey) detailCache.current.set(result.cacheKey, result.url);
-          if (before.cacheKey) detailCache.current.set(before.cacheKey, before.url);
-          let bytes = [...detailCache.current.values()].reduce((sum, value) => sum + value.length, 0);
-          while (detailCache.current.size > 12 || bytes > 32 * 1024 * 1024) {
-            const oldest = detailCache.current.keys().next().value;
-            if (!oldest) break;
-            bytes -= detailCache.current.get(oldest)?.length ?? 0;
-            detailCache.current.delete(oldest);
-          }
-          setDetailView({key, url: result.url, beforeUrl: before.url,
-            x: result.x, y: result.y, width: result.width, height: result.height});
-        })
-        .catch((error) => {
-          if (detailRequest.current === token) setRawError(String(error));
-        }).finally(() => { detailBusy.current = false; });
+      // One sequence owns the processing worker: visible detail first, comparison
+      // only when requested, then the overview. A new sequence supersedes it.
+      if (pixelZoom && width > 0 && height > 0) {
+        const url = await load(detailKey, target, processed?.resultId);
+        if (!current()) return;
+        setDetailView({key, url, beforeUrl: detailCache.current.get(beforeKey), x, y, width, height});
+        if (compare && target === "processed") {
+          const beforeUrl = await load(beforeKey, "original");
+          if (!current()) return;
+          setDetailView({key, url, beforeUrl, x, y, width, height});
+        }
+      }
+      if (!processed) return;
+      if (editingMask && correctedGeometry && maskGeometryView?.key !== maskGeometryKey) {
+        const mask = await renderProcessed(path, quality, processed.resultId, recipeFor(photo, "cfa"), previewDimension);
+        if (!current()) return;
+        setMaskGeometryView({key: maskGeometryKey, url: `data:image/png;base64,${mask.png}`});
+      }
+      if (rawView.high !== quality || (processed.key === recipeKey && processed.high === quality)) return;
+      let after = processedPreviewCache.current.get(previewKey);
+      if (!after) {
+        const previous = JSON.parse(processed.key);
+        const sameGeometry = previous.outputKind === exportKind
+          && previous.chromaticAberration === photo.chromaticAberration && previous.lensCorrection === photo.lensCorrection;
+        after = processed.high === quality && sameGeometry
+          ? await recomposeRaw(path, recipeFor(photo, exportKind), quality, previewDimension, processed.resultId)
+          : await renderProcessed(path, quality, processed.resultId, recipeFor(photo, exportKind), previewDimension);
+        retainPreview(processedPreviewCache.current, previewKey, after, 4);
+      }
+      if (!current()) return;
+      const preview = after;
+      setPhotos((items) => items.map((item) => item.id === photo.id ? {
+        ...item, dirty: false, processed: {
+          url: `data:image/png;base64,${preview.png}`,
+          before: preview.before ? `data:image/png;base64,${preview.before}` : processed.before,
+          key: recipeKey, high: quality, resultId: processed.resultId,
+          sourceVersion: preview.sourceVersion ?? processed.sourceVersion,
+        },
+      } : item));
     };
-    timer = window.setTimeout(loadDetail, 60);
+    const timer = window.setTimeout(() => {
+      void refresh().catch((error) => {
+        if (current()) {
+          setFailedPreviewKey(previewKey);
+          setRawError(String(error));
+        }
+      })
+        .finally(() => { if (current()) setProgress(""); });
+    }, pixelZoom ? 60 : 180);
     return () => {
+      cancelled = true;
       window.clearTimeout(timer);
-      if (detailRequest.current === token) detailRequest.current++;
     };
-  }, [pixelZoom, photo.id, photo.rawPath, rawView?.id, rawView?.sourceWidth,
-       rawView?.sourceHeight, rawView?.sourceVersion, rendered?.resultId, photo.processed?.resultId,
+  }, [library, processing, pixelZoom, compare, photo.id, photo.rawPath, rawView?.id, rawView?.sourceWidth,
+       rawView?.sourceHeight, rawView?.sourceVersion, rawView?.high, photo.processed?.resultId,
+       photo.processed?.key, photo.processed?.high, quality, previewDimension,
       canvasSize.width, canvasSize.height, pan.x, pan.y, zoom, editingMask,
       correctedGeometry, recipeKey, exportKind]);
   function restoreHistory(redo = false) {
@@ -1211,8 +1198,6 @@ function App() {
     );
   }
   function change(values: Partial<Layer>) {
-    const autoRecompose = values.blend !== undefined || values.strength !== undefined
-      || values.sharpen === "Normal" || values.sharpen === "Off";
     const nextLayers = photo.layers.map((l) =>
       l.id === active.id ? { ...l, ...values } : l,
     );
@@ -1225,61 +1210,13 @@ function App() {
       void updateProcessing(false, exportKind, { ...photo, layers: nextLayers });
       return;
     }
-    if (autoRecompose && isDesktop() && photo.rawPath && photo.processed
-      && canRecomposePreview(photo.processed)) {
-      if (recomposeTimer.current !== undefined) window.clearTimeout(recomposeTimer.current);
-      const id = photo.id;
-      const path = photo.rawPath;
-      const recipe = recipeFor({ ...photo, layers: nextLayers }, exportKind);
-      const key = JSON.stringify(recipe);
-      const token = ++recomposeToken.current;
-      const runRecompose = () => {
-        recomposeTimer.current = undefined;
-        if (processingRequest.current) {
-          recomposeTimer.current = window.setTimeout(runRecompose, 100);
-          return;
-        }
-        processingRequest.current = true;
-        setProcessing(true);
-        setProgress("Updating preview…");
-        const previewSize = previewDimension;
-        void recomposeRaw(path, recipe, quality, previewSize, photo.processed!.resultId)
-          .then((result) => {
-            if (token !== recomposeToken.current) return;
-            setPhotos((items) => items.map((item) => {
-               if (item.id !== id || JSON.stringify(recipeFor(item, exportKind)) !== key) return item;
-              return { ...item, dirty: false, processed: {
-                url: `data:image/png;base64,${result.png}`,
-                before: `data:image/png;base64,${result.before ?? item.processed?.before ?? ""}`,
-                key, high: quality, resultId: result.resultId ?? "", sourceVersion: result.sourceVersion,
-              }};
-            }));
-          })
-          .catch((error) => {
-            if (token === recomposeToken.current) setNotice(String(error));
-          })
-          .finally(() => {
-            processingRequest.current = false;
-            if (token === recomposeToken.current) {
-              setProcessing(false);
-              setProgress("");
-            }
-          });
-      };
-      recomposeTimer.current = window.setTimeout(runRecompose, 180);
-    }
   }
   function changeOptics(key: "chromaticAberration" | "lensCorrection", enabled: boolean) {
-    const nextPhoto = { ...photo, [key]: enabled, dirty: true };
     patchPhoto({ [key]: enabled, dirty: true });
-    if (!isDesktop() || exportKind !== "linear-rgb" || !photo.rawPath || !photo.processed?.resultId
-      || photo.processed.key !== JSON.stringify(recipeFor(photo, exportKind))) return;
-    refreshProcessed(nextPhoto, exportKind);
   }
   function changeExportKind(kind: "cfa" | "linear-rgb") {
     if (kind === exportKind) return;
     setExportKind(kind);
-    exportKindRef.current = kind;
     if (!photo.processed || photo.dirty || !processedCurrent) return;
     const hasLinearEffects = photo.chromaticAberration || photo.lensCorrection
       || photo.layers.some((layer) => layer.enabled && layer.blend > 0 && layer.sharpen !== "Off" && layer.strength > 0);
@@ -1287,49 +1224,6 @@ function App() {
       patchPhoto({ processed: { ...photo.processed, key: JSON.stringify(recipeFor(photo, kind)) } });
       return;
     }
-    if (isDesktop() && photo.rawPath) refreshProcessed(photo, kind);
-  }
-  function refreshProcessed(nextPhoto: Photo, kind: "cfa" | "linear-rgb") {
-    if (!photo.rawPath || !photo.processed?.resultId) return;
-    if (recomposeTimer.current !== undefined) window.clearTimeout(recomposeTimer.current);
-    const id = photo.id;
-    const path = photo.rawPath;
-    const resultId = photo.processed.resultId;
-    const recipe = recipeFor(nextPhoto, kind);
-    const recipeIdentity = JSON.stringify(recipe);
-    const token = ++recomposeToken.current;
-    const refresh = () => {
-      recomposeTimer.current = undefined;
-      if (processingRequest.current) {
-        recomposeTimer.current = window.setTimeout(refresh, 100);
-        return;
-      }
-      processingRequest.current = true;
-      setProcessing(true);
-      setProgress("Updating preview…");
-      void renderProcessed(path, quality, resultId, recipe, previewDimension)
-        .then((result) => {
-          if (token !== recomposeToken.current || exportKindRef.current !== kind) return;
-          setPhotos((items) => items.map((item) => {
-            if (item.id !== id || JSON.stringify(recipeFor(item, kind)) !== recipeIdentity) return item;
-            return { ...item, dirty: false, processed: {
-              url: `data:image/png;base64,${result.png}`,
-              before: `data:image/png;base64,${result.before ?? item.processed?.before ?? ""}`,
-              key: recipeIdentity, high: quality, resultId,
-              sourceVersion: result.sourceVersion ?? item.processed?.sourceVersion,
-            }};
-          }));
-        })
-        .catch((error) => { if (token === recomposeToken.current) setNotice(String(error)); })
-        .finally(() => {
-          processingRequest.current = false;
-          if (token === recomposeToken.current) {
-            setProcessing(false);
-            setProgress("");
-          }
-        });
-    };
-    recomposeTimer.current = window.setTimeout(refresh, 80);
   }
   async function restorePhotoRecipe(selected: Photo, cancelled = () => false) {
     if (!selected.rawPath || loadedRecipes.current.has(selected.id)
@@ -2077,26 +1971,26 @@ function App() {
                   <span className="separator" />
                    <IconButton
                      label="Zoom out"
-                     onClick={() => { setPixelZoom(false); setZoom((z) => Math.max(0.5, z - 0.25)); }}
+                     onClick={() => changeZoom(Math.max(pixelZoom ? Math.min(1, fitWidth / sourceSize.width) : 0.5, zoom - 0.25))}
                   >
                     <Minus size={17} />
                   </IconButton>
-                   <button className="zoom" onClick={() => { setPixelZoom(false); setZoom(1); }}>
-                     {pixelZoom ? "100%" : zoom === 1 ? "Fit" : `${Math.round(zoom * 100)}%`}
+                   <button className="zoom" onClick={fitImage}>
+                     {!pixelZoom && zoom === 1 ? "Fit" : `${Math.round(frameWidth * zoom / sourceSize.width * 100)}%`}
                    </button>
                    <IconButton
                      label="Zoom in"
-                     onClick={() => { setPixelZoom(false); setZoom((z) => Math.min(3, z + 0.25)); }}
+                     onClick={() => changeZoom(Math.min(3, zoom + 0.25))}
                   >
                     <Plus size={17} />
                   </IconButton>
-                   <IconButton label="Fit image" onClick={() => { setPixelZoom(false); setZoom(1); setPan({ x: 0, y: 0 }); }}>
+                   <IconButton label="Fit image" onClick={fitImage}>
                      <Maximize size={17} />
                    </IconButton>
                    <IconButton
                      label="1:1"
-                     pressed={pixelZoom}
-                      onClick={() => { setPixelZoom(true); setZoom(1); setPan({ x: 0, y: 0 }); }}
+                     pressed={pixelZoom && zoom === 1}
+                     onClick={() => changeZoom(1, true)}
                    >
                      <span className="zoom-one-to-one">1:1</span>
                    </IconButton>
@@ -2114,12 +2008,11 @@ function App() {
                     return;
                   e.preventDefault();
                   e.currentTarget.setPointerCapture(e.pointerId);
-                  panPosition.current = pan;
                   panStart.current = {
                     x: e.clientX,
                     y: e.clientY,
-                    originX: pan.x,
-                    originY: pan.y,
+                    originX: panPosition.current.x,
+                    originY: panPosition.current.y,
                   };
                   setPanning(true);
                 }}
@@ -2132,25 +2025,12 @@ function App() {
                     ));
                 }}
                 onPointerUp={(e) => {
-                  panStart.current = null;
-                  setPanning(false);
-                  flushPanVisual();
-                  setPan(panPosition.current);
+                  finishPan();
                   if (e.currentTarget.hasPointerCapture(e.pointerId))
                     e.currentTarget.releasePointerCapture(e.pointerId);
                 }}
-                onPointerCancel={() => {
-                  panStart.current = null;
-                  setPanning(false);
-                  flushPanVisual();
-                  setPan(panPosition.current);
-                }}
-                onLostPointerCapture={() => {
-                  panStart.current = null;
-                  setPanning(false);
-                  flushPanVisual();
-                  setPan(panPosition.current);
-                }}
+                onPointerCancel={finishPan}
+                onLostPointerCapture={finishPan}
               >
                 <div
                   ref={frame}
@@ -2231,16 +2111,14 @@ function App() {
                   }}
                   style={{
                     "--comparison-split": `${split}%`,
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-                     width: pixelZoom && rawView?.id === photo.id ? rawView.sourceWidth
-                       : pixelZoom ? imageSize.width : Math.min(canvasSize.width, canvasSize.height * imageRatio),
+                    width: frameWidth,
+                    height: frameHeight,
                   } as React.CSSProperties}
                 >
                   <img
                     className="main-photo"
                     draggable={false}
                      onLoad={(e) => {
-                       setImageRatio(e.currentTarget.naturalWidth / e.currentTarget.naturalHeight);
                        setImageSize({ width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight });
                      }}
                      src={displayUrl}
@@ -2366,13 +2244,15 @@ function App() {
                     )}
                   </div>
                 )}
-                {(photo.dirty || (photo.rawPath && !processedCurrent)) &&
-                  !processing && (
+                {pendingChanges && !processing && (
                     <div className="update-pill">
-                      <span className="pending-dot" /> Changes pending
-                      <button onClick={() => void updateProcessing()}>
-                        <RotateCcw size={13} /> Update
-                      </button>
+                      <span className="pending-dot" />
+                      {updatingPreview ? "Updating preview…" : <>
+                        Changes pending
+                        <button onClick={() => void updateProcessing()}>
+                          <RotateCcw size={13} /> Update
+                        </button>
+                      </>}
                     </div>
                   )}
               </div>
@@ -2402,7 +2282,7 @@ function App() {
                       ` · ${Math.round(photo.metadata.focalLengthMm)} mm`}
                   </span>
                 ) : (
-                  <span>Preview only · Zoom is relative to Fit</span>
+                   <span>Preview only</span>
                 )}
                 <div className="photo-info-controls">
                   {photo.rawPath && (
@@ -2939,8 +2819,8 @@ function App() {
             if (saved) setFailedPersistenceKey("");
           });
         }}>Retry save</button>}
-        <span className={`status-state ${photo.dirty ? "pending" : "ready"}`}>
-          {progress || (photo.dirty ? "Changes pending" : "Visual preview ready")}
+        <span className={`status-state ${pendingChanges ? "pending" : "ready"}`}>
+          {progress || (updatingPreview ? "Updating preview…" : pendingChanges ? "Changes pending" : "Visual preview ready")}
         </span>
       </footer>
       {savingPreset && (

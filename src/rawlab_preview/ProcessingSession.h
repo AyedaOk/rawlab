@@ -16,6 +16,7 @@
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonDocument>
 #include <QRect>
 #include <QCryptographicHash>
 #include <QUuid>
@@ -26,18 +27,21 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <vector>
 #ifdef Q_OS_UNIX
 #include <sys/stat.h>
 #endif
 
-// One persistent desktop document. Cached CFA stays in C++, not in JavaScript.
+// Persistent desktop processing state. Cached CFA stays in C++.
 class ProcessingSession
 {
   QString sourceKey_;
   std::shared_ptr<rawlab::raw::RawImage> source_;
+  std::deque<std::pair<QString, std::shared_ptr<rawlab::raw::RawImage>>> sources_;
   std::map<QString, std::shared_ptr<rawlab::raw::RawImage>> cache_;
+  std::set<QString> cheapCache_;
   std::deque<QString> cacheOrder_;
   std::size_t cacheBytes_ = 0;
   std::map<QString, std::shared_ptr<rawlab::image::LinearRawPreview>> previewCache_;
@@ -47,7 +51,6 @@ class ProcessingSession
   {
     QString id;
     QString sourceKey;
-    QString recipeKey;
     std::shared_ptr<rawlab::raw::RawImage> image;
   };
   std::deque<ProcessedEntry> processed_;
@@ -81,58 +84,62 @@ class ProcessingSession
     std::erase(cacheOrder_, key);
     cacheOrder_.push_back(key);
   }
-  void cacheImage(const QString &key, std::shared_ptr<rawlab::raw::RawImage> image)
+  void cacheImage(const QString &key, std::shared_ptr<rawlab::raw::RawImage> image, bool cheap = false)
   {
     constexpr std::size_t maxCacheBytes = 512ULL * 1024ULL * 1024ULL;
     if(const auto existing = cache_.find(key); existing != cache_.end())
       cacheBytes_ -= existing->second->samples().size() * sizeof(float);
     cacheBytes_ += image->samples().size() * sizeof(float);
     cache_[key] = std::move(image);
+    if(cheap) cheapCache_.insert(key); else cheapCache_.erase(key);
     touchCache(key);
-    while(cache_.size() > 1 && (cache_.size() > 3 || cacheBytes_ > maxCacheBytes))
+    while(cache_.size() > 1 && cacheBytes_ > maxCacheBytes)
     {
-      const QString oldest = cacheOrder_.front();
-      cacheOrder_.pop_front();
+      const auto evictable = [&](const QString &candidate) {
+        return candidate != key && cache_.at(candidate).use_count() == 1;
+      };
+      auto victim = std::find_if(cacheOrder_.begin(), cacheOrder_.end(), [&](const auto &candidate) {
+        return cheapCache_.contains(candidate) && evictable(candidate);
+      });
+      if(victim == cacheOrder_.end()) victim = std::find_if(cacheOrder_.begin(), cacheOrder_.end(), evictable);
+      // ponytail: in-use CFA may temporarily exceed the budget; trim on the next insertion.
+      if(victim == cacheOrder_.end()) break;
+      const QString oldest = *victim;
+      cacheOrder_.erase(victim);
       const auto entry = cache_.find(oldest);
       if(entry == cache_.end()) continue;
       cacheBytes_ -= entry->second->samples().size() * sizeof(float);
       cache_.erase(entry);
+      cheapCache_.erase(oldest);
     }
   }
-  std::shared_ptr<rawlab::image::LinearRawPreview> previewEndpoint(
-    const QString &identity, const rawlab::raw::RawImage &image, const int size,
-    const rawlab::image::PreviewQuality quality, const QRect &region = {},
-    const rawlab::image::OpticsOptions &optics = {})
+  static std::shared_ptr<rawlab::raw::RawImage> crop(
+    const std::shared_ptr<rawlab::raw::RawImage> &image, const QRect &region)
   {
-    const QString key = identity + ':' + QString::number(size) + ':'
-      + (quality == rawlab::image::PreviewQuality::High ? QStringLiteral("high") : QStringLiteral("fast"))
-      + ':' + QString::number(region.x()) + ':' + QString::number(region.y())
-      + ':' + QString::number(region.width()) + ':' + QString::number(region.height())
-      + ':' + QString::number(optics.chromaticAberration) + ':' + QString::number(optics.lensCorrection);
-    if(const auto hit = previewCache_.find(key); hit != previewCache_.end())
+    if(region.isNull()) return image;
+    if(region.width() <= 0 || region.height() <= 0
+       || !QRect{0, 0, image->width(), image->height()}.contains(region))
+      throw std::invalid_argument{"Invalid CFA region"};
+    auto metadata = image->metadata();
+    for(int y = 0; y < 2; ++y) for(int x = 0; x < 2; ++x)
     {
-      std::erase(previewCacheOrder_, key);
-      previewCacheOrder_.push_back(key);
-      return hit->second;
+      metadata.cfa.cells[y][x] = rawlab::raw::colorAt(image->metadata().cfa, x + region.x(), y + region.y());
+      metadata.blackLevel[y * 2 + x] = image->metadata().blackLevel[
+        rawlab::raw::siteIndex(x + region.x(), y + region.y())];
     }
-    auto preview = std::make_shared<rawlab::image::LinearRawPreview>(
-      region.isNull() ? rawlab::image::renderLinearRawPreview(image, size, quality)
-        : rawlab::image::renderLinearRawPreviewRegion(image, region.x(), region.y(), region.width(), region.height()));
-    if(!region.isNull() && (optics.chromaticAberration || optics.lensCorrection))
-    {
-      auto full = rawlab::image::renderLinearRawPreview(image, std::max(image.width(), image.height()),
-                                                       rawlab::image::PreviewQuality::Fast);
-      const auto corrected = rawlab::image::applyOpticsCorrections(
-        {full.width, full.height, std::move(full.pixels)}, image.metadata(), optics);
-      for(int y = 0; y < region.height(); ++y)
-        std::copy_n(corrected.pixels.begin() + ((y + region.y()) * corrected.width + region.x()) * 3,
-                    region.width() * 3, preview->pixels.begin() + y * region.width() * 3);
-    }
+    metadata.activeArea = {0, 0, region.width(), region.height()};
+    std::vector<float> samples(static_cast<std::size_t>(region.width()) * region.height());
+    for(int y = 0; y < region.height(); ++y)
+      std::copy_n(image->samples().begin() + static_cast<std::size_t>(region.y() + y) * image->width() + region.x(),
+        region.width(), samples.begin() + static_cast<std::size_t>(y) * region.width());
+    return std::make_shared<rawlab::raw::RawImage>(region.width(), region.height(), std::move(samples), std::move(metadata));
+  }
+  void cachePreview(const QString &key, const std::shared_ptr<rawlab::image::LinearRawPreview> &preview)
+  {
     previewCacheBytes_ += preview->pixels.size() * sizeof(float);
     previewCache_[key] = preview;
     previewCacheOrder_.push_back(key);
     constexpr std::size_t maxPreviewCacheBytes = 512ULL * 1024ULL * 1024ULL;
-    // Keep the original/denoised/sharpened working set, even for a large detail tile.
     while(previewCache_.size() > 3 && previewCacheBytes_ > maxPreviewCacheBytes)
     {
       const QString oldest = previewCacheOrder_.front();
@@ -142,6 +149,22 @@ class ProcessingSession
       previewCacheBytes_ -= entry->second->pixels.size() * sizeof(float);
       previewCache_.erase(entry);
     }
+  }
+  std::shared_ptr<rawlab::image::LinearRawPreview> previewEndpoint(
+    const QString &identity, const rawlab::raw::RawImage &image, const int size,
+    const rawlab::image::PreviewQuality quality)
+  {
+    const QString key = identity + ':' + QString::number(size) + ':'
+      + (quality == rawlab::image::PreviewQuality::High ? QStringLiteral("high") : QStringLiteral("fast"));
+    if(const auto hit = previewCache_.find(key); hit != previewCache_.end())
+    {
+      std::erase(previewCacheOrder_, key);
+      previewCacheOrder_.push_back(key);
+      return hit->second;
+    }
+    auto preview = std::make_shared<rawlab::image::LinearRawPreview>(
+      rawlab::image::renderLinearRawPreview(image, size, quality));
+    cachePreview(key, preview);
     return preview;
   }
 public:
@@ -151,15 +174,21 @@ public:
     const auto key = fingerprint(path);
     if(key != sourceKey_ || !source_)
     {
-      cache_.clear();
-      cacheOrder_.clear();
-      cacheBytes_ = 0;
-      previewCache_.clear();
-      previewCacheOrder_.clear();
-      previewCacheBytes_ = 0;
       segmenter_.reset();
-      source_ = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::LibRawDecoder{}.decodeRawImage(path.toStdString()));
+      const auto hit = std::find_if(sources_.begin(), sources_.end(), [&](const auto &entry) { return entry.first == key; });
+      auto decoded = hit == sources_.end()
+        ? std::make_shared<rawlab::raw::RawImage>(rawlab::raw::LibRawDecoder{}.decodeRawImage(path.toStdString())) : hit->second;
+      if(hit != sources_.end()) sources_.erase(hit);
+      source_ = std::move(decoded);
       sourceKey_ = key;
+      sources_.emplace_back(key, source_);
+      std::size_t bytes = 0;
+      for(const auto &entry : sources_) bytes += entry.second->samples().size() * sizeof(float);
+      while(sources_.size() > 1 && (sources_.size() > 2 || bytes > 256ULL * 1024ULL * 1024ULL))
+      {
+        bytes -= sources_.front().second->samples().size() * sizeof(float);
+        sources_.pop_front();
+      }
     }
     return source_;
   }
@@ -171,7 +200,7 @@ public:
       (capturedSourceKey + ':' + recipeKey + ':' + QUuid::createUuid().toString(QUuid::Id128)).toUtf8(),
       QCryptographicHash::Sha256).toHex());
     std::erase_if(processed_, [&id](const auto &entry) { return entry.id == id; });
-    processed_.push_back({id, capturedSourceKey, recipeKey, image});
+    processed_.push_back({id, capturedSourceKey, image});
     while(processed_.size() > 2) processed_.pop_front();
     return id;
   }
@@ -187,34 +216,16 @@ public:
     processed_.push_back(entry);
     return entry.image;
   }
-  bool processedMatches(const QString &path, const QString &resultId, const QString &recipeKey) const
-  {
-    const QString sourceKey = fingerprint(path);
-    const auto match = std::find_if(processed_.rbegin(), processed_.rend(), [&](const auto &entry) {
-      return entry.sourceKey == sourceKey && entry.id == resultId;
-    });
-    return match != processed_.rend() && match->recipeKey == recipeKey;
-  }
-  void replaceProcessed(const QString &path, const QString &resultId, const QString &recipeKey,
-                        const std::shared_ptr<rawlab::raw::RawImage> &image)
-  {
-    const QString sourceKey = fingerprint(path);
-    const auto match = std::find_if(processed_.begin(), processed_.end(), [&](const auto &entry) {
-      return entry.sourceKey == sourceKey && entry.id == resultId;
-    });
-    if(match == processed_.end()) throw std::runtime_error{"Processed result is stale or was evicted"};
-    match->recipeKey = recipeKey;
-    match->image = image;
-  }
   rawlab::image::LinearRawPreview preview(const QString &path, const QJsonObject &recipe,
                                           const QString &resultId,
                                           const rawlab::raw::RawImage &fallback, const int size,
-                                           const rawlab::image::PreviewQuality quality, const QRect &region = {},
-                                           const rawlab::image::OpticsOptions &optics = {})
+                                          const rawlab::image::PreviewQuality quality,
+                                          const std::function<void()> &checkCancelled = {})
   {
+    if(checkCancelled) checkCancelled();
     const auto original = source(path);
     const auto fallbackPreview = [&] {
-      return *previewEndpoint(QStringLiteral("result:") + resultId, fallback, size, quality, region, optics);
+      return *previewEndpoint(QStringLiteral("result:") + resultId, fallback, size, quality);
     };
     const auto layers = recipe["layers"].toArray();
     if(layers.size() > 1)
@@ -222,12 +233,8 @@ public:
       QJsonObject globalRecipe = recipe;
       globalRecipe["layers"] = QJsonArray{layers[0]};
       auto result = preview(path, globalRecipe, resultId + QStringLiteral(":global"),
-                             fallback, size, quality, region);
-      const int maskWidth = region.isNull() ? result.width : result.geometry.previewWidth;
-      const int maskHeight = region.isNull() ? result.height : result.geometry.previewHeight;
-      const float maskScale = region.isNull() ? 1.0f : std::min(1.0f, 1024.0f / std::max(maskWidth, maskHeight));
-      const int mw = std::max(1, static_cast<int>(maskWidth * maskScale));
-      const int mh = std::max(1, static_cast<int>(maskHeight * maskScale));
+                             fallback, size, quality, checkCancelled);
+      const int mw = result.width, mh = result.height;
       const float edge = static_cast<float>(std::min(mw, mh));
       for(int i = layers.size() - 1; i > 0; --i)
       {
@@ -243,12 +250,11 @@ public:
         QJsonObject localRecipe = recipe;
         localRecipe["layers"] = QJsonArray{layer};
         const auto local = preview(path, localRecipe,
-          resultId + QStringLiteral(":local:") + QString::number(i), fallback, size, quality, region);
+          resultId + QStringLiteral(":local:") + QString::number(i), fallback, size, quality, checkCancelled);
         for(int y = 0; y < result.height; ++y)
           for(int x = 0; x < result.width; ++x)
           {
-            float amount = region.isNull() ? mask.sampleNearest(x, y)
-              : mask.sampleBilinearMapped(x + region.x(), y + region.y(), maskWidth, maskHeight);
+            float amount = mask.sampleNearest(x, y);
             if(layer["inverted"].toBool()) amount = 1.0f - amount;
             amount *= layerBlend;
             const std::size_t pixel = (static_cast<std::size_t>(y) * result.width + x) * 3U;
@@ -262,7 +268,7 @@ public:
     if(layers.isEmpty()) return fallbackPreview();
     const auto global = layers[0].toObject();
     if(!global["enabled"].toBool(true))
-      return *previewEndpoint(QStringLiteral("original:") + sourceKey_, *original, size, quality, region, optics);
+      return *previewEndpoint(QStringLiteral("original:") + sourceKey_, *original, size, quality);
 
     const auto settings = ApplicationSettingsStore{}.load();
     const auto model = ApplicationSettingsStore::modelById(settings, global["modelId"].toString());
@@ -270,16 +276,19 @@ public:
       throw std::runtime_error{"Selected denoise model is missing; press Update after configuring it"};
     const QString execution = settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId)
       + ':' + settings.onnxRuntimeLibrary;
-    const QString denoiseKey = fingerprint(model.path) + ':' + model.adapter + ':' + execution;
+    const QString denoiseKey = sourceKey_ + ':' + fingerprint(model.path) + ':' + model.adapter + ':' + execution;
     const auto denoised = cache_.find(denoiseKey);
     if(denoised == cache_.end())
       throw std::runtime_error{"Denoising cache expired; press Update to process again"};
 
     const auto denoisedImage = denoised->second;
+    touchCache(denoiseKey);
     const auto originalPreview = previewEndpoint(
-      QStringLiteral("original:") + sourceKey_, *original, size, quality, region, optics);
+      QStringLiteral("original:") + sourceKey_, *original, size, quality);
+    if(checkCancelled) checkCancelled();
     const auto denoisedPreview = previewEndpoint(
-      QStringLiteral("denoised:") + denoiseKey, *denoisedImage, size, quality, region, optics);
+      QStringLiteral("denoised:") + denoiseKey, *denoisedImage, size, quality);
+    if(checkCancelled) checkCancelled();
     const QString mode = recipe["outputKind"].toString("cfa") == "linear-rgb"
       ? global["sharpen"].toString("Off") : QStringLiteral("Off");
     std::shared_ptr<rawlab::image::LinearRawPreview> sharpenedPreview;
@@ -296,7 +305,8 @@ public:
         + (sharpenPath.isEmpty() ? QStringLiteral("normal") : fingerprint(sharpenPath));
       if(mode == "Normal" && !cache_.contains(sharpenKey))
         cacheImage(sharpenKey, std::make_shared<rawlab::raw::RawImage>(
-          rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*denoisedImage, 1.0f)));
+          rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*denoisedImage, 1.0f,
+            [&](int, int) { if(checkCancelled) checkCancelled(); })), true);
       if(mode == "AI" && !cache_.contains(sharpenKey))
       {
         if(sharpenPath.isEmpty() || !QFileInfo{sharpenPath}.isFile())
@@ -305,13 +315,16 @@ public:
           settings.onnxDeviceId, settings.onnxRuntimeLibrary.toStdString()}};
         cacheImage(sharpenKey, std::make_shared<rawlab::raw::RawImage>(
           rawlab::ai::RawForgeAdapter{}.run(*denoisedImage, session,
-            original->metadata().iso.value_or(100.0), false, {})));
+            original->metadata().iso.value_or(100.0), false,
+            [&](int, int) { if(checkCancelled) checkCancelled(); })));
       }
       const auto sharpened = cache_.find(sharpenKey);
       if(sharpened == cache_.end())
         throw std::runtime_error{"Sharpening cache expired; press Update to process again"};
+      touchCache(sharpenKey);
       sharpenedPreview = previewEndpoint(
-        QStringLiteral("sharpened:") + sharpenKey, *sharpened->second, size, quality, region, optics);
+        QStringLiteral("sharpened:") + sharpenKey, *sharpened->second, size, quality);
+      if(checkCancelled) checkCancelled();
     }
 
     rawlab::image::LinearRawPreview result = *denoisedPreview;
@@ -334,6 +347,72 @@ public:
       result.pixels[index] = originalPreview->pixels[index]
         + (value - originalPreview->pixels[index]) * blend;
     }
+    return result;
+  }
+  rawlab::image::LinearRawPreview detail(const QString &path, const QJsonObject &recipe,
+    const QRect &region, const rawlab::image::OpticsOptions &optics = {},
+    const std::function<void()> &checkCancelled = {})
+  {
+    if(checkCancelled) checkCancelled();
+    const auto original = source(path);
+    const auto geometry = rawlab::image::rawPreviewGeometry(*original, std::max(original->width(), original->height()));
+    const int fullWidth = geometry.previewWidth, fullHeight = geometry.previewHeight;
+    if(region.width() <= 0 || region.height() <= 0
+       || static_cast<qint64>(region.width()) * region.height() > 16 * 1024 * 1024
+       || !QRect{0, 0, fullWidth, fullHeight}.contains(region))
+      throw std::invalid_argument{"Invalid detail region"};
+    const QString identity = sourceKey_ + ':' + QString::fromLatin1(QCryptographicHash::hash(
+      QJsonDocument{recipe}.toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex())
+      + ':' + QString::number(optics.chromaticAberration) + ':' + QString::number(optics.lensCorrection);
+    const auto settings = ApplicationSettingsStore{}.load();
+    // Include model versions and execution settings so replacing a model cannot reuse old detail.
+    QString execution = settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId) + ':' + settings.onnxRuntimeLibrary;
+    for(const auto &model : settings.denoiseModels) execution += ':' + model.id + ':' + model.adapter + ':' + fingerprint(model.path);
+    for(const auto &model : settings.sharpenModels) execution += ':' + model.id + ':' + fingerprint(model.path);
+    rawlab::image::LinearRawPreview result{region.width(), region.height(),
+      std::vector<float>(static_cast<std::size_t>(region.width()) * region.height() * 3), geometry};
+    std::map<int, rawlab::pipeline::Mask> masks;
+    const auto renderSource = [&](int x, int y, int width, int height) {
+      if(checkCancelled) checkCancelled();
+      const auto p0 = geometry.previewToRaw(x, y), p1 = geometry.previewToRaw(x + width, y + height);
+      const QRect active{geometry.rawArea.left, geometry.rawArea.top, geometry.rawArea.width, geometry.rawArea.height};
+      const int left = std::lround(std::min(p0.first, p1.first)), top = std::lround(std::min(p0.second, p1.second));
+      const int right = std::lround(std::max(p0.first, p1.first)), bottom = std::lround(std::max(p0.second, p1.second));
+      const QRect rawRegion = QRect{left - 2, top - 2, right - left + 4, bottom - top + 4}.intersected(active);
+      const auto composed = process(path, recipe, [&](int, int) { if(checkCancelled) checkCancelled(); },
+        &settings, false, [&](const QString &, int, int) { if(checkCancelled) checkCancelled(); }, rawRegion, &masks);
+      const auto c0 = geometry.rawToPreview(rawRegion.x(), rawRegion.y());
+      const auto c1 = geometry.rawToPreview(rawRegion.x() + rawRegion.width(), rawRegion.y() + rawRegion.height());
+      auto linear = rawlab::image::renderLinearRawPreviewRegion(*composed,
+        x - std::lround(std::min(c0.first, c1.first)), y - std::lround(std::min(c0.second, c1.second)), width, height);
+      return rawlab::image::LinearRgbImage{linear.width, linear.height, std::move(linear.pixels)};
+    };
+    constexpr int tileSize = 256;
+    for(int y = region.y() / tileSize * tileSize; y <= region.bottom(); y += tileSize)
+      for(int x = region.x() / tileSize * tileSize; x <= region.right(); x += tileSize)
+      {
+        if(checkCancelled) checkCancelled();
+        const QRect tile{x, y, std::min(tileSize, fullWidth - x), std::min(tileSize, fullHeight - y)};
+        const QString key = identity + execution + QStringLiteral(":detail:%1:%2").arg(x).arg(y);
+        auto found = previewCache_.find(key);
+        std::shared_ptr<rawlab::image::LinearRawPreview> pixels;
+        if(found != previewCache_.end())
+        {
+          pixels = found->second;
+          std::erase(previewCacheOrder_, key); previewCacheOrder_.push_back(key);
+        }
+        else
+        {
+          auto rgb = rawlab::image::renderOpticsRegion(fullWidth, fullHeight, x, y, tile.width(), tile.height(),
+            original->metadata(), optics, renderSource, checkCancelled);
+          pixels = std::make_shared<rawlab::image::LinearRawPreview>(rgb.width, rgb.height, std::move(rgb.pixels), geometry);
+          cachePreview(key, pixels);
+        }
+        const QRect overlap = tile.intersected(region);
+        for(int row = overlap.y(); row <= overlap.bottom(); ++row)
+          std::copy_n(pixels->pixels.begin() + ((row - y) * tile.width() + overlap.x() - x) * 3,
+            overlap.width() * 3, result.pixels.begin() + ((row - region.y()) * region.width() + overlap.x() - region.x()) * 3);
+      }
     return result;
   }
   static QJsonObject models()
@@ -368,7 +447,9 @@ public:
                                                   const rawlab::pipeline::RawProcessingPipeline::ProgressCallback &progress,
                                                   const ApplicationSettingsData *settingsSnapshot = nullptr,
                                                   const bool allowInference = true,
-                                                  const std::function<void(const QString &, int, int)> &stageProgress = {})
+                                                   const std::function<void(const QString &, int, int)> &stageProgress = {},
+                                                   const QRect &rawRegion = {},
+                                                   std::map<int, rawlab::pipeline::Mask> *maskCache = nullptr)
   {
     const auto original = source(path);
     const auto layers = recipe["layers"].toArray();
@@ -376,32 +457,38 @@ public:
     if(layers.size() > 1)
     {
       QJsonObject globalRecipe = recipe; globalRecipe["layers"] = QJsonArray{layers[0]};
-       auto composed = process(path, globalRecipe, progress, settingsSnapshot, allowInference, stageProgress);
-      const auto preview = rawlab::image::renderRawPreview(*original, 1024);
-      const int w = preview.image.width, h = preview.image.height;
+       auto composed = process(path, globalRecipe, progress, settingsSnapshot, allowInference, stageProgress, rawRegion);
+      auto geometry = rawlab::image::rawPreviewGeometry(*original, 1024);
+      const int w = geometry.previewWidth, h = geometry.previewHeight;
+      if(!rawRegion.isNull()) { geometry.rawArea.left -= rawRegion.x(); geometry.rawArea.top -= rawRegion.y(); }
       const float edge = std::min(w, h);
+      std::map<int, rawlab::pipeline::Mask> localMasks;
+      if(!maskCache) maskCache = &localMasks;
       // Qt displays highest-priority local masks first; compose bottom to top.
       for(int i = layers.size() - 1; i > 0; --i)
       {
         auto layer = layers[i].toObject(); if(!layer["enabled"].toBool(true)) continue;
         const float blend = static_cast<float>(std::clamp(layer["blend"].toDouble(100),0.0,100.0)/100);
-        auto mask = desktopMask(layer,w,h);
-        mask=rawlab::pipeline::blurMask(rawlab::pipeline::featherMask(mask,static_cast<float>(layer["feather"].toDouble()/1000)*edge),static_cast<float>(layer["blur"].toDouble()/1000)*edge);
+        if(!maskCache->contains(i))
+          maskCache->emplace(i, rawlab::pipeline::blurMask(rawlab::pipeline::featherMask(desktopMask(layer,w,h),
+            static_cast<float>(layer["feather"].toDouble()/1000)*edge),static_cast<float>(layer["blur"].toDouble()/1000)*edge));
+        const auto &mask = maskCache->at(i);
         layer["blend"]=100;
         auto localRecipe=recipe; localRecipe["layers"]=QJsonArray{layer};
-         const auto local=process(path,localRecipe,progress,settingsSnapshot,allowInference,stageProgress);
-        composed=std::make_shared<rawlab::raw::RawImage>(rawlab::pipeline::blendWithPreviewMask(*composed,*local,mask,preview.geometry,blend,layer["inverted"].toBool()));
+         const auto local=process(path,localRecipe,progress,settingsSnapshot,allowInference,stageProgress,rawRegion);
+        composed=std::make_shared<rawlab::raw::RawImage>(rawlab::pipeline::blendWithPreviewMask(*composed,*local,mask,geometry,blend,layer["inverted"].toBool()));
       }
       return composed;
     }
     const auto global = layers[0].toObject();
-    if(!global["enabled"].toBool(true)) return original;
+    const auto originalRegion = crop(original, rawRegion);
+    if(!global["enabled"].toBool(true)) return originalRegion;
     const auto settings = settingsSnapshot ? *settingsSnapshot : ApplicationSettingsStore{}.load();
     const QString id = global["modelId"].toString();
     const auto model = ApplicationSettingsStore::modelById(settings, id);
     if(model.path.isEmpty() || !QFileInfo{model.path}.isFile()) throw std::runtime_error{"Selected denoise model is missing. Configure or install it in RawLab Preferences."};
     const QString execution = settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId) + ':' + settings.onnxRuntimeLibrary;
-    const QString key = fingerprint(model.path) + ':' + model.adapter + ':' + execution;
+    const QString key = sourceKey_ + ':' + fingerprint(model.path) + ':' + model.adapter + ':' + execution;
      if(!cache_.contains(key))
      {
        if(!allowInference) throw std::runtime_error{"Preview cache expired; press Update to process again"};
@@ -414,7 +501,8 @@ public:
       cacheImage(key, std::make_shared<rawlab::raw::RawImage>(std::move(denoised)));
     }
     else touchCache(key);
-    auto processed = cache_.at(key);
+    const auto denoised = cache_.at(key);
+    auto processed = crop(denoised, rawRegion);
      const QString mode = recipe["outputKind"].toString("cfa") == "linear-rgb"
        ? global["sharpen"].toString("Off") : QStringLiteral("Off");
     const auto unit = [](QJsonValue v, double fallback) {
@@ -436,23 +524,23 @@ public:
       const QString sharpenKey = key + ':' + mode + ':' + (sharpenPath.isEmpty() ? "normal" : fingerprint(sharpenPath));
        if(!cache_.contains(sharpenKey))
        {
-          if(!allowInference && mode != "Normal") throw std::runtime_error{"Sharpening cache expired; press Update to process again"};
+          if(!allowInference && rawRegion.isNull() && mode != "Normal") throw std::runtime_error{"Sharpening cache expired; press Update to process again"};
         rawlab::raw::RawImage sharpened;
-         if(mode == "Normal") sharpened = rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*processed, 1.0f,
+         if(mode == "Normal") sharpened = rawlab::pipeline::RawProcessingPipeline{}.runNormalSharpen(*denoised, 1.0f,
               [&](int done, int total) { if(stageProgress) stageProgress("Sharpening", done, total); else if(progress) progress(done, total); });
         else
         {
           rawlab::ai::OnnxSession session{sharpenPath.toStdString(), {settings.onnxProvider.toStdString(), settings.onnxDeviceId, settings.onnxRuntimeLibrary.toStdString()}};
-           sharpened = rawlab::ai::RawForgeAdapter{}.run(*processed, session, original->metadata().iso.value_or(100.0), false,
+           sharpened = rawlab::ai::RawForgeAdapter{}.run(*denoised, session, original->metadata().iso.value_or(100.0), false,
               [&](int done, int total) { if(stageProgress) stageProgress("Sharpening", done, total); else if(progress) progress(done, total); });
         }
-        cacheImage(sharpenKey, std::make_shared<rawlab::raw::RawImage>(std::move(sharpened)));
+        cacheImage(sharpenKey, std::make_shared<rawlab::raw::RawImage>(std::move(sharpened)), mode == "Normal");
       }
       else touchCache(sharpenKey);
-      processed = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*processed, *cache_.at(sharpenKey), unit(global["strength"], 30)));
+      processed = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*processed, *crop(cache_.at(sharpenKey), rawRegion), unit(global["strength"], 30)));
     }
      if(stageProgress) stageProgress("Composing preview", 1, 1);
-     if(recipe["highlights"].toBool(true)) processed = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::preserveClippedHighlights(*original, *processed));
-    return std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*original, *processed, unit(global["blend"], 100)));
+     if(recipe["highlights"].toBool(true)) processed = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::preserveClippedHighlights(*originalRegion, *processed));
+    return std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*originalRegion, *processed, unit(global["blend"], 100)));
   }
 };

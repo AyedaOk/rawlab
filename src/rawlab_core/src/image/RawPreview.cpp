@@ -296,16 +296,9 @@ std::pair<float, float> PreviewGeometry::previewToRaw(const float previewX, cons
   };
 }
 
-LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, const int maxDimension,
-                                        const PreviewQuality quality)
+PreviewGeometry rawPreviewGeometry(const raw::RawImage &source, const int maxDimension)
 {
   if(maxDimension <= 0) throw std::invalid_argument{"Preview maximum dimension must be positive"};
-  if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
-  colorIndex(raw::colorAt(source.metadata().cfa, 0, 0));
-  colorIndex(raw::colorAt(source.metadata().cfa, 1, 0));
-  colorIndex(raw::colorAt(source.metadata().cfa, 0, 1));
-  colorIndex(raw::colorAt(source.metadata().cfa, 1, 1));
-
   const raw::ActiveArea area = boundedActiveArea(source);
   const bool rotated = source.metadata().flip == 5 || source.metadata().flip == 6;
   const int orientedWidth = rotated ? area.height : area.width;
@@ -314,7 +307,21 @@ LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, const int m
                                       / static_cast<float>(std::max(orientedWidth, orientedHeight)));
   const int width = std::max(1, static_cast<int>(std::lround(orientedWidth * scale)));
   const int height = std::max(1, static_cast<int>(std::lround(orientedHeight * scale)));
-  const PreviewGeometry geometry{area, width, height, source.metadata().flip};
+  return {area, width, height, source.metadata().flip};
+}
+
+LinearRawPreview renderLinearRawPreview(const raw::RawImage &source, const int maxDimension,
+                                        const PreviewQuality quality)
+{
+  if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
+  colorIndex(raw::colorAt(source.metadata().cfa, 0, 0));
+  colorIndex(raw::colorAt(source.metadata().cfa, 1, 0));
+  colorIndex(raw::colorAt(source.metadata().cfa, 0, 1));
+  colorIndex(raw::colorAt(source.metadata().cfa, 1, 1));
+  const auto geometry = rawPreviewGeometry(source, maxDimension);
+  const auto &area = geometry.rawArea;
+  const int width = geometry.previewWidth, height = geometry.previewHeight;
+  const float scale = std::min(1.0f, static_cast<float>(maxDimension) / std::max(area.width, area.height));
   // As in darktable's preview pipe, full demosaicing cannot add visible detail
   // once one output pixel spans at least a 2x2 Bayer cell.
   const bool fullDemosaic = quality == PreviewQuality::High && scale > 0.5f;
@@ -449,37 +456,42 @@ LinearRawPreview renderLinearRawPreviewRegion(const raw::RawImage &source, const
     throw std::invalid_argument{"Invalid source preview region"};
 
   const PreviewGeometry geometry{area, orientedWidth, orientedHeight, source.metadata().flip};
-  std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(width) * height);
-  parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
+  // Include the display-sharpening halo so adjacent viewport tiles have no seams.
+  const int left = std::max(0, x - 1), top = std::max(0, y - 1);
+  const int linearWidth = std::min(orientedWidth, x + width + 1) - left;
+  const int linearHeight = std::min(orientedHeight, y + height + 1) - top;
+  std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(linearWidth) * linearHeight);
+  parallelRows(linearHeight, linear.size(), [&](const int begin, const int end, int) {
     for(int row = begin; row < end; ++row)
-      for(int column = 0; column < width; ++column)
+      for(int column = 0; column < linearWidth; ++column)
       {
         const auto [rawXf, rawYf] = geometry.previewToRaw(
-          static_cast<float>(x + column) + 0.5f, static_cast<float>(y + row) + 0.5f);
+          static_cast<float>(left + column) + 0.5f, static_cast<float>(top + row) + 0.5f);
         const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
         const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
-        linear[static_cast<std::size_t>(row) * width + column] = cameraToSrgb(
+        linear[static_cast<std::size_t>(row) * linearWidth + column] = cameraToSrgb(
           source.metadata(), demosaicBilinear(source, area, rawX, rawY), false);
       }
   });
   LinearRawPreview image;
   image.width = width;
   image.height = height;
-  image.pixels.resize(linear.size() * 3);
+  image.pixels.resize(static_cast<std::size_t>(width) * height * 3);
   parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
     for(int row = begin; row < end; ++row)
       for(int column = 0; column < width; ++column)
       {
         const std::size_t index = static_cast<std::size_t>(row) * width + column;
-        auto rgb = linear[index];
-        if(column > 0 && row > 0 && column + 1 < width && row + 1 < height)
+        const int lx = x + column - left, ly = y + row - top;
+        auto rgb = linear[static_cast<std::size_t>(ly) * linearWidth + lx];
+        if(lx > 0 && ly > 0 && lx + 1 < linearWidth && ly + 1 < linearHeight)
         {
-          const auto luma = [&linear, width](const int px, const int py) {
-            const auto &pixel = linear[static_cast<std::size_t>(py) * width + px];
+          const auto luma = [&linear, linearWidth](const int px, const int py) {
+            const auto &pixel = linear[static_cast<std::size_t>(py) * linearWidth + px];
             return 0.2126f * pixel[0] + 0.7152f * pixel[1] + 0.0722f * pixel[2];
           };
-          const float detail = luma(column, row) - (luma(column - 1, row) + luma(column + 1, row)
-            + luma(column, row - 1) + luma(column, row + 1)) * 0.25f;
+          const float detail = luma(lx, ly) - (luma(lx - 1, ly) + luma(lx + 1, ly)
+            + luma(lx, ly - 1) + luma(lx, ly + 1)) * 0.25f;
           for(float &channel : rgb) channel = std::max(0.0f, channel + 0.04f * detail);
         }
         image.pixels[index * 3] = rgb[0];

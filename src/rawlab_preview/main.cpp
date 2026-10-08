@@ -16,9 +16,7 @@
 #include <QJsonObject>
 #include <QTextStream>
 #include <cmath>
-#include <deque>
 #include <iostream>
-#include <map>
 
 // Private desktop bridge protocol v1. stdout is one JSON response; diagnostics
 // go to stderr. No output paths are accepted and source files are never modified.
@@ -88,8 +86,9 @@ static rawlab::dng::DngPreviews dngPreviews(const rawlab::raw::RawImage &image,
 }
 
 static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QString &quality,
-                           const rawlab::image::OpticsOptions &corrections = {},
-                           std::optional<rawlab::image::LinearRawPreview> linearPreview = std::nullopt)
+                            const rawlab::image::OpticsOptions &corrections = {},
+                            std::optional<rawlab::image::LinearRawPreview> linearPreview = std::nullopt,
+                            const std::function<void()> &checkCancelled = {})
 {
     if(size < 128 || size > 4096 || (quality != "fast" && quality != "high"))
       throw std::runtime_error{"Invalid preview size or quality"};
@@ -116,6 +115,7 @@ static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QS
       geometry.previewWidth = width; geometry.previewHeight = height; geometry.flip = image.metadata().flip;
     }
     else display = QImage{preview.image.pixels.data(), width, height, width * 3, QImage::Format_RGB888};
+    if(checkCancelled) checkCancelled();
     QByteArray encoded;
     QBuffer buffer{&encoded};
     if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
@@ -151,73 +151,6 @@ static QString processingRecipeKey(QJsonObject recipe)
   recipe.remove("chromaticAberration");
   recipe.remove("lensCorrection");
   return QString::fromUtf8(QJsonDocument{recipe}.toJson(QJsonDocument::Compact));
-}
-
-static QJsonObject renderRegion(const rawlab::raw::RawImage &image, const int x, const int y,
-                                 const int width, const int height,
-                                 const rawlab::image::OpticsOptions &corrections = {},
-                                 const QString &cacheKey = {})
-{
-  if(corrections.chromaticAberration || corrections.lensCorrection)
-  {
-    static std::map<QString, QImage> cache;
-    static std::deque<QString> order;
-    static std::size_t cacheBytes = 0;
-    QImage full;
-    if(!cacheKey.isEmpty())
-    {
-      if(const auto hit = cache.find(cacheKey); hit != cache.end())
-      {
-        full = hit->second;
-        std::erase(order, cacheKey);
-        order.push_back(cacheKey);
-      }
-    }
-    if(full.isNull())
-    {
-      full = correctedDisplay(image, corrections, std::max(image.width(), image.height()),
-                              rawlab::image::PreviewQuality::Fast);
-      if(!cacheKey.isEmpty())
-      {
-        const std::size_t cost = full.sizeInBytes();
-        cache[cacheKey] = full;
-        order.push_back(cacheKey);
-        cacheBytes += cost;
-        constexpr std::size_t maxBytes = 256ULL * 1024ULL * 1024ULL;
-        while(order.size() > 1 && (order.size() > 3 || cacheBytes > maxBytes))
-        {
-          const QString oldest = order.front();
-          order.pop_front();
-          const auto entry = cache.find(oldest);
-          if(entry == cache.end()) continue;
-          cacheBytes -= entry->second.sizeInBytes();
-          cache.erase(entry);
-        }
-      }
-    }
-    if(x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > full.width() || y + height > full.height())
-      throw std::invalid_argument{"Invalid corrected preview region"};
-    const QImage display = full.copy(x, y, width, height);
-    QByteArray encoded;
-    QBuffer buffer{&encoded};
-    if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
-      throw std::runtime_error{"Could not encode corrected preview region"};
-    return {{"version", 1}, {"x", x}, {"y", y}, {"width", width}, {"height", height},
-      {"sourceWidth", full.width()}, {"sourceHeight", full.height()},
-      {"png", QString::fromLatin1(encoded.toBase64())}};
-  }
-  const auto preview = rawlab::image::renderRawPreviewRegion(image, x, y, width, height);
-  const auto &rgb = preview.image;
-  QImage display{rgb.pixels.data(), rgb.width, rgb.height, rgb.width * 3, QImage::Format_RGB888};
-  QByteArray encoded;
-  QBuffer buffer{&encoded};
-  if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
-    throw std::runtime_error{"Could not encode source preview region"};
-  const bool rotated = preview.geometry.flip == 5 || preview.geometry.flip == 6;
-  return {{"version", 1}, {"x", x}, {"y", y}, {"width", width}, {"height", height},
-    {"sourceWidth", rotated ? preview.geometry.rawArea.height : preview.geometry.rawArea.width},
-    {"sourceHeight", rotated ? preview.geometry.rawArea.width : preview.geometry.rawArea.height},
-    {"png", QString::fromLatin1(encoded.toBase64())}};
 }
 
 static void reply(const QJsonObject &response)
@@ -424,51 +357,29 @@ int main(int argc, char **argv)
          const auto original = session.source(path);
            if(operation == "detail")
            {
-             const auto recipe = request["recipe"].toObject();
-             std::shared_ptr<rawlab::raw::RawImage> target = original;
+             auto recipe = request["recipe"].toObject();
              if(request["target"].toString("original") == "processed")
              {
                const QString resultId = request["resultId"].toString();
-               const QString recipeKey = processingRecipeKey(recipe);
-               target = session.processed(path, resultId);
-               const auto corrections = recipe["outputKind"].toString("cfa") == "linear-rgb"
-                 ? opticsFromRecipe(recipe) : rawlab::image::OpticsOptions{};
-               if(recipe["layers"].toArray().size() <= 1
-                  || (!corrections.chromaticAberration && !corrections.lensCorrection))
-               {
-                 const QRect region{request["x"].toInt(), request["y"].toInt(),
-                                    request["width"].toInt(), request["height"].toInt()};
-                 if(region.width() <= 0 || region.height() <= 0) throw std::runtime_error{"Invalid detail region"};
-                 auto linear = session.preview(path, recipe, resultId, *target, 2048,
-                                               rawlab::image::PreviewQuality::High, region, corrections);
-                 const auto geometry = linear.geometry;
-                 const auto display = linearDisplay(std::move(linear), target->metadata(), {});
-                 QByteArray encoded;
-                 QBuffer buffer{&encoded};
-                 if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
-                   throw std::runtime_error{"Could not encode detail preview"};
-                 checkCancelled();
-                 reply({{"version", 1}, {"x", region.x()}, {"y", region.y()},
-                   {"width", display.width()}, {"height", display.height()},
-                   {"sourceWidth", geometry.previewWidth}, {"sourceHeight", geometry.previewHeight},
-                   {"png", QString::fromLatin1(encoded.toBase64())}});
-                 continue;
-               }
-               if(!session.processedMatches(path, resultId, recipeKey))
-               {
-                 target = session.process(path, recipe, {}, nullptr, false);
-                 session.replaceProcessed(path, resultId, recipeKey, target);
-               }
+               (void)session.processed(path, resultId);
              }
-             checkCancelled();
+             else recipe["layers"] = QJsonArray{QJsonObject{{"enabled", false}}};
              const auto corrections = recipe["outputKind"].toString("cfa") == "linear-rgb"
               ? opticsFromRecipe(recipe) : rawlab::image::OpticsOptions{};
-             const QString detailCacheKey = ProcessingSession::sourceFingerprint(path) + ':'
-               + request["target"].toString("original") + ':' + request["resultId"].toString()
-               + ':' + QString::fromUtf8(QJsonDocument{recipe}.toJson(QJsonDocument::Compact));
-             reply(renderRegion(*target, request["x"].toInt(), request["y"].toInt(),
-                                request["width"].toInt(), request["height"].toInt(), corrections,
-                                detailCacheKey));
+             const QRect region{request["x"].toInt(), request["y"].toInt(), request["width"].toInt(), request["height"].toInt()};
+             auto linear = session.detail(path, recipe, region, corrections, checkCancelled);
+             const auto geometry = linear.geometry;
+             const auto display = linearDisplay(std::move(linear), original->metadata(), {});
+             checkCancelled();
+             QByteArray encoded;
+             QBuffer buffer{&encoded};
+             if(!buffer.open(QIODevice::WriteOnly) || !display.save(&buffer, "PNG"))
+               throw std::runtime_error{"Could not encode detail preview"};
+             checkCancelled();
+             reply({{"version", 1}, {"x", region.x()}, {"y", region.y()},
+               {"width", display.width()}, {"height", display.height()},
+               {"sourceWidth", geometry.previewWidth}, {"sourceHeight", geometry.previewHeight},
+               {"png", QString::fromLatin1(encoded.toBase64())}});
            continue;
          }
         if(operation == "segment")
@@ -513,16 +424,17 @@ int main(int argc, char **argv)
              || operation == "processed_preview";
            auto linear = useComposedPreview
              ? std::optional<rawlab::image::LinearRawPreview>{session.preview(
-                 path, recipe, resultId, *processed, previewSize, quality)}
+                  path, recipe, resultId, *processed, previewSize, quality, checkCancelled)}
              : std::nullopt;
-            QJsonObject response = render(*processed, previewSize, previewQuality, corrections, std::move(linear));
+            checkCancelled();
+            QJsonObject response = render(*processed, previewSize, previewQuality, corrections, std::move(linear), checkCancelled);
             if(operation == "process" || operation == "processed_preview")
             {
               auto before = session.preview(path,
                 QJsonObject{{"layers", QJsonArray{QJsonObject{{"enabled", false}}}}},
-                QStringLiteral("original"), *original, previewSize, quality);
+                 QStringLiteral("original"), *original, previewSize, quality, checkCancelled);
               response["before"] = render(*original, previewSize, previewQuality,
-                                          corrections, std::move(before))["png"];
+                                          corrections, std::move(before), checkCancelled)["png"];
             }
          checkCancelled();
           if(rememberResult || operation == "recompose") response["resultId"] = resultId;

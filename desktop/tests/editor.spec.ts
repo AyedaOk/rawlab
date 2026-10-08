@@ -4,7 +4,7 @@ test('CUDA and settings errors have dismiss buttons', async ({page}) => {
   await page.addInitScript(() => {
     const models = {denoise:[],sharpen:[],provider:'cpu'};
     Object.assign(window, {isTauri:true,__TAURI_INTERNALS__:{invoke:async (command:string,args:any) => {
-      if(command === 'external_session') return null;
+      if(command === 'external_session' || command === 'supersede_previews') return null;
       if(command === 'processing_models') return {models};
       if(command === 'desktop_control') {
         switch(args.request.operation) {

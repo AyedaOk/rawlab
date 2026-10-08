@@ -10,7 +10,7 @@ function nativeBridge(paths: string[]) {
     Object.assign(window, { isTauri: true, __libraryCalls: calls, __TAURI_INTERNALS__: {
       invoke: async (command, args) => {
         calls.push({ command, args: args ? JSON.parse(JSON.stringify(args)) : args });
-        if (command === 'external_session') return null;
+        if (command === 'external_session' || command === 'supersede_previews') return null;
         if (command === 'plugin:app|version') return '0.1.0';
         if (command === 'raw_source_version') return 'v1';
         if (command === 'processing_models') return { models: { denoise: [{ id: 'hf:rawdenoise-okeinla', name: 'Okeinla', available: true }], sharpen: [], provider: 'cpu' } };
@@ -103,7 +103,7 @@ test('a failed recipe load no longer blocks closing', async ({ page }) => {
           return id;
         },
         invoke: async (command: string, args: any) => {
-          if (command === 'external_session') return null;
+          if (command === 'external_session' || command === 'supersede_previews') return null;
           if (command === 'plugin:event|listen') {
             if (args.event === 'tauri://close-requested') {
               closeHandler = callbacks.get(args.handler)!;

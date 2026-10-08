@@ -14,8 +14,9 @@ models produce an error, not a fake result.
 2. Press Update. The worker applies all enabled layers and returns real before/after
    previews. Source CFA and denoise/sharpen outputs stay in the C++ worker; repeated
    blend changes reuse inference results for the current document/model.
-3. Zoom in and click-drag to pan. Fit restores centering. In mask editing, hold
-   Space to pan after focusing the image. The comparison divider remains independently draggable.
+3. Zoom in and click-drag to pan. 1:1 preserves the viewed location; clicking it
+   again at 100% keeps the same view. Fit restores centering. In mask editing, hold
+   Space to pan after focusing the image. Drag the comparison divider to move it.
 4. Add a mask to start editing, and draw Brush/Erase, Gradient or Ellipse marks.
     AI clicks run SAM using the active model configured in Settings (Shift-click for a
    negative point). Done keeps the mask. The red overlay previews feather, blur and
@@ -34,10 +35,18 @@ per photograph. Undo keeps the selected mask open if it still exists. The mask
 editor also provides Undo, Redo and Clear mask; you can undo Clear mask.
 
 Normal sharpening starts a preview update when selected in Linear RGB mode.
-Strength changes reuse cached sharpening endpoints and keep the last 1:1 tile
-visible until its replacement arrives. Initial processing can still run denoise;
-subsequent strength changes reuse it. Corrected multi-mask detail currently uses
-full-image composition; other detail updates blend cached viewport endpoints.
+The editor shows “Updating preview…” while applying strength changes, without an Update button.
+Strength changes reuse cached denoised CFA and keep the last 1:1 tile visible
+until the browser decodes its replacement. Detail rendering composes CFA in 256-pixel tiles,
+including local masks, then applies optical corrections to the requested region.
+Small pans reuse overlapping tiles. The editor prioritizes visible detail over
+the overview and loads original detail only when you open Before / After.
+New preview requests cancel superseded renders between processing stages.
+
+The worker retains up to two decoded photographs within a 256 MiB budget and
+keeps model outputs across photo switches within a separate 512 MiB budget.
+It evicts unused Normal-sharpening results before model outputs. An oversized
+image or an in-use working set can exceed these budgets until eviction is possible.
 Desktop presets persist through the native worker. Browser-mode controls
 remain a non-processing demo.
 

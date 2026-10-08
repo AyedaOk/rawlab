@@ -36,6 +36,28 @@ mod response_tests {
         assert_eq!(worker_response(json!({"error": "Recipe JSON is invalid"})),
                    Err("Recipe JSON is invalid".to_owned()));
     }
+
+    #[test]
+    fn newer_previews_cancel_old_renders_but_not_exports() {
+        use super::{CancellationState, Engine};
+        let engine = Engine::default();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cancel");
+        *engine.cancellation.lock().unwrap() = CancellationState {
+            operation: Some("detail".into()), path: Some(path.clone()), preview_generation: Some(5),
+        };
+        engine.supersede_preview(4).unwrap();
+        engine.supersede_preview(5).unwrap();
+        assert!(!path.exists());
+        engine.supersede_preview(6).unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).unwrap();
+        *engine.cancellation.lock().unwrap() = CancellationState {
+            operation: Some("export".into()), path: Some(path.clone()), preview_generation: None,
+        };
+        engine.supersede_preview(7).unwrap();
+        assert!(!path.exists());
+    }
 }
 
 struct Worker {
@@ -47,6 +69,7 @@ struct Worker {
 struct CancellationState {
     operation: Option<String>,
     path: Option<PathBuf>,
+    preview_generation: Option<u64>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -66,13 +89,22 @@ pub struct Engine {
 #[derive(Default, Clone)]
 pub struct PreviewEngine(pub Engine);
 #[derive(Default, Clone)]
-pub struct ProcessingEngine(pub Engine, pub Arc<AtomicU64>, pub Arc<AtomicU64>, pub Arc<AtomicU64>);
+pub struct ProcessingEngine(pub Engine, pub Arc<AtomicU64>);
 #[derive(Default, Clone)]
 pub struct ActivePreviewEngine {
     pub engine: Engine,
     pub generation: Arc<AtomicU64>,
 }
 impl Engine {
+    fn supersede_preview(&self, generation: u64) -> Result<(), String> {
+        let active = self.cancellation.lock().map_err(|e| e.to_string())?;
+        if active.preview_generation.is_some_and(|previous| previous < generation) {
+            if let Some(path) = &active.path {
+                std::fs::write(path, b"superseded").map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
     pub fn request(
         &self,
         app: &tauri::AppHandle,
@@ -86,6 +118,9 @@ impl Engine {
         mut request: serde_json::Value,
         generation: Option<(&AtomicU64, u64)>,
     ) -> Result<serde_json::Value, String> {
+        if let Some((_, expected)) = generation {
+            self.supersede_preview(expected)?;
+        }
         let mut guard = self.worker.lock().map_err(|e| e.to_string())?;
         if generation.is_some_and(|(current, expected)| current.load(Ordering::Acquire) != expected) {
             return Err("Preview superseded".into());
@@ -131,6 +166,7 @@ impl Engine {
     let cancellable = ["process", "recompose", "export", "export_linear", "segment"].contains(&operation.as_str());
         *self.cancellation.lock().map_err(|e| e.to_string())? = CancellationState {
             operation: Some(operation), path: Some(cancel_path.clone()),
+            preview_generation: generation.map(|(_, expected)| expected),
         };
         if cancellable && self.pending_processing_cancel.swap(false, Ordering::AcqRel) {
             std::fs::write(&cancel_path, b"cancel").map_err(|e| e.to_string())?;
@@ -139,6 +175,9 @@ impl Engine {
             std::fs::write(&cancel_path, b"cancel").map_err(|e| e.to_string())?;
         }
         let result = (|| {
+            if generation.is_some_and(|(current, expected)| current.load(Ordering::Acquire) != expected) {
+                return Err("Preview superseded".into());
+            }
             let worker = guard.as_mut().unwrap();
             writeln!(worker.input, "{}", request)
                 .and_then(|_| worker.input.flush())
@@ -211,6 +250,12 @@ pub fn cancel_processing(engine: tauri::State<'_, ProcessingEngine>) -> Result<(
         engine.0.pending_processing_cancel.store(true, Ordering::Release);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn supersede_previews(engine: tauri::State<'_, ProcessingEngine>) -> Result<(), String> {
+    let generation = engine.1.fetch_add(1, Ordering::AcqRel) + 1;
+    engine.0.supersede_preview(generation)
 }
 
 #[tauri::command]
@@ -322,13 +367,14 @@ pub async fn process_raw(
     let size = preview_size.unwrap_or(4096).clamp(256, 4096);
     let request = serde_json::json!({"operation":operation, "path":canonical.clone(), "recipe":recipe, "size":size, "quality":if high_quality{"high"}else{"fast"}, "output":output, "points":points, "resultId":result_id});
     let state = engine.inner();
-    state.1.fetch_add(1, Ordering::AcqRel);
-    state.2.fetch_add(1, Ordering::AcqRel);
-    state.3.fetch_add(1, Ordering::AcqRel);
+    let generation = state.1.fetch_add(1, Ordering::AcqRel) + 1;
+    let current_generation = state.1.clone();
     let engine = state.0.clone();
+    engine.supersede_preview(generation)?;
     engine.queued_processing.fetch_add(1, Ordering::AcqRel);
     tauri::async_runtime::spawn_blocking(move || {
-        let result = engine.request(&app, request).and_then(|mut response| {
+        let guard = (operation == "recompose").then_some((&*current_generation, generation));
+        let result = engine.request_guarded(&app, request, guard).and_then(|mut response| {
             let current = source_version(&canonical)?;
             if current != version { return Err("Source changed while processing; retry".into()); }
             response["sourceVersion"] = serde_json::json!(current);
@@ -360,8 +406,8 @@ pub async fn render_processed(
     }
     let version = source_version(&canonical)?;
     let state = engine.inner();
-    let generation = state.3.fetch_add(1, Ordering::AcqRel) + 1;
-    let current_generation = state.3.clone();
+    let generation = state.1.fetch_add(1, Ordering::AcqRel) + 1;
+    let current_generation = state.1.clone();
     let engine = state.0.clone();
     tauri::async_runtime::spawn_blocking(move || {
       let mut response = engine.request_guarded(&app, serde_json::json!({
@@ -404,7 +450,7 @@ pub async fn render_raw_detail(
         return Err("Select the source using Import first".into());
     }
     let version = source_version(&canonical)?;
-    let current_generation = if target == "processed" { engine.inner().1.clone() } else { engine.inner().2.clone() };
+    let current_generation = engine.inner().1.clone();
     let generation = current_generation.fetch_add(1, Ordering::AcqRel) + 1;
     let engine = engine.inner().0.clone();
     tauri::async_runtime::spawn_blocking(move || {

@@ -8,7 +8,7 @@ test('Update installs missing Okeinla before processing and retries failed downl
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
     const preview = {version:1,width:100,height:80,png,quality:'high',metadata:{rawWidth:100,rawHeight:80}};
     Object.assign(window, {isTauri:true, __modelCalls:calls, __TAURI_INTERNALS__:{invoke:async (command:string,args:any) => {
-      if(command === 'external_session') return null;
+      if(command === 'external_session' || command === 'supersede_previews') return null;
       if(command === 'processing_models') return {models:{denoise:installed ? [{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}] : [],sharpen:[],provider:'cpu'}};
       if(command === 'render_raw_preview') return preview;
       if(command === 'raw_source_version') return 'v1';

@@ -24,6 +24,7 @@ fn main() {
             engine::raw_source_version,
             engine::processing_models,
             engine::cancel_processing,
+            engine::supersede_previews,
             engine::cancel_batch_processing,
             engine::desktop_control,
             integration::external_session,

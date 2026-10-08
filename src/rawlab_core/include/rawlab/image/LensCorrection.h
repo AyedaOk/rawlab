@@ -3,6 +3,7 @@
 #include "rawlab/raw/RawImage.h"
 
 #include <string>
+#include <functional>
 #include <vector>
 
 namespace rawlab::image {
@@ -37,5 +38,12 @@ LinearRgbImage applyOpticsCorrections(LinearRgbImage source,
                                       const OpticsOptions &options,
                                       OpticsStatus *status = nullptr);
 OpticsStatus opticsStatus(const raw::RawMetadata &metadata, int width, int height);
+
+// Render a viewport in full-image coordinates. The source callback receives the
+// unwarped rectangle needed for interpolation, not the whole photograph.
+LinearRgbImage renderOpticsRegion(int fullWidth, int fullHeight, int x, int y, int width, int height,
+  const raw::RawMetadata &metadata, const OpticsOptions &options,
+  const std::function<LinearRgbImage(int, int, int, int)> &source,
+  const std::function<void()> &checkCancelled = {});
 
 }

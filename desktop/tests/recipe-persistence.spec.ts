@@ -7,7 +7,7 @@ test('restoration is per-photo and switching flushes the previous recipe', async
     const recipes: Record<string, unknown> = {'/photos/a.ARW':recipe('sharp-a',17),'/photos/b.ARW':recipe('sharp-b',29)};
     const saves: any[] = [];
     Object.assign(window, {isTauri:true,__recipeSaves:saves,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[{id:'sharp-a',name:'Sharp A',available:true},{id:'sharp-b',name:'Sharp B',available:true}],provider:'cpu'}};
       if(command==='render_raw_preview') return {version:1,width:100,height:100,png,quality:'fast',metadata:{make:'Test',model:'Camera',lens:'',iso:100,aperture:2.8,exposureSeconds:.01,exposureBiasEv:0,focalLengthMm:50,rawWidth:100,rawHeight:100}};
       if(command==='desktop_control') {
@@ -39,7 +39,7 @@ test('failed recipe save remains blocked until Retry save is used', async ({page
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
     let attempts=0;
     Object.assign(window,{isTauri:true,__saveAttempts:()=>attempts,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='render_raw_preview') return {version:1,width:100,height:100,png,quality:'fast',metadata:{rawWidth:100,rawHeight:100}};
       if(command==='desktop_control') {
@@ -112,7 +112,7 @@ test('an edit made during recipe restoration is preserved and saved', async ({pa
     Object.assign(window,{isTauri:true,__recipeSaves:saves,__recipeLoads:()=>loads,
       __resolveRecipeLoad:()=>resolveLoad({recipe:{layers:[{id:0,name:'Global',enabled:true,modelId:'denoise',blend:12,sharpen:'Off',strength:30,marks:[],points:[]}]}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-        if(command==='external_session') return null;
+        if(command==='external_session'||command==='supersede_previews') return null;
         if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
         if(command==='render_raw_preview') return {version:1,width:321,height:213,png,quality:'fast',metadata:{rawWidth:321,rawHeight:213}};
         if(command==='desktop_control') {
@@ -143,7 +143,7 @@ test('saved recipe is restored after a page restart', async ({page}) => {
   const recipes = new Map<string, any>();
   const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
   await page.exposeFunction('__rawlabNativeInvoke', async (command:string,args:any) => {
-    if(command==='external_session') return null;
+    if(command==='external_session'||command==='supersede_previews') return null;
     if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
     if(command==='render_raw_preview') return {version:1,width:213,height:321,png,quality:'fast',metadata:{rawWidth:213,rawHeight:321}};
     if(command==='desktop_control') {
@@ -181,7 +181,7 @@ test('close waits for saves and remains open after a failed write', async ({page
       __TAURI_INTERNALS__:{metadata:{currentWindow:{label:'main'}},
         transformCallback:(callback:(event:any)=>unknown)=>{const id=++callbackId;callbacks.set(id,callback);return id;},
         invoke:async(command:string,args:any)=>{
-          if(command==='external_session') return null;
+          if(command==='external_session'||command==='supersede_previews') return null;
           if(command==='plugin:event|listen') {
             if(args.event==='tauri://close-requested') closeHandler=callbacks.get(args.handler)!;
             return callbackId;
@@ -226,7 +226,7 @@ test('an invalid stored recipe is never overwritten by automatic saving', async 
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
     let saves=0, repaired=false;
     Object.assign(window,{isTauri:true,__repairRecipe:()=>{repaired=true;},__recipeSaves:()=>saves,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
-      if(command==='external_session') return null;
+      if(command==='external_session'||command==='supersede_previews') return null;
       if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
       if(command==='render_raw_preview') return {version:1,width:100,height:80,png,quality:'fast',metadata:{rawWidth:100,rawHeight:80}};
       if(command==='desktop_control') {

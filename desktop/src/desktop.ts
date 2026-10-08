@@ -164,6 +164,7 @@ export const recomposeRaw = (path: string, recipe: unknown, highQuality: boolean
     output: null,
   });
 export const cancelProcessing = () => invoke("cancel_processing");
+export const supersedePreviews = () => invoke("supersede_previews");
 export type ExternalSession = {
   mode: 'single' | 'batch';
   sources: string[];

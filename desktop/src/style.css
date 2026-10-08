@@ -906,9 +906,8 @@ h1 {
 .main-photo {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
   max-width: 100%;
-  object-fit: contain;
 }
 .detail-tile {
   position: absolute;

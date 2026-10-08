@@ -8,6 +8,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <deque>
+#include <cstdint>
+#include <tuple>
 #include <stdexcept>
 
 #ifdef RAWLAB_HAS_LENSFUN
@@ -74,13 +77,13 @@ std::shared_ptr<Match> match(const raw::RawMetadata &metadata)
   if(!result->database) return result;
   bool loaded = result->database->Load() == LF_NO_ERROR;
   if(!configured.isEmpty())
-    loaded = result->database->LoadDirectory(configured.toUtf8().constData()) == LF_NO_ERROR || loaded;
+    loaded = result->database->LoadDirectory(configured.toUtf8().constData()) || loaded;
   const QDir applicationDirectory{QCoreApplication::applicationDirPath()};
   for(const QString &relative : {QStringLiteral("../share/lensfun"), QStringLiteral("../Resources/lensfun")})
   {
     const QDir root{applicationDirectory.filePath(relative)};
     for(const QString &version : root.entryList({QStringLiteral("version_*")}, QDir::Dirs | QDir::NoDotAndDotDot))
-      loaded = result->database->LoadDirectory(root.filePath(version).toUtf8().constData()) == LF_NO_ERROR || loaded;
+      loaded = result->database->LoadDirectory(root.filePath(version).toUtf8().constData()) || loaded;
   }
   if(!loaded || metadata.make.empty() || metadata.model.empty() || metadata.lensModel.empty())
   { cache[key] = result; return result; }
@@ -300,6 +303,190 @@ LinearRgbImage renderLinearRgb(const raw::RawImage &image, const OpticsOptions &
                                OpticsStatus *status)
 {
   return applyOpticsCorrections(baseLinearRgb(image), image.metadata(), options, status);
+}
+
+namespace {
+#ifdef RAWLAB_HAS_LENSFUN
+struct RegionCorrection
+{
+  std::shared_ptr<Match> profile;
+  std::unique_ptr<lfModifier, decltype(&lf_modifier_destroy)> modifier{nullptr, lf_modifier_destroy};
+  int width, height, left = 0, top = 0, cropWidth, cropHeight;
+  bool warp = false, vignette = false;
+
+  void map(int x, int y, int count, float *coordinates) const
+  {
+#if LF_VERSION_MAJOR == 0 && LF_VERSION_MINOR < 4
+    const bool mapped = modifier->ApplySubpixelGeometryDistortion(x, y, count, 1, coordinates);
+#else
+    const bool mapped = lf_modifier_apply_subpixel_geometry_distortion(modifier.get(), x, y, count, 1, coordinates);
+#endif
+    if(!mapped) throw std::runtime_error{"Lensfun could not map image geometry"};
+  }
+
+  RegionCorrection(int w, int h, const raw::RawMetadata &metadata, const OpticsOptions &options,
+                   const std::function<void()> &check)
+    : profile{match(metadata)}, width{w}, height{h}, cropWidth{w}, cropHeight{h}
+  {
+    if(!profile->lens) throw std::runtime_error{"No unambiguous Lensfun profile"};
+#if LF_VERSION_MAJOR == 0 && LF_VERSION_MINOR < 4
+    const int requested = (options.chromaticAberration ? LF_MODIFY_TCA : 0)
+      | (options.lensCorrection ? LF_MODIFY_DISTORTION : 0)
+      | (options.lensCorrection && metadata.aperture ? LF_MODIFY_VIGNETTING : 0);
+    int enabled = 0;
+    modifier.reset(modifierFor(*profile, metadata, w, h, requested, enabled).release());
+    warp = enabled & (LF_MODIFY_DISTORTION | LF_MODIFY_TCA);
+    vignette = enabled & LF_MODIFY_VIGNETTING;
+#else
+    modifier.reset(lf_modifier_create(profile->lens, metadata.focalLengthMm.value_or(0.0),
+      profile->camera ? profile->camera->CropFactor : 1.0f, w, h, LF_PF_F32, false));
+    if(!modifier) throw std::runtime_error{"Could not initialize Lensfun"};
+    if(options.lensCorrection)
+    {
+      warp = lf_modifier_enable_distortion_correction(modifier.get()) != 0;
+      if(warp)
+      {
+        const float scale = lf_modifier_get_auto_scale(modifier.get(), false);
+        if(std::isfinite(scale) && scale > 0.0f) lf_modifier_enable_scaling(modifier.get(), scale);
+      }
+      if(metadata.aperture)
+        vignette = lf_modifier_enable_vignetting_correction(modifier.get(), *metadata.aperture, 1000.0f) != 0;
+    }
+    if(options.chromaticAberration) warp = lf_modifier_enable_tca_correction(modifier.get()) != 0 || warp;
+#endif
+    if(!modifier) throw std::runtime_error{"Could not initialize Lensfun"};
+    if(!warp) return;
+
+    // Match applyOpticsCorrections' centered crop without allocating a full RGB
+    // image or integral mask. Each invalid pixel can only shrink this rectangle.
+    const int steps = std::max(w, h) / 2;
+    const auto crop = [&](int step) {
+      const float scale = 1.0f - 2.0f * step / std::max(w, h);
+      return std::pair{std::max(2, static_cast<int>(std::floor(w * scale))),
+                       std::max(2, static_cast<int>(std::floor(h * scale)))};
+    };
+    int step = 0;
+    std::vector<float> coordinates(static_cast<std::size_t>(w) * 6);
+    for(int y = 0; y < h; ++y)
+    {
+      if(check && y % 32 == 0) check();
+      map(0, y, w, coordinates.data());
+      for(int x = 0; x < w; ++x)
+        for(int channel = 0; channel < 3; ++channel)
+        {
+          const float sx = coordinates[x * 6 + channel * 2], sy = coordinates[x * 6 + channel * 2 + 1];
+          if(!std::isfinite(sx) || !std::isfinite(sy)) throw std::runtime_error{"Invalid Lensfun coordinates"};
+          if(sx >= 0 && sy >= 0 && sx <= w - 1 && sy <= h - 1) continue;
+          if(x < left || x >= left + cropWidth || y < top || y >= top + cropHeight) continue;
+          int lo = step + 1, hi = steps + 1;
+          while(lo < hi)
+          {
+            const int mid = lo + (hi - lo) / 2;
+            const auto [cw, ch] = crop(mid);
+            const bool inside = x >= (w - cw) / 2 && x < (w - cw) / 2 + cw
+              && y >= (h - ch) / 2 && y < (h - ch) / 2 + ch;
+            if(inside) lo = mid + 1; else hi = mid;
+          }
+          if(lo > steps) throw std::runtime_error{"Lens correction has no valid centered crop"};
+          step = lo;
+          std::tie(cropWidth, cropHeight) = crop(step);
+          left = (w - cropWidth) / 2; top = (h - cropHeight) / 2;
+        }
+    }
+  }
+
+  LinearRgbImage render(int x, int y, int w, int h,
+    const std::function<LinearRgbImage(int, int, int, int)> &source,
+    const std::function<void()> &check) const
+  {
+    const bool cropped = cropWidth != width || cropHeight != height;
+    const auto outputX = [&](int px) { return cropped ? left + static_cast<float>(px) * (cropWidth - 1) / std::max(1, width - 1) : static_cast<float>(px); };
+    const auto outputY = [&](int py) { return cropped ? top + static_cast<float>(py) * (cropHeight - 1) / std::max(1, height - 1) : static_cast<float>(py); };
+    const int mx = static_cast<int>(std::floor(outputX(x))), my = static_cast<int>(std::floor(outputY(y)));
+    const int mw = static_cast<int>(std::ceil(outputX(x + w - 1))) - mx + 1;
+    const int mh = static_cast<int>(std::ceil(outputY(y + h - 1))) - my + 1;
+    std::vector<float> coordinates(warp ? static_cast<std::size_t>(mw) * mh * 6 : 0);
+    int sx = mx, sy = my, right = mx + mw - 1, bottom = my + mh - 1;
+    if(warp)
+    {
+      sx = width - 1; sy = height - 1; right = bottom = 0;
+      // Keep Lensfun's full-row origin: its vectorized mapping can otherwise
+      // shift detail pixels relative to the full-image correction.
+      std::vector<float> fullRow(static_cast<std::size_t>(width) * 6);
+      for(int row = 0; row < mh; ++row)
+      {
+        if(check && row % 32 == 0) check();
+        float *line = coordinates.data() + static_cast<std::size_t>(row) * mw * 6;
+        map(0, my + row, width, fullRow.data());
+        std::copy_n(fullRow.data() + mx * 6, mw * 6, line);
+        for(int i = 0; i < mw * 3; ++i)
+        {
+          const float px = line[i * 2], py = line[i * 2 + 1];
+          if(!std::isfinite(px) || !std::isfinite(py)) throw std::runtime_error{"Invalid Lensfun coordinates"};
+          if(px < 0 || py < 0 || px > width - 1 || py > height - 1) continue;
+          sx = std::min(sx, static_cast<int>(std::floor(px))); sy = std::min(sy, static_cast<int>(std::floor(py)));
+          right = std::max(right, static_cast<int>(std::ceil(px))); bottom = std::max(bottom, static_cast<int>(std::ceil(py)));
+        }
+      }
+    }
+    auto input = source(sx, sy, std::max(1, right - sx + 1), std::max(1, bottom - sy + 1));
+    if(vignette)
+    {
+#if LF_VERSION_MAJOR == 0 && LF_VERSION_MINOR < 4
+      modifier->ApplyColorModification(input.pixels.data(), sx, sy, input.width, input.height,
+        LF_CR_3(RED, GREEN, BLUE), input.width * 3 * static_cast<int>(sizeof(float)));
+#else
+      lf_modifier_apply_color_modification(modifier.get(), input.pixels.data(), sx, sy, input.width, input.height,
+        LF_CR_3(RED, GREEN, BLUE), input.width * 3 * static_cast<int>(sizeof(float)));
+#endif
+    }
+    if(!warp) return input;
+    LinearRgbImage corrected{mw, mh, std::vector<float>(static_cast<std::size_t>(mw) * mh * 3)};
+    for(std::size_t i = 0; i < corrected.pixels.size(); ++i)
+      corrected.pixels[i] = bilinear(input, coordinates[i * 2] - sx, coordinates[i * 2 + 1] - sy, i % 3);
+    if(!cropped) return corrected;
+    LinearRgbImage result{w, h, std::vector<float>(static_cast<std::size_t>(w) * h * 3)};
+    for(int row = 0; row < h; ++row)
+      for(int col = 0; col < w; ++col)
+        for(int channel = 0; channel < 3; ++channel)
+          result.pixels[(static_cast<std::size_t>(row) * w + col) * 3 + channel]
+            = bilinear(corrected, outputX(x + col) - mx, outputY(y + row) - my, channel);
+    return result;
+  }
+};
+#endif
+}
+
+LinearRgbImage renderOpticsRegion(int fullWidth, int fullHeight, int x, int y, int width, int height,
+  const raw::RawMetadata &metadata, const OpticsOptions &options,
+  const std::function<LinearRgbImage(int, int, int, int)> &source,
+  const std::function<void()> &checkCancelled)
+{
+  if(x < 0 || y < 0 || width <= 0 || height <= 0
+     || static_cast<std::int64_t>(x) + width > fullWidth || static_cast<std::int64_t>(y) + height > fullHeight)
+    throw std::invalid_argument{"Invalid corrected preview region"};
+  if(checkCancelled) checkCancelled();
+  if(!options.chromaticAberration && !options.lensCorrection) return source(x, y, width, height);
+#ifndef RAWLAB_HAS_LENSFUN
+  (void)metadata;
+  throw std::runtime_error{"Lensfun is not available in this build"};
+#else
+  const QString key = QString::fromStdString(metadata.make + '\n' + metadata.model + '\n'
+    + metadata.lensMake + '\n' + metadata.lensModel) + '\n' + qEnvironmentVariable("RAWLAB_LENSFUN_DB")
+    + QStringLiteral(":%1:%2:%3:%4:%5:%6").arg(fullWidth).arg(fullHeight)
+      .arg(metadata.focalLengthMm.value_or(0), 0, 'g', 17).arg(metadata.aperture.value_or(0), 0, 'g', 17)
+      .arg(options.chromaticAberration).arg(options.lensCorrection);
+  static std::mutex mutex;
+  static std::deque<std::pair<QString, std::shared_ptr<RegionCorrection>>> cache;
+  const std::scoped_lock lock{mutex};
+  auto found = std::find_if(cache.begin(), cache.end(), [&](const auto &entry) { return entry.first == key; });
+  const auto geometry = found == cache.end()
+    ? std::make_shared<RegionCorrection>(fullWidth, fullHeight, metadata, options, checkCancelled) : found->second;
+  if(found != cache.end()) cache.erase(found);
+  cache.emplace_back(key, geometry);
+  while(cache.size() > 4) cache.pop_front();
+  return geometry->render(x, y, width, height, source, checkCancelled);
+#endif
 }
 
 }
