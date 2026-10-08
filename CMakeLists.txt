@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
   rawlab
-  VERSION 0.2.1
+  VERSION 0.2.2
   DESCRIPTION "Raw-domain photo preprocessing application"
   LANGUAGES CXX
 )

@@ -6,8 +6,8 @@ Download the Linux x64 AppImage from [Releases](https://github.com/AyedaOk/rawla
 In the download directory, use the filename for your version:
 
 ```sh
-chmod +x RawLab_0.2.1_amd64.AppImage
-./RawLab_0.2.1_amd64.AppImage
+chmod +x RawLab_0.2.2_amd64.AppImage
+./RawLab_0.2.2_amd64.AppImage
 ```
 
 The package includes the native worker and CPU ONNX Runtime. Download model weights
@@ -18,7 +18,7 @@ If your system reports a missing FUSE library, install your distribution's FUSE 
 compatibility package, or extract and run the AppImage:
 
 ```sh
-./RawLab_0.2.1_amd64.AppImage --appimage-extract
+./RawLab_0.2.2_amd64.AppImage --appimage-extract
 ./squashfs-root/AppRun
 ```
 
@@ -88,7 +88,7 @@ cargo --version
 Install a distribution package that provides `onnxruntime_c_api.h` and
 `libonnxruntime.so`, or extract an official Linux archive from
 [ONNX Runtime releases](https://github.com/microsoft/onnxruntime/releases).
-Choose the archive for your CPU architecture. RawLab's v0.2.1 Linux packaging uses
+Choose the archive for your CPU architecture. RawLab's v0.2.2 Linux packaging uses
 CPU ONNX Runtime 1.20.1.
 
 Keep the extracted runtime in a permanent location, for example
