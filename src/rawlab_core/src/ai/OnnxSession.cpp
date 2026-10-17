@@ -18,6 +18,22 @@
 namespace rawlab::ai {
 namespace {
 
+// Request our supported ABI, not the SDK version installed on the build machine.
+// Keep API calls within the shipped 1.20 table, even with newer headers.
+constexpr std::uint32_t runtimeApiVersion = 20;
+static_assert(ORT_API_VERSION >= runtimeApiVersion, "RawLab needs ONNX Runtime 1.20 or newer headers");
+
+const OrtApi *compatibleApi(const OrtApiBase *base)
+{
+  if(!base) throw std::runtime_error{"ONNX Runtime returned no API base"};
+  const OrtApi *api = base->GetApi(runtimeApiVersion);
+  if(!api)
+    throw std::runtime_error{"ONNX Runtime "
+      + std::string{base->GetVersionString() ? base->GetVersionString() : "unknown"}
+      + " does not support API 20. RawLab requires ONNX Runtime 1.20 or newer."};
+  return api;
+}
+
 struct RuntimeState
 {
   QLibrary library;
@@ -36,6 +52,7 @@ const OrtApi *ortApi(const std::string &runtimeLibrary = {})
   RuntimeState &state = runtimeState();
   if(!state.api)
   {
+    state.library.unload();
     const QString name = runtimeLibrary.empty()
       ? QStringLiteral("onnxruntime") : QString::fromStdString(runtimeLibrary);
     state.library.setFileName(name);
@@ -46,13 +63,10 @@ const OrtApi *ortApi(const std::string &runtimeLibrary = {})
     const auto getApiBase = reinterpret_cast<GetApiBase>(state.library.resolve("OrtGetApiBase"));
     if(!getApiBase) throw std::runtime_error{"ONNX Runtime library does not export OrtGetApiBase"};
     const OrtApiBase *base = getApiBase();
-    if(!base) throw std::runtime_error{"ONNX Runtime returned no API base"};
+    state.api = compatibleApi(base);
     state.version = base->GetVersionString() ? base->GetVersionString() : "unknown";
-    state.api = base->GetApi(ORT_API_VERSION);
   }
-  const OrtApi *api = state.api;
-  if(!api) throw std::runtime_error{"ONNX Runtime API is unavailable"};
-  return api;
+  return state.api;
 }
 
 void throwIfOrtError(OrtStatus *status, const char *operation)
@@ -608,11 +622,9 @@ OnnxRuntimeInfo OnnxSession::probeRuntime(const std::filesystem::path &runtimeLi
   const auto getApiBase = reinterpret_cast<GetApiBase>(library.resolve("OrtGetApiBase"));
   if(!getApiBase) throw std::runtime_error{"ONNX Runtime library does not export OrtGetApiBase"};
   const OrtApiBase *base = getApiBase();
-  if(!base || !base->GetApi(ORT_API_VERSION))
-    throw std::runtime_error{"ONNX Runtime library has no compatible API"};
+  const OrtApi &api = *compatibleApi(base);
   OnnxRuntimeInfo result;
   result.version = base->GetVersionString() ? base->GetVersionString() : "unknown";
-  const OrtApi &api = *base->GetApi(ORT_API_VERSION);
   const std::vector<std::string> advertised = advertisedProviders(api);
   result.providers.push_back({"cpu", "CPU"});
   for(const ProviderMapping &mapping : providers)

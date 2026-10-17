@@ -29,6 +29,73 @@ test('CUDA and settings errors have dismiss buttons', async ({page}) => {
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
+test('catalog refresh exposes an already downloaded depth model for selection', async ({page}) => {
+  await page.addInitScript(() => {
+    let discovered=false, activeDepthModelId='';
+    const models=() => ({denoise:[],sharpen:[],provider:'cpu',activeDepthModelId,
+      depth:discovered ? [{id:'small',name:'Depth Anything V2 Small',path:'/models/model.onnx',origin:'verified',available:true}] : []});
+    Object.assign(window,{isTauri:true,__TAURI_INTERNALS__:{invoke:async (command:string,args:any) => {
+      if(command === 'processing_models') return {models:models()};
+      if(command === 'desktop_control') {
+        switch(args.request.operation) {
+          case 'library_list': return {paths:[]};
+          case 'preset_list': return {names:[]};
+          case 'settings': return {...models(),sam:[],activeSamModelId:'',runtimeLibrary:'',deviceId:0,providers:[],runtimeError:''};
+          case 'catalog':
+            discovered=true;
+            return {catalog:[{id:'small',name:'Depth Anything V2 Small',task:'depth',installed:true}]};
+          case 'settings_save': activeDepthModelId=args.request.activeDepthModelId; return {saved:true};
+        }
+      }
+      return null;
+    }}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Preferences',exact:true}).click();
+  const selector=page.getByRole('combobox',{name:'Active depth model'});
+  const configured=page.getByRole('group',{name:'Configured models'});
+  await expect(selector.locator('option')).toHaveCount(1);
+  await page.getByRole('button',{name:'Refresh catalog'}).click();
+  await expect(configured.getByText('Depth Anything V2 Small',{exact:true})).toBeVisible();
+  await expect(configured.getByRole('button',{name:'Remove',exact:true})).toBeVisible();
+  await selector.selectOption('small');
+  await page.getByRole('button',{name:'Save processing settings'}).click();
+  await expect(selector).toBeEnabled();
+  await expect(selector).toHaveValue('small');
+  await selector.selectOption('');
+  await page.getByRole('button',{name:'Save processing settings'}).click();
+  await expect(selector).toBeEnabled();
+  await expect(selector).toHaveValue('');
+});
+
+test('local depth models offer removal from the list', async ({page}) => {
+  await page.addInitScript(() => {
+    let removed = false;
+    const models = () => ({denoise:[],sharpen:[],provider:'cpu',activeDepthModelId:removed?'':'local:depth',
+      depth:removed?[]:[{id:'local:depth',name:'Local depth',path:'/models/depth.onnx',origin:'manual',available:true}]});
+    Object.assign(window,{isTauri:true,__modelRemovals:[],__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
+      if(command==='processing_models') return {models:models()};
+      if(command==='desktop_control') {
+        switch(args.request.operation) {
+          case 'library_list': return {paths:[]};
+          case 'preset_list': return {names:[]};
+          case 'settings': return {...models(),sam:[],activeSamModelId:'',runtimeLibrary:'',deviceId:0,providers:[],runtimeError:''};
+          case 'model_remove': (window as any).__modelRemovals.push(args.request); removed=true; return {saved:true};
+        }
+      }
+      return null;
+    }}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Preferences',exact:true}).click();
+  const configured = page.getByRole('group',{name:'Configured models'});
+  await expect(configured.getByRole('button',{name:'Forget',exact:true})).toHaveCount(0);
+  await configured.getByRole('button',{name:'Remove from list',exact:true}).click();
+  await expect(configured.getByText('Local depth',{exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Active depth model'})).toHaveValue('');
+  expect(await page.evaluate(() => (window as any).__modelRemovals)).toEqual([{operation:'model_remove',task:'depth',id:'local:depth'}]);
+});
+
 test('editor renders, recipe changes and preset naming dialog works', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -47,7 +114,8 @@ test('editor renders, recipe changes and preset naming dialog works', async ({ p
   if (process.env.PROTOTYPE_SCREENSHOT) await page.screenshot({path: process.env.PROTOTYPE_SCREENSHOT});
   await expect(page.getByRole('button', {name: 'Edit Mask', exact: true})).toBeDisabled();
   await expect(page.getByRole('button', {name: 'Delete selected mask'})).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Normal', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Normal', exact: true })).toBeEnabled();
+  await expect(page.getByRole('group', {name:'Sharpening mode'}).getByRole('button', {name:'AI',exact:true})).toBeDisabled();
   await expect(page.getByRole('group', { name: 'Chromatic aberration' }).getByRole('button', { name: 'On' })).toBeDisabled();
   await expect(page.getByText(/mock/i)).toHaveCount(0);
   await page.getByRole('button', { name: 'Add mask', exact: true }).click();
@@ -171,6 +239,7 @@ test('local preview file stays local and library opens', async ({ page }) => {
   await page.goto('/');
   await page.getByLabel('Import picture files').setInputFiles({name: 'test.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64')});
   await expect(page.getByRole('button', {name: 'Select test.png', exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name: /Alpine lake/})).toHaveCount(0);
   await page.getByRole('button', {name: 'Select test.png', exact:true}).focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.main-photo')).toHaveAttribute('src', /^blob:/);
@@ -185,6 +254,7 @@ test('folder import supports multiple files and filtering', async ({ page }, tes
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
   await writeFile(folder + '/one.png', png);
   await writeFile(folder + '/two.png', png);
+  await writeFile(folder + '/three.png', png);
   await writeFile(folder + '/unsupported.ARW', 'not a preview');
   await page.goto('/');
   await page.getByLabel('Import folder files').setInputFiles(folder);
@@ -201,14 +271,14 @@ test('folder import supports multiple files and filtering', async ({ page }, tes
   await expect(page.locator('.filmstrip-selection-check')).toHaveCount(3);
   await page.getByRole('button', {name:'Back to library'}).click();
   await expect(page.getByText('Rate selected 5', {exact:true})).toHaveCount(0);
-  await expect(page.getByText('Imported 2 previews', {exact:false})).toBeVisible();
+  await expect(page.getByText('Imported 3 previews', {exact:false})).toBeVisible();
   await expect(page.getByRole('textbox', {name:'Filter filename'})).toHaveCount(0);
   await page.getByRole('button', {name:'Filter photographs'}).click();
   await page.getByRole('textbox', {name:'Filter filename'}).fill('two.png');
   await expect(page.locator('.photo-card')).toHaveCount(1);
   await page.getByRole('textbox', {name:'Filter filename'}).clear();
   await page.getByRole('combobox', {name:'File type'}).selectOption('png');
-  await expect(page.locator('.photo-card')).toHaveCount(2);
+  await expect(page.locator('.photo-card')).toHaveCount(3);
   await page.getByRole('combobox', {name:'Minimum rating'}).selectOption('3');
   await expect(page.locator('.photo-card')).toHaveCount(0);
   await page.getByRole('button', {name:'Reset filters'}).click();

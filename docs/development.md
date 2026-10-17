@@ -41,6 +41,9 @@ Cache denoised CFA by model. Apply highlight preservation, blend-with-original,
 and mask composition outside ONNX inference. Compose Global first, then local
 layers bottom-to-top; the local layer nearest Global applies last. Keep processing
 enablement separate from mask-overlay visibility.
+Blend each local layer between original and denoised CFA before applying its mask
+over the lower layers. At 0%, restore original pixels inside the mask; use mask
+coverage alone for composition, including fades and inversion.
 
 Track active-area offsets, CFA phase, scaling, and orientation explicitly through
 `PreviewGeometry`. Store recipe points in normalized oriented-preview coordinates
@@ -49,7 +52,12 @@ embeddings and previous-mask feedback for repeated point prompts.
 
 Fast previews use half-size Bayer demosaicing. High Quality uses the same path at
 scales of one half or less, and AMaZE above that. Linear RGB export uses
-full-resolution AMaZE. Retain the Darktable and original author attribution in
+full-resolution AMaZE. High Quality 1:1 uses AMaZE with aligned context crops;
+Fast 1:1 uses bilinear demosaicing. Apply no extra display sharpening. Compare
+detail tiles against the export renderer, including orientation and optical corrections.
+Clamp display RGB to [0, 1] before sRGB encoding to match Linear RGB DNG clipping.
+Keep Before and After in the same geometry, including during mask editing and cached updates.
+Retain the Darktable and original author attribution in
 `AmazeDemosaic.cpp`.
 
 Keep source files read-only. Persist source references, derived thumbnails, and
@@ -60,8 +68,8 @@ per-picture JSON recipes; do not persist large raw model-output caches.
 Bayer CFA export retains sensor-order samples and source orientation. Linear RGB
 export writes white-balanced linear sRGB with a RawLab identity profile,
 XYZ-D65-to-sRGB matrix, D65 illuminant, unity neutral/analog balance, and explicit
-three-channel black/white levels. Sharpening and Lensfun optical corrections apply
-to Linear RGB output, not Bayer CFA output.
+three-channel black/white levels. Normal sharpening applies to both export modes
+and defaults to Off. AI sharpening and Lensfun optical corrections require Linear RGB output.
 
 Preserve black/white levels, CFA layout, active area, camera identity, white balance,
 color matrices, and calibration illuminants. Export available exposure and lens
@@ -79,6 +87,8 @@ for native checks. Use `npm --prefix desktop run build` and
 `npm --prefix desktop test` for frontend checks. Validate representative DNGs with
 `tiffinfo`, `exiftool`, Darktable, and an independent reader such as RawTherapee;
 check geometry, color, metadata, and both export modes.
+The processing-session and viewport tests use deterministic cached CFA fixtures
+without model downloads. Pass a RawNIND model and runtime library to exercise real inference.
 
 ## Open defects and validation gaps
 

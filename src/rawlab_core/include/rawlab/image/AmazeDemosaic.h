@@ -7,6 +7,9 @@
 
 namespace rawlab::image {
 
+// Include AMaZE's context and retain full-image tile alignment for viewport rendering.
+raw::ActiveArea amazeWorkingArea(const raw::RawImage &source, const raw::ActiveArea &region);
+
 // Standalone adaptation of Darktable's AMaZE Bayer demosaic. Values are
 // WB-adjusted normalized camera RGB in R, G, B order and are indexed over the
 // active area. The CFA input is normalized after black/white scaling and

@@ -1396,6 +1396,20 @@ std::uint32_t filtersFor(const raw::CfaPattern &pattern, const raw::ActiveArea &
 
 } // namespace
 
+raw::ActiveArea amazeWorkingArea(const raw::RawImage &source, const raw::ActiveArea &region)
+{
+  const auto active = validArea(source, source.metadata().activeArea);
+  constexpr int stride = (AMAZETS & 992) - 32;
+  constexpr int context = 32;
+  const int left = std::max(0, region.left - active.left - context) / stride * stride;
+  const int top = std::max(0, region.top - active.top - context) / stride * stride;
+  const int right = std::min(active.width,
+    (region.left + region.width - active.left + context + stride - 1) / stride * stride);
+  const int bottom = std::min(active.height,
+    (region.top + region.height - active.top + context + stride - 1) / stride * stride);
+  return {active.left + left, active.top + top, right - left, bottom - top};
+}
+
 std::vector<std::array<float, 3>> demosaicAmaze(const raw::RawImage &source,
                                                 const raw::ActiveArea &requestedArea)
 {

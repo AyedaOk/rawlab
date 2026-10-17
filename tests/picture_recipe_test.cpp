@@ -58,7 +58,7 @@ int main(int argc, char **argv)
           != PictureRecipeLoadOutcome::Invalid) return 1;
 
   const QString future = directory.filePath(QStringLiteral("future.json"));
-  if(!writeFile(future, QByteArrayLiteral("{\"version\":11}"))
+  if(!writeFile(future, QByteArrayLiteral("{\"version\":12}"))
      || PictureRecipeStore::loadAtPathResult(future, 4, 2).outcome
           != PictureRecipeLoadOutcome::FutureVersion) return 1;
 

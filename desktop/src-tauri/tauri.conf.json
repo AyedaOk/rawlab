@@ -4,7 +4,7 @@
   "version": "0.2.2",
   "identifier": "org.rawlab.desktop-preview",
   "build": {
-    "beforeDevCommand": "npm run dev -- --port 5173 --strictPort",
+    "beforeDevCommand": "node scripts/dev.mjs",
     "devUrl": "http://127.0.0.1:5173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"

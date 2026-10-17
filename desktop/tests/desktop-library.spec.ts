@@ -57,7 +57,10 @@ test('removes library photographs with Delete and the context menu', async ({ pa
   await page.getByRole('menuitem', { name: 'Remove from library' }).click();
   await expect(page.getByRole('button', { name: 'Select b.ARW' })).toHaveCount(0);
   expect(await removeCalls(page, '/photos/b.ARW')).toBe(true);
-  await expect(page.getByRole('button', { name: /Alpine lake/ })).toBeVisible();
+  await expect(cards).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Alpine lake/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeDisabled();
+  await expect(page.locator('.empty-state')).toHaveText('Import pictures or a folder to begin.');
 });
 
 test('header shows the application version instead of the design label', async ({ page }) => {

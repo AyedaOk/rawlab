@@ -19,10 +19,50 @@ fn worker_response(response: serde_json::Value) -> Result<serde_json::Value, Str
     Ok(response)
 }
 
+fn prepare_batch_request(mut request: serde_json::Value, directory: &std::path::Path) -> Result<serde_json::Value, String> {
+    if request["operation"] == "batch_create" {
+        let fields = request.as_object_mut().ok_or("Invalid batch request")?;
+        // Only bridge-owned paths may bypass the inline worker request limit.
+        fields.remove("recipesPath");
+        if let Some(recipes) = fields.remove("recipes") {
+            if !recipes.is_array() { return Err("Batch recipes must be an array".into()); }
+            let path = directory.join("recipes.json");
+            std::fs::write(&path, serde_json::to_vec(&recipes).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            fields.insert("recipesPath".into(), serde_json::json!(path));
+        }
+    }
+    Ok(request)
+}
+
 #[cfg(test)]
 mod response_tests {
-    use super::worker_response;
+    use super::{prepare_batch_request, worker_response};
     use serde_json::json;
+
+    #[test]
+    fn large_batch_recipes_use_owned_temporary_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let recipes = json!((0..32).map(|index| json!({
+            "layers": [{"id": index}], "depthMaps": {"depth": {"png": "x".repeat(512 * 1024)}}
+        })).collect::<Vec<_>>());
+        assert!(serde_json::to_vec(&recipes).unwrap().len() > 16 * 1024 * 1024);
+        let request = prepare_batch_request(json!({
+            "operation": "batch_create", "recipes": recipes, "recipe": recipes[0],
+            "recipesPath": "/caller-supplied.json"
+        }), directory.path()).unwrap();
+        assert!(serde_json::to_vec(&request).unwrap().len() < 16 * 1024 * 1024);
+        assert!(request.get("recipes").is_none());
+        let path = std::path::PathBuf::from(request["recipesPath"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(directory.path()));
+        let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored, recipes);
+        let request = prepare_batch_request(json!({"operation": "batch_create", "recipesPath": "/caller-supplied.json"}), directory.path()).unwrap();
+        assert!(request.get("recipesPath").is_none());
+        assert!(prepare_batch_request(json!({"operation": "batch_create", "recipes": {}}), directory.path()).is_err());
+        drop(directory);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn recipe_outcomes_and_worker_errors() {
@@ -163,7 +203,7 @@ impl Engine {
         let cancel_path = directory.path().join("cancel");
         request["cancelPath"] = serde_json::json!(cancel_path);
         let operation = request["operation"].as_str().unwrap_or_default().to_string();
-    let cancellable = ["process", "recompose", "export", "export_linear", "segment"].contains(&operation.as_str());
+    let cancellable = ["process", "recompose", "export", "export_linear", "segment", "depth"].contains(&operation.as_str());
         *self.cancellation.lock().map_err(|e| e.to_string())? = CancellationState {
             operation: Some(operation), path: Some(cancel_path.clone()),
             preview_generation: generation.map(|(_, expected)| expected),
@@ -178,6 +218,7 @@ impl Engine {
             if generation.is_some_and(|(current, expected)| current.load(Ordering::Acquire) != expected) {
                 return Err("Preview superseded".into());
             }
+            let request = prepare_batch_request(request, directory.path())?;
             let worker = guard.as_mut().unwrap();
             writeln!(worker.input, "{}", request)
                 .and_then(|_| worker.input.flush())
@@ -241,7 +282,7 @@ pub fn raw_source_version(app: tauri::AppHandle, path: String) -> Result<String,
 pub fn cancel_processing(engine: tauri::State<'_, ProcessingEngine>) -> Result<(), String> {
     let cancellation = engine.0.cancellation.lock().map_err(|e| e.to_string())?;
     let cancellable = cancellation.operation.as_deref()
-        .is_some_and(|operation| ["process", "recompose", "export", "export_linear", "segment"].contains(&operation));
+        .is_some_and(|operation| ["process", "recompose", "export", "export_linear", "segment", "depth"].contains(&operation));
     if cancellable {
         if let Some(path) = cancellation.path.as_ref() {
             std::fs::write(path, b"cancel").map_err(|e| e.to_string())?;
@@ -360,6 +401,8 @@ pub async fn process_raw(
         if output_kind.as_deref() == Some("linear-rgb") { "export_linear" } else { "export" }
     } else if operation.as_deref() == Some("recompose") {
         "recompose"
+    } else if operation.as_deref() == Some("depth") {
+        "depth"
     } else {
         "process"
     };
@@ -434,6 +477,7 @@ pub async fn render_raw_detail(
     width: u32,
     height: u32,
     recipe: serde_json::Value,
+    high_quality: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 16 * 1024 * 1024 {
         return Err("Invalid source preview region".into());
@@ -456,7 +500,8 @@ pub async fn render_raw_detail(
     tauri::async_runtime::spawn_blocking(move || {
       let mut response = engine.request_guarded(&app, serde_json::json!({
         "operation":"detail", "path":canonical.clone(), "target":target, "resultId":result_id,
-        "x":x, "y":y, "width":width, "height":height, "recipe":recipe
+        "x":x, "y":y, "width":width, "height":height, "recipe":recipe,
+        "quality": if high_quality.unwrap_or(true) { "high" } else { "fast" }
       }), Some((&current_generation, generation)))?;
       let current = source_version(&canonical)?;
       if current != version { return Err("Source changed while rendering detail; retry".into()); }

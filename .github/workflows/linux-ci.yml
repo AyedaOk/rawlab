@@ -22,7 +22,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config g++ \
             qt6-base-dev qt6-base-dev-tools qt6-image-formats-plugins qt6-wayland \
-            libraw-dev libtiff-dev libpng-dev
+            libraw-dev libtiff-dev libpng-dev liblensfun-dev \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
       - name: Fetch pinned ONNX Runtime headers
         run: |
           mkdir -p "$RUNNER_TEMP/onnx-include"
@@ -35,9 +43,25 @@ jobs:
         run: cmake --build --preset dev --parallel 2
       - name: Test (no model downloads required)
         run: ctest --preset dev
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      - name: Build and test desktop
+        working-directory: desktop
+        env:
+          RAWLAB_ENGINE_SOURCE: ../build/dev/src/rawlab_preview/rawlab-preview
+        run: |
+          npm run desktop:prepare
+          npm run build
+          npm test -- --workers=2
+          cargo test --manifest-path src-tauri/Cargo.toml
       - name: Keep test diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: linux-test-logs
-          path: build/dev/Testing/Temporary/
+          path: |
+            build/dev/Testing/Temporary/
+            desktop/test-results/

@@ -24,6 +24,10 @@ QString managedModelPath(const QString &id, const QString &version)
 ApplicationSettingsData defaults()
 {
   ApplicationSettingsData data;
+  data.depthModels.push_back({"hf:mask-depth-anything-v2-small", "Depth Anything V2 Small",
+    managedModelPath("mask-depth-anything-v2-small", "1.0"), "depth-anything-v2-v1",
+    "mask-depth-anything-v2-small", "1.0", "default"});
+  data.activeDepthModelId = data.depthModels.front().id;
   data.samModels.push_back({
     QStringLiteral("hf:mask-object-sam21-large"),
     QStringLiteral("SAM 2.1 Large"),
@@ -165,6 +169,24 @@ ApplicationSettingsData ApplicationSettingsStore::load() const
   }
   settings.endArray();
 
+  if(settings.contains("depthModels/size"))
+  {
+    data.depthModels.clear();
+    const int depthCount = settings.beginReadArray("depthModels");
+    for(int i = 0; i < depthCount; ++i)
+    {
+      settings.setArrayIndex(i);
+      const DepthModelDefinition model{settings.value("id").toString(), settings.value("name").toString(),
+        settings.value("path").toString(), settings.value("adapter").toString(), settings.value("sourceId").toString(),
+        settings.value("version").toString(), settings.value("origin", "manual").toString()};
+      if(!model.id.isEmpty() && !model.name.isEmpty()) data.depthModels.push_back(model);
+    }
+    settings.endArray();
+    data.activeDepthModelId = settings.value("depthModels/activeId").toString();
+  }
+  if(!data.activeDepthModelId.isEmpty()
+     && std::none_of(data.depthModels.begin(), data.depthModels.end(), [&](const auto &m) { return m.id == data.activeDepthModelId; }))
+    data.activeDepthModelId = data.depthModels.isEmpty() ? QString{} : data.depthModels.front().id;
   return data;
 }
 
@@ -174,6 +196,18 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
   settings.setValue(QStringLiteral("ai/provider"), data.onnxProvider);
   settings.setValue(QStringLiteral("ai/deviceId"), std::max(0, data.onnxDeviceId));
   settings.setValue(QStringLiteral("ai/runtimeLibrary"), data.onnxRuntimeLibrary);
+  settings.beginWriteArray("depthModels", data.depthModels.size());
+  for(int i = 0; i < data.depthModels.size(); ++i)
+  {
+    settings.setArrayIndex(i);
+    const auto &model = data.depthModels[i];
+    settings.setValue("id", model.id); settings.setValue("name", model.name);
+    settings.setValue("path", model.path); settings.setValue("adapter", model.adapter);
+    settings.setValue("sourceId", model.sourceId); settings.setValue("version", model.version);
+    settings.setValue("origin", model.origin);
+  }
+  settings.endArray();
+  settings.setValue("depthModels/activeId", data.activeDepthModelId);
   settings.remove(QStringLiteral("sam21"));
   settings.beginWriteArray(QStringLiteral("samModels"), data.samModels.size());
   for(int i = 0; i < data.samModels.size(); ++i)
@@ -250,6 +284,20 @@ void ApplicationSettingsStore::registerInstalledModel(ApplicationSettingsData &d
                                                        const QString &origin)
 {
   const QString managedId = QStringLiteral("hf:%1").arg(sourceId);
+  if(task == "depth")
+  {
+    for(auto &model : data.depthModels)
+      if(model.sourceId == sourceId)
+      {
+        model = {model.id, name, location, adapter, sourceId, version, origin};
+        return;
+      }
+    const bool activeInstalled = std::any_of(data.depthModels.begin(), data.depthModels.end(),
+      [&](const auto &model) { return model.id == data.activeDepthModelId && QFileInfo{model.path}.isFile(); });
+    data.depthModels.push_back({managedId, name, location, adapter, sourceId, version, origin});
+    if(!activeInstalled) data.activeDepthModelId = managedId;
+    return;
+  }
   if(task == QStringLiteral("mask"))
   {
     for(SamModelDefinition &model : data.samModels)

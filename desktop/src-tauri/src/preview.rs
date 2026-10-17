@@ -12,27 +12,29 @@ pub(crate) fn engine_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("RAWLAB_PREVIEW_ENGINE") {
         return Ok(PathBuf::from(path));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = worker_sibling(&exe);
-        if sibling.is_file() {
-            return Ok(sibling);
-        }
-    }
-    // Development convenience. Packaged builds must provide a sibling bridge.
-    if cfg!(debug_assertions) {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let root = cfg!(debug_assertions).then(|| {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .parent()
-            .unwrap();
-        for build in ["preview", "dev"] {
+            .unwrap()
+    });
+    find_engine(root, std::env::current_exe().ok().as_deref())
+        .ok_or_else(|| "RAW preview engine not found. Build CMake target rawlab_preview, or set RAWLAB_PREVIEW_ENGINE to the rawlab-preview executable and restart the desktop app.".into())
+}
+
+fn find_engine(root: Option<&Path>, executable: Option<&Path>) -> Option<PathBuf> {
+    // Prefer the configured dev preset to an older staged/package worker.
+    // Release builds pass no source root and use their sibling bridge.
+    if let Some(root) = root {
+        for build in ["dev", "preview"] {
             let path = root.join(format!("build/{build}/src/rawlab_preview/rawlab-preview{}", std::env::consts::EXE_SUFFIX));
             if path.is_file() {
-                return Ok(path);
+                return Some(path);
             }
         }
     }
-    Err("RAW preview engine not found. Build CMake target rawlab_preview, or set RAWLAB_PREVIEW_ENGINE to the rawlab-preview executable and restart the desktop app.".into())
+    executable.map(worker_sibling).filter(|path| path.is_file())
 }
 
 fn worker_sibling(executable: &Path) -> PathBuf {
@@ -52,6 +54,28 @@ mod tests {
         let resolved = worker_sibling(&directory.path().join("rawlab-desktop"));
         assert_eq!(resolved, expected);
         assert!(resolved.is_file());
+    }
+
+    #[test]
+    fn development_worker_takes_priority_over_staged_and_preview_workers() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let executable = root.join("target/debug/rawlab-desktop");
+        let sibling = worker_sibling(&executable);
+        let dev = worker_sibling(&root.join("build/dev/src/rawlab_preview/unused"));
+        let preview = worker_sibling(&root.join("build/preview/src/rawlab_preview/unused"));
+        for path in [&sibling, &preview, &dev] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"worker").unwrap();
+        }
+        assert_eq!(find_engine(Some(root), Some(&executable)), Some(dev.clone()));
+        assert_eq!(find_engine(None, Some(&executable)), Some(sibling.clone()));
+        std::fs::remove_file(dev).unwrap();
+        assert_eq!(find_engine(Some(root), Some(&executable)), Some(preview.clone()));
+        std::fs::remove_file(preview).unwrap();
+        assert_eq!(find_engine(Some(root), Some(&executable)), Some(sibling.clone()));
+        std::fs::remove_file(sibling).unwrap();
+        assert_eq!(find_engine(Some(root), Some(&executable)), None);
     }
 }
 

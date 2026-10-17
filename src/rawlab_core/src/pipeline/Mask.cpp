@@ -78,6 +78,25 @@ std::vector<float> squaredDistanceTransform(const std::vector<float> &source,
 
 } // namespace
 
+Mask depthRangeMask(const Mask &depth, const int width, const int height, const std::array<float, 4> &range)
+{
+  if(width <= 0 || height <= 0) throw std::invalid_argument{"Invalid depth mask dimensions"};
+  for(std::size_t i = 0; i < range.size(); ++i)
+    if(!std::isfinite(range[i]) || range[i] < 0 || range[i] > 1 || (i && range[i] < range[i - 1]))
+      throw std::invalid_argument{"Depth range must contain four ordered values in [0, 1]"};
+  std::vector<float> values(static_cast<std::size_t>(width) * height);
+  for(int y = 0; y < height; ++y) for(int x = 0; x < width; ++x)
+  {
+    const float d = depth.sampleBilinearMapped(x, y, width, height);
+    const float start = range[0] == range[1] ? (d >= range[1] ? 1.0f : 0.0f)
+      : std::clamp((d - range[0]) / (range[1] - range[0]), 0.0f, 1.0f);
+    const float end = range[2] == range[3] ? (d <= range[2] ? 1.0f : 0.0f)
+      : std::clamp((range[3] - d) / (range[3] - range[2]), 0.0f, 1.0f);
+    values[static_cast<std::size_t>(y * width + x)] = std::min(start, end);
+  }
+  return {width, height, std::move(values)};
+}
+
 Mask::Mask(const int width, const int height, std::vector<float> values)
   : width_{width}, height_{height}, values_{std::move(values)}
 {

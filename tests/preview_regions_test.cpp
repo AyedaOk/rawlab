@@ -1,4 +1,5 @@
 #include "ProcessingSession.h"
+#include "ProcessingSessionFixture.h"
 #include "rawlab/dng/DngWriter.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
@@ -46,16 +47,17 @@ int main(int argc, char **argv)
         for(int c = 0; c < 3; ++c)
           error = std::max(error, std::fabs(region.pixels[(y * rect.width() + x) * 3 + c]
             - full.pixels[((y + rect.y()) * full.width + x + rect.x()) * 3 + c]));
-      if(error > 0.0003f) throw std::runtime_error{"Region differs from full-image reference: " + std::to_string(error)
+      if(error > 0.00001f) throw std::runtime_error{"Region differs from full-image reference: " + std::to_string(error)
         + " " + context.toStdString() + " at " + std::to_string(rect.x()) + "," + std::to_string(rect.y())};
     };
     ProcessingSession session;
-    if(argc > 1)
+    ApplicationSettingsData settings;
     {
-      ApplicationSettingsData settings;
       settings.onnxProvider = "cpu";
       if(argc > 2) settings.onnxRuntimeLibrary = QString::fromLocal8Bit(argv[2]);
-      settings.denoiseModels.push_back({"test", "Test", QString::fromLocal8Bit(argv[1]), "rawnind-bayer-v1"});
+      const QString modelPath = argc > 1 ? QString::fromLocal8Bit(argv[1]) : directory.filePath("fixture.onnx");
+      if(argc == 1) { QFile file{modelPath}; if(!file.open(QIODevice::WriteOnly)) return 1; file.write("fixture"); }
+      settings.denoiseModels.push_back({"test", "Test", modelPath, "rawnind-bayer-v1"});
       ApplicationSettingsStore{}.save(settings);
     }
     const QJsonObject recipe{{"layers", QJsonArray{QJsonObject{{"enabled", false}}, QJsonObject{{"enabled", false}}}}};
@@ -68,8 +70,7 @@ int main(int argc, char **argv)
       const auto source = session.source(path);
       source->metadata().lensMake = metadata.lensMake;
       source->metadata().lensModel = metadata.lensModel;
-      const auto geometry = rawlab::image::rawPreviewGeometry(*source, 10000);
-      const auto full = rawlab::image::renderLinearRawPreviewRegion(*source, 0, 0, geometry.previewWidth, geometry.previewHeight);
+      const auto full = ProcessingSessionTest::exportReference(*source);
       for(const QRect &rect : {QRect{0, 0, 64, 48}, QRect{247, 251, 97, 83},
           QRect{full.width - 70, full.height - 50, 70, 50}})
       {
@@ -78,6 +79,11 @@ int main(int argc, char **argv)
         const auto warm = session.detail(path, recipe, rect);
         if(warm.pixels != region.pixels) return 1;
       }
+      const QRect qualityRect{247, 251, 97, 83};
+      const auto fast = session.detail(path, recipe, qualityRect, {}, {}, rawlab::image::PreviewQuality::Fast);
+      const auto high = session.detail(path, recipe, qualityRect);
+      if(fast.pixels == high.pixels) throw std::runtime_error{"Detail quality did not change demosaicing"};
+      compare(full, high, qualityRect);
 #ifdef RAWLAB_HAS_LENSFUN
       // Use explicit metadata: LibRaw need not preserve the synthetic lens name.
       for(const auto optics : {rawlab::image::OpticsOptions{true, false}, {false, true}, {true, true}})
@@ -98,8 +104,8 @@ int main(int argc, char **argv)
         }
       }
 #endif
-      if(argc > 1)
       {
+        if(argc == 1) ProcessingSessionTest::seed(session, path, settings);
         const QJsonObject global{{"id", 0}, {"enabled", true}, {"modelId", "test"},
           {"blend", 73}, {"sharpen", "Normal"}, {"strength", 37}};
         auto local = global;
@@ -107,21 +113,33 @@ int main(int argc, char **argv)
         local["feather"] = 8; local["blur"] = 4;
         local["marks"] = QJsonArray{QJsonObject{{"tool", "Ellipse"},
           {"points", QJsonArray{QJsonArray{.12, .14}, QJsonArray{.85, .86}}}}};
-        const QJsonObject maskedRecipe{{"layers", QJsonArray{global, local}},
+        QJsonObject maskedRecipe{{"layers", QJsonArray{global, local}},
           {"outputKind", "linear-rgb"}, {"highlights", true}};
-        const auto composed = session.process(path, maskedRecipe, {});
-        auto expected = rawlab::image::renderLinearRawPreviewRegion(*composed, 0, 0, full.width, full.height);
-        const QRect rect{247, 251, 97, 83};
-        context = QStringLiteral("masked CFA flip %1").arg(flip);
-        compare(expected, session.detail(path, maskedRecipe, rect), rect);
+        for(const bool useDepth : {false, true})
+        {
+          if(useDepth)
+          {
+            local["depth"] = QJsonObject{{"map", "test"}, {"range", QJsonArray{10, 40, 60, 85}}};
+            local["marks"] = QJsonArray{};
+            local["inverted"] = true;
+            maskedRecipe["depthMaps"] = QJsonObject{{"test", QJsonObject{{"png",
+              depthMapPng(rawlab::pipeline::horizontalGradientMask(93, 61))}}}};
+            maskedRecipe["layers"] = QJsonArray{global, local};
+          }
+          const auto composed = session.process(path, maskedRecipe, {});
+          auto expected = ProcessingSessionTest::exportReference(*composed);
+          const QRect rect{247, 251, 97, 83};
+          context = QStringLiteral("masked CFA flip %1 depth %2").arg(flip).arg(useDepth);
+          compare(expected, session.detail(path, maskedRecipe, rect), rect);
 #ifdef RAWLAB_HAS_LENSFUN
-        const auto corrected = rawlab::image::applyOpticsCorrections(
-          {expected.width, expected.height, std::move(expected.pixels)}, source->metadata(), {true, true});
-        context = QStringLiteral("corrected masks flip %1").arg(flip);
-        const auto detail = session.detail(path, maskedRecipe, rect, {true, true});
-        compare(corrected, detail, rect);
-        if(session.detail(path, maskedRecipe, rect, {true, true}).pixels != detail.pixels) return 1;
+          const auto corrected = rawlab::image::applyOpticsCorrections(
+            {expected.width, expected.height, std::move(expected.pixels)}, source->metadata(), {true, true});
+          context = QStringLiteral("corrected masks flip %1 depth %2").arg(flip).arg(useDepth);
+          const auto detail = session.detail(path, maskedRecipe, rect, {true, true});
+          compare(corrected, detail, rect);
+          if(session.detail(path, maskedRecipe, rect, {true, true}).pixels != detail.pixels) return 1;
 #endif
+        }
       }
       bool cancelled = false;
       try { session.detail(path, recipe, {0, 0, 10, 10}, {}, [] { throw std::runtime_error{"cancel"}; }); }

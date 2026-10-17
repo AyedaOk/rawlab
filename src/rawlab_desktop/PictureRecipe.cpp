@@ -22,7 +22,7 @@
 
 namespace {
 
-constexpr int currentRecipeVersion = 10;
+constexpr int currentRecipeVersion = 11;
 
 float clampUnit(const double value)
 {

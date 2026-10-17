@@ -24,6 +24,7 @@ test('restoration is per-photo and switching flushes the previous recipe', async
   await page.goto('/');
   await expect(page.getByRole('button',{name:'Select a.ARW',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
+  await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await expect(page.getByRole('combobox',{name:'AI sharpening model'})).toHaveValue('sharp-a');
   await page.getByRole('slider',{name:'Blend with denoised'}).fill('63');
   await page.getByRole('button',{name:'Edit b.ARW',exact:true}).click();
@@ -101,6 +102,58 @@ test('flushAll drains keys introduced while another save is running', async ({pa
     return {saved: await queue.flushAll(), calls};
   });
   expect(result).toEqual({saved: true, calls: ['A', 'B']});
+});
+
+test('overlapping flushes wait for the latest write and retain a failed revision for retry', async ({page}) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const {PersistenceQueue} = await import('/src/persistence.ts');
+    let releaseFirst!: () => void, rejectLatest!: (error: Error) => void;
+    let firstStarted!: () => void, latestStarted!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const latest = new Promise<void>((_, reject) => { rejectLatest = reject; });
+    const starting = new Promise<void>(resolve => { firstStarted = resolve; });
+    const updating = new Promise<void>(resolve => { latestStarted = resolve; });
+    let attempts = 0, completed = 0;
+    const queue = new PersistenceQueue(() => {});
+    queue.schedule('recipe:a', 0, async () => { firstStarted(); await first; });
+    await starting;
+    queue.schedule('recipe:a', 0, async () => {
+      attempts++;
+      latestStarted();
+      if (attempts === 1) await latest;
+    });
+    const flushes = [queue.flush('recipe:a'), queue.flushAll()].map(promise =>
+      promise.then(saved => { completed++; return saved; }));
+    releaseFirst();
+    await updating;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const beforeLatestFinishes = completed;
+    rejectLatest(new Error('disk full'));
+    const saved = await Promise.all(flushes);
+    const failed = queue.failedKeys();
+    const retried = await queue.retry('recipe:a');
+    return {beforeLatestFinishes, saved, failed, retried, attempts, remaining: queue.failedKeys()};
+  });
+  expect(result).toEqual({beforeLatestFinishes: 0, saved: [false, false], failed: ['recipe:a'],
+    retried: true, attempts: 2, remaining: []});
+});
+
+test('synchronous save errors remain retryable', async ({page}) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const {PersistenceQueue} = await import('/src/persistence.ts');
+    let attempts = 0;
+    const queue = new PersistenceQueue(() => {});
+    queue.schedule('recipe:a', 0, () => {
+      if (++attempts === 1) throw new Error('save unavailable');
+      return Promise.resolve();
+    });
+    const saved = await queue.flushAll();
+    const retried = await queue.retry('recipe:a');
+    return {saved, retried, attempts, remaining: queue.failedKeys()};
+  });
+  expect(result).toEqual({saved: false, retried: true, attempts: 2, remaining: []});
 });
 
 test('an edit made during recipe restoration is preserved and saved', async ({page}) => {

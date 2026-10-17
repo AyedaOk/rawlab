@@ -70,11 +70,11 @@ export class PersistenceQueue {
   private async drain(key: string, entry: Entry): Promise<boolean> {
     if (entry.blocked !== undefined) return false;
     while (true) {
-      if (entry.running) await entry.running;
+      while (entry.running) await entry.running;
       if (entry.blocked !== undefined) return false;
       const pending = entry.pending;
       if (!pending) {
-        if (entry.timer === undefined) this.entries.delete(key);
+        if (entry.timer === undefined && this.entries.get(key) === entry) this.entries.delete(key);
         return true;
       }
       if (entry.timer !== undefined) {
@@ -82,18 +82,18 @@ export class PersistenceQueue {
         entry.timer = undefined;
       }
       entry.pending = undefined;
-      entry.running = (async () => {
-      try {
+      entry.running = Promise.resolve().then(async () => {
+        try {
           await pending.task();
           this.onSuccess?.(key);
-      } catch (error) {
+        } catch (error) {
           entry.pending ??= pending;
           entry.blocked = error;
-        this.onError(key, error);
-      } finally {
-        entry.running = undefined;
-      }
-    })();
+          this.onError(key, error);
+        } finally {
+          entry.running = undefined;
+        }
+      });
       await entry.running;
     }
   }

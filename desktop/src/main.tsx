@@ -53,6 +53,8 @@ import {
   cancelBatchProcessing,
   type BatchStatus,
   segmentRaw,
+  estimateDepth,
+  type DepthMap,
   listLibrary,
   libraryMetadata,
   saveLibraryMetadata,
@@ -73,12 +75,14 @@ import ModelManager from "./ModelManager";
 import { PersistenceQueue } from "./persistence";
 import MaskOverlay, { type MaskOverlayHandle } from "./MaskOverlay";
 import MaskGuides, { type MaskGuidesHandle } from "./MaskGuides";
-import { type Mark } from "./mask";
+import { type Mark, type DepthRange } from "./mask";
+import DepthRangeControls from "./DepthRangeControls";
 
 type Layer = {
   marks: Mark[];
   points: [number, number, boolean][];
   aiMask?: string;
+  depth?: { map: string; range: DepthRange };
   modelId: string;
   id: number;
   name: string;
@@ -92,7 +96,7 @@ type Layer = {
   showMask: boolean;
 };
 type Photo = {
-  processed?: { url: string; before: string; key: string; high: boolean; resultId: string; sourceVersion?: string };
+  processed?: { url: string; before: string; key: string; inferenceKey?: string; high: boolean; resultId: string; sourceVersion?: string };
   rawPath?: string;
   metadata?: RawPreview["metadata"];
   previewWidth?: number;
@@ -103,6 +107,7 @@ type Photo = {
   url: string;
   identity: string;
   layers: Layer[];
+  depthMaps?: Record<string, DepthMap>;
   rating: number;
   labels?: string[];
   sharpenModelId?: string;
@@ -168,7 +173,7 @@ function IconButton({
 }
 function App() {
   const importing = useRef(false);
-  const [photos, setPhotos] = useState<Photo[]>([demo]);
+  const [photos, setPhotos] = useState<Photo[]>(() => isDesktop() ? [] : [demo]);
   const [currentId, setCurrentId] = useState(0);
   const [selection, setSelection] = useState<number[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; id: number } | null>(null);
@@ -242,7 +247,7 @@ function App() {
     sourceHeight: number;
     sourceVersion?: string;
   } | null>(null);
-  const [maskGeometryView, setMaskGeometryView] = useState<{ key: string; url: string } | null>(null);
+  const [maskGeometryView, setMaskGeometryView] = useState<{ key: string; url: string; before?: string } | null>(null);
   const rawViewRef = useRef(rawView);
   rawViewRef.current = rawView;
   const [detailView, setDetailView] = useState<{
@@ -251,6 +256,7 @@ function App() {
   const [rawBusy, setRawBusy] = useState(false);
   const [rawError, setRawError] = useState("");
   const [failedPreviewKey, setFailedPreviewKey] = useState("");
+  const [draftPreview, setDraftPreview] = useState<{ identity: string; url: string } | null>(null);
   const [processing, setProcessing] = useState(false);
   const processingRequest = useRef(false);
   const samRequest = useRef(0);
@@ -272,7 +278,12 @@ function App() {
   }, []);
   const [externalSession, setExternalSession] = useState<ExternalSession | null>(null);
   const externalSessionRef = useRef(externalSession);
+  const pendingExternalExit = useRef<number | undefined>(undefined);
+  const [externalPendingExit, setExternalPendingExit] = useState(false);
   externalSessionRef.current = externalSession;
+  // Lock processing controls while a Darktable export runs or its failed save awaits retry,
+  // so the exported DNG and the persisted recipe cannot diverge.
+  const externalLock = !!externalSession && (processing || externalPendingExit);
   const photosRef = useRef(photos);
   photosRef.current = photos;
   const history = useRef(new Map<number, { undo: Photo[]; redo: Photo[] }>());
@@ -376,9 +387,10 @@ function App() {
                  loadedRecipes.current.add(photo.id);
                  setPhotos((items) => items.map((item) => item.id === photo.id ? {
                    ...item, layers: stored.layers.map((layer, index) => ({ ...initialLayer(), id: index, ...(layer as Partial<Layer>) })),
-                   highlights: stored.highlights !== false, sharpenModelId: stored.sharpenModelId,
-                   chromaticAberration: stored.chromaticAberration === true,
-                   lensCorrection: stored.lensCorrection === true,
+                    highlights: stored.highlights !== false, sharpenModelId: stored.sharpenModelId,
+                    chromaticAberration: stored.chromaticAberration === true,
+                    lensCorrection: stored.lensCorrection === true,
+                    depthMaps: stored.depthMaps,
                  } : item));
                }
              } else await restorePhotoRecipe(photo, () => cancelled);
@@ -401,7 +413,7 @@ function App() {
             try {
               const loaded = await loadPreset(name);
               const recipe = loaded.recipe;
-              if (recipe && Array.isArray(recipe.layers)) shared.push({ name, layers: recipe.layers.map((layer) => ({ ...initialLayer(), ...(layer as Partial<Layer>) })), highlights: recipe.highlights !== false, sharpenModelId: recipe.sharpenModelId });
+              if (recipe && Array.isArray(recipe.layers)) shared.push({ name, layers: recipe.layers.map((layer) => ({ ...initialLayer(), ...(layer as Partial<Layer>) })), highlights: recipe.highlights !== false, sharpenModelId: recipe.sharpenModelId, depthMaps: recipe.depthMaps });
             } catch {
               // Keep the remaining presets available if one legacy entry is invalid.
             }
@@ -489,6 +501,7 @@ function App() {
       layers: Layer[];
       highlights: boolean;
       sharpenModelId?: string;
+      depthMaps?: Record<string, DepthMap>;
     }[]
   >(() => {
     if (isDesktop()) return [];
@@ -534,6 +547,11 @@ function App() {
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [editingMask, setEditingMask] = useState(false);
   const [maskTool, setMaskTool] = useState("AI");
+  const [depthDraft, setDepthDraft] = useState<DepthRange>();
+  const [depthError, setDepthError] = useState<{ key: string; message: string } | null>(null);
+  const activeMaskKey = useRef("");
+  activeMaskKey.current = `${currentId}:${layerId}`;
+  useEffect(() => { setDepthDraft(undefined); }, [currentId, layerId, maskTool, editingMask]);
   const [brushSizes, setBrushSizes] = useState({ Brush: 6, Erase: 6 });
   const brushKind = maskTool === "Erase" ? "Erase" : "Brush";
   const brushSize = brushSizes[brushKind];
@@ -757,7 +775,7 @@ function App() {
     observer.observe(canvas.current);
     return () => observer.disconnect();
   }, [library]);
-  const photo = photos.find((p) => p.id === currentId) ?? photos[0];
+  const photo = photos.find((p) => p.id === currentId) ?? photos[0] ?? demo;
   const selectedRawCount = selection.filter((id) => photos.find((item) => item.id === id)?.rawPath).length;
   const active = photo.layers.find((l) => l.id === layerId) ?? photo.layers[0];
   useEffect(() => {
@@ -833,7 +851,10 @@ function App() {
       : photo.url;
   function recipeFor(p: Photo, outputKind?: "cfa" | "linear-rgb") {
     const defaultDenoiseId = "hf:rawdenoise-okeinla";
+    const depthMaps = Object.fromEntries(Object.entries(p.depthMaps ?? {})
+      .filter(([key]) => p.layers.some(layer => layer.depth?.map === key)));
     return {
+      ...(Object.keys(depthMaps).length ? { depthMaps } : {}),
       layers: p.layers.map((l) => ({
         ...l,
         modelId: l.modelId || defaultDenoiseId,
@@ -845,20 +866,15 @@ function App() {
       sharpenModelId: p.sharpenModelId ?? defaultSharpenModelId,
     };
   }
-  function previewEndpointKey(recipe: ReturnType<typeof recipeFor>) {
-    return JSON.stringify({
-      ...recipe,
-      outputKind: undefined,
-      chromaticAberration: false,
-      lensCorrection: false,
-      layers: recipe.layers.map((layer) => ({...layer, blend: 0, strength: 0, sharpen: "Off"})),
-    });
-  }
   function canRecomposePreview(processed: NonNullable<Photo["processed"]>) {
     try {
-      const previous = JSON.parse(processed.key) as ReturnType<typeof recipeFor>;
-      return previewEndpointKey(previous) === previewEndpointKey(recipeFor(photo, exportKind))
-        && photo.layers.every((layer, i) => layer.sharpen !== "AI" || previous.layers[i]?.sharpen === "AI");
+      const previous = JSON.parse(processed.inferenceKey ?? processed.key) as ReturnType<typeof recipeFor>;
+      const next = recipeFor(photo, exportKind);
+      return next.layers.every((layer) => !layer.enabled || previous.layers.some((cached) =>
+        cached.enabled && cached.modelId === layer.modelId
+        && (layer.sharpen !== "AI" || exportKind === "cfa"
+          || (cached.sharpen === "AI" && previous.outputKind === "linear-rgb"
+            && previous.sharpenModelId === next.sharpenModelId))));
     } catch {
       return false;
     }
@@ -913,16 +929,27 @@ function App() {
     && !!previewSource && failedPreviewKey !== previewKey;
   const correctedGeometry = exportKind === "linear-rgb"
     && (photo.chromaticAberration || photo.lensCorrection);
-  const maskGeometryKey = `${photo.id}:${photo.processed?.resultId ?? ""}:${quality}:${previewDimension}`;
+  const previewIdentity = `${photo.id}:${photo.processed?.resultId ?? ""}:${quality}:${previewDimension}`;
+  const maskGeometryKey = `${previewIdentity}:${recipeKey}`;
   const displayUrl = editingMask && correctedGeometry
     ? maskGeometryView?.key === maskGeometryKey ? maskGeometryView.url : originalUrl
-    : rendered?.url ?? photo.processed?.url ?? originalUrl;
+    : rendered?.url ?? (draftPreview?.identity === previewIdentity ? draftPreview.url : photo.processed?.url) ?? originalUrl;
+  const beforeUrl = editingMask && correctedGeometry
+    ? (maskGeometryView?.key === maskGeometryKey ? maskGeometryView.before : undefined) ?? originalUrl
+    : rendered?.before ?? photo.processed?.before ?? originalUrl;
   useEffect(() => {
-    if (!rendered?.before) return;
     const image = new Image();
-    image.src = rendered.before;
+    image.src = beforeUrl;
     void image.decode().catch(() => {});
-  }, [rendered?.before]);
+  }, [beforeUrl]);
+  async function finishSavedExternal(code: number) {
+    pendingExternalExit.current = code;
+    setExternalPendingExit(true);
+    if (!await persistence.current?.flushAll()) throw new Error("Could not save changes. Retry save before returning to Darktable.");
+    await finishExternal(code);
+    pendingExternalExit.current = undefined;
+    setExternalPendingExit(false);
+  }
   async function updateProcessing(exporting = false, outputKind: "cfa" | "linear-rgb" = exportKind,
     selectedPhoto: Photo = photo) {
     const photo = selectedPhoto;
@@ -937,15 +964,19 @@ function App() {
       return;
     }
     if (processingRequest.current) return;
+    if (exporting && pendingExternalExit.current !== undefined) {
+      await finishSavedExternal(pendingExternalExit.current).catch((error) => setNotice(String(error)));
+      return;
+    }
     if (exporting && externalSession?.mode === "batch") {
       processingRequest.current = true;
       setProcessing(true);
       setProgress("Processing Darktable batch…");
       try {
         enqueuePhotoPersistence(photo, 0);
-        await persistence.current?.flushAll();
+        if (!await persistence.current?.flushAll()) throw new Error("Could not save changes. Retry save before exporting.");
         const result = await runExternalBatch(externalSession.request!, recipeFor(photo, outputKind));
-        await finishExternal(result.complete ? 0 : 3);
+        await finishSavedExternal(result.complete ? 0 : 3);
       } catch (error) {
         setRawError(String(error));
         setNotice(String(error));
@@ -987,6 +1018,10 @@ function App() {
           : await exportDestination(photo.name)
         : undefined;
       if (exporting && !destination) return;
+      if (exporting) {
+        enqueuePhotoPersistence(photo, 0);
+        if (!await persistence.current?.flushAll()) throw new Error("Could not save changes. Retry save before exporting.");
+      }
       const result = await processRaw(
         path,
         recipe,
@@ -996,10 +1031,8 @@ function App() {
         previewDimension,
       );
        if (exporting) {
-         enqueuePhotoPersistence(photo, 0);
-         await persistence.current?.flushAll();
-         setNotice(`DNG exported: ${result.output}`);
-         if (externalSession?.mode === "single") await finishExternal(0);
+          setNotice(`DNG exported: ${result.output}`);
+          if (externalSession?.mode === "single") await finishSavedExternal(0);
        }
       else {
         setPhotos((ps) =>
@@ -1013,7 +1046,8 @@ function App() {
                    processed: {
                      url: `data:image/png;base64,${result.png}`,
                      before: `data:image/png;base64,${result.before}`,
-                     key,
+                      key,
+                      inferenceKey: key,
                      high,
                      resultId: result.resultId ?? "",
                      sourceVersion: result.sourceVersion,
@@ -1060,13 +1094,15 @@ function App() {
     const originalIdentity = `${path}:${rawView.sourceVersion ?? ""}`;
     const identity = processed?.resultId || originalIdentity;
     const detailRecipe = editingMask && correctedGeometry
-      ? recipeFor(photo, "cfa") : recipeFor(photo, exportKind);
+      ? { ...recipeFor(photo, exportKind), chromaticAberration: false, lensCorrection: false }
+      : recipeFor(photo, exportKind);
     const geometryKey = JSON.stringify(detailRecipe);
-    const detailKey = `${identity}:${target}:${geometryKey}:${x}:${y}:${width}:${height}`;
+    const detailIdentity = `${identity}:${target}:${quality}:${detailRecipe.outputKind}:${detailRecipe.chromaticAberration}:${detailRecipe.lensCorrection}`;
+    const detailKey = `${detailIdentity}:${geometryKey}:${x}:${y}:${width}:${height}`;
     const beforeKey = target === "processed"
-      ? `${originalIdentity}:original:${detailRecipe.outputKind}:${photo.chromaticAberration}:${photo.lensCorrection}:${x}:${y}:${width}:${height}` : detailKey;
+      ? `${originalIdentity}:original:${quality}:${detailRecipe.outputKind}:${detailRecipe.chromaticAberration}:${detailRecipe.lensCorrection}:${x}:${y}:${width}:${height}` : detailKey;
     const key = `${detailKey}:${beforeKey}`;
-    if (pixelZoom) setDetailView((current) => current?.key.startsWith(`${identity}:${target}:`)
+    if (pixelZoom) setDetailView((current) => current?.key.startsWith(`${detailIdentity}:`)
       ? current : null);
     const token = ++detailRequest.current;
     setFailedPreviewKey("");
@@ -1078,7 +1114,7 @@ function App() {
       const load = async (cacheKey: string, requestTarget: "original" | "processed", resultId?: string) => {
         let url = detailCache.current.get(cacheKey);
         if (!url) {
-          const result = await renderRawDetail(path, requestTarget, resultId, x, y, width, height, detailRecipe);
+          const result = await renderRawDetail(path, requestTarget, resultId, x, y, width, height, detailRecipe, quality);
           if (result.sourceVersion && rawView.sourceVersion && result.sourceVersion !== rawView.sourceVersion)
             throw new Error("Source changed while rendering detail; retry");
           url = `data:image/png;base64,${result.png}`;
@@ -1110,9 +1146,10 @@ function App() {
       }
       if (!processed) return;
       if (editingMask && correctedGeometry && maskGeometryView?.key !== maskGeometryKey) {
-        const mask = await renderProcessed(path, quality, processed.resultId, recipeFor(photo, "cfa"), previewDimension);
+        const mask = await renderProcessed(path, quality, processed.resultId, detailRecipe, previewDimension);
         if (!current()) return;
-        setMaskGeometryView({key: maskGeometryKey, url: `data:image/png;base64,${mask.png}`});
+        setMaskGeometryView({key: maskGeometryKey, url: `data:image/png;base64,${mask.png}`,
+          before: mask.before ? `data:image/png;base64,${mask.before}` : undefined});
       }
       if (rawView.high !== quality || (processed.key === recipeKey && processed.high === quality)) return;
       let after = processedPreviewCache.current.get(previewKey);
@@ -1120,18 +1157,25 @@ function App() {
         const previous = JSON.parse(processed.key);
         const sameGeometry = previous.outputKind === exportKind
           && previous.chromaticAberration === photo.chromaticAberration && previous.lensCorrection === photo.lensCorrection;
-        after = processed.high === quality && sameGeometry
-          ? await recomposeRaw(path, recipeFor(photo, exportKind), quality, previewDimension, processed.resultId)
-          : await renderProcessed(path, quality, processed.resultId, recipeFor(photo, exportKind), previewDimension);
+        if (processed.high === quality && sameGeometry) {
+          const draft = await recomposeRaw(path, recipeFor(photo, exportKind), quality, previewDimension, processed.resultId);
+          if (!current()) return;
+          setDraftPreview({ identity: previewIdentity, url: `data:image/png;base64,${draft.png}` });
+          await new Promise((resolve) => window.setTimeout(resolve, 240));
+          if (!current()) return;
+        }
+        after = await renderProcessed(path, quality, processed.resultId, recipeFor(photo, exportKind), previewDimension);
         retainPreview(processedPreviewCache.current, previewKey, after, 4);
       }
       if (!current()) return;
       const preview = after;
+      setDraftPreview(null);
       setPhotos((items) => items.map((item) => item.id === photo.id ? {
         ...item, dirty: false, processed: {
           url: `data:image/png;base64,${preview.png}`,
           before: preview.before ? `data:image/png;base64,${preview.before}` : processed.before,
-          key: recipeKey, high: quality, resultId: processed.resultId,
+           key: recipeKey, high: quality, resultId: processed.resultId,
+           inferenceKey: processed.inferenceKey ?? processed.key,
           sourceVersion: preview.sourceVersion ?? processed.sourceVersion,
         },
       } : item));
@@ -1155,7 +1199,7 @@ function App() {
       canvasSize.width, canvasSize.height, pan.x, pan.y, zoom, editingMask,
       correctedGeometry, recipeKey, exportKind]);
   function restoreHistory(redo = false) {
-    if (closing.current || processing) return;
+    if (closing.current || processing || externalLock) return;
     const h = history.current.get(photo.id);
     if (!h) return;
     const saved = (redo ? h.redo : h.undo).pop();
@@ -1163,12 +1207,13 @@ function App() {
     (redo ? h.undo : h.redo).push(photo);
     photoRevisions.current.set(photo.id, recipeRevision(photo.id) + 1);
     mark.current = null;
+    setDepthDraft(undefined);
     maskRect.current = null;
     maskOverlay.current?.draw(null);
     maskGuides.current?.move([0, 0], null);
     maskGuides.current?.hide();
     setPhotos((items) => items.map((p) => p.id === photo.id
-      ? { ...saved, url: p.url, metadata: p.metadata, processed: undefined, dirty: true } : p));
+      ? { ...saved, url: p.url, metadata: p.metadata, processed: p.processed, dirty: true } : p));
     if (!saved.layers.some((layer) => layer.id === layerId)) {
       setLayerId(0);
       setEditingMask(false);
@@ -1176,6 +1221,9 @@ function App() {
   }
   function patchPhoto(values: Partial<Photo>) {
     if (closing.current) return;
+    if (externalLock && (values.layers !== undefined || values.highlights !== undefined
+      || values.chromaticAberration !== undefined || values.lensCorrection !== undefined
+      || values.sharpenModelId !== undefined || values.depthMaps !== undefined || values.preset !== undefined)) return;
     photoRevisions.current.set(photo.id, (photoRevisions.current.get(photo.id) ?? 0) + 1);
     if (values.rating !== undefined || values.labels !== undefined)
       metadataRevisions.current.set(photo.id, (metadataRevisions.current.get(photo.id) ?? 0) + 1);
@@ -1198,6 +1246,7 @@ function App() {
     );
   }
   function change(values: Partial<Layer>) {
+    if (externalLock) return;
     const nextLayers = photo.layers.map((l) =>
       l.id === active.id ? { ...l, ...values } : l,
     );
@@ -1212,14 +1261,15 @@ function App() {
     }
   }
   function changeOptics(key: "chromaticAberration" | "lensCorrection", enabled: boolean) {
+    if (externalLock) return;
     patchPhoto({ [key]: enabled, dirty: true });
   }
   function changeExportKind(kind: "cfa" | "linear-rgb") {
-    if (kind === exportKind) return;
+    if (externalLock || kind === exportKind) return;
     setExportKind(kind);
     if (!photo.processed || photo.dirty || !processedCurrent) return;
     const hasLinearEffects = photo.chromaticAberration || photo.lensCorrection
-      || photo.layers.some((layer) => layer.enabled && layer.blend > 0 && layer.sharpen !== "Off" && layer.strength > 0);
+      || photo.layers.some((layer) => layer.enabled && layer.blend > 0 && layer.sharpen === "AI" && layer.strength > 0);
     if (!hasLinearEffects) {
       patchPhoto({ processed: { ...photo.processed, key: JSON.stringify(recipeFor(photo, kind)) } });
       return;
@@ -1264,6 +1314,7 @@ function App() {
         chromaticAberration: stored.chromaticAberration === true,
         lensCorrection: stored.lensCorrection === true,
         sharpenModelId: stored.sharpenModelId,
+        depthMaps: stored.depthMaps,
       } : item));
     } catch (error) {
       if (recipeLoadTokens.current.get(id) === token) {
@@ -1281,23 +1332,24 @@ function App() {
     }
   }
   function openPhoto(id: number) {
+    const selected = photos.find((item) => item.id === id) ?? photos[0];
+    if (!selected) return;
     setBatchView(false);
-    if (photo.rawPath && photo.id !== id) {
+    if (photo.rawPath && photo.id !== selected.id) {
       void persistence.current?.flush(`recipe:${photo.rawPath}`);
       void persistence.current?.flush(`metadata:${photo.rawPath}`);
     }
     setPan({ x: 0, y: 0 });
     panStart.current = null;
     setPanning(false);
-    setCurrentId(id);
+    setCurrentId(selected.id);
     setLayerId(0);
     setZoom(1);
     setPixelZoom(false);
     setSplit(50);
     setLibrary(false);
     setFiltersOpen(false);
-    const selected = photos.find((item) => item.id === id);
-    if (selected?.rawPath && isDesktop()) void restorePhotoRecipe(selected);
+    if (selected.rawPath && isDesktop()) void restorePhotoRecipe(selected);
   }
   function importFiles(files: FileList | File[]) {
     const existing = new Set(photos.map((p) => p.identity));
@@ -1329,7 +1381,7 @@ function App() {
       });
     }
     if (imported.length) {
-      setPhotos((ps) => [...ps, ...imported]);
+      setPhotos((ps) => [...ps.filter((p) => p.kind !== "demo"), ...imported]);
       setSelection(imported.map((p) => p.id));
     }
     setNotice(
@@ -1366,7 +1418,7 @@ function App() {
             kind: "raw",
           }));
          if (rawPhotos.length) {
-           setPhotos((ps) => [...ps, ...rawPhotos]);
+           setPhotos((ps) => [...ps.filter((p) => p.kind !== "demo"), ...rawPhotos]);
            setSelection(rawPhotos.map((p) => p.id));
            void addLibraryPaths(rawPhotos.map((p) => p.rawPath!)).catch((error) => setNotice(`Could not save library: ${String(error)}`));
            for (const raw of rawPhotos) {
@@ -1520,7 +1572,7 @@ function App() {
   }
   async function removePhotos(ids: number[]) {
     if (closing.current || !ids.length) return;
-    const targets = photosRef.current.filter((item) => ids.includes(item.id) && item.kind !== "demo");
+    const targets = photosRef.current.filter((item) => ids.includes(item.id));
     if (!targets.length) return;
     const removed = new Set(targets.map((item) => item.id));
     const paths = targets
@@ -1552,7 +1604,7 @@ function App() {
       loadingRecipes.current.delete(item.id);
     }
     const remaining = photosRef.current.filter((item) => !removed.has(item.id));
-    setPhotos(remaining.length ? remaining : [demo]);
+    setPhotos(remaining);
     setSelection((current) => current.filter((id) => !removed.has(id)));
     setContextMenu(null);
     if (removed.has(currentId) || !remaining.length) {
@@ -1630,8 +1682,9 @@ function App() {
     ];
   }
   async function addSamPoint(point: [number, number], foreground: boolean) {
+    if (externalLock) return;
     if (!photo.rawPath || !isDesktop()) {
-      setNotice("AI masks require a RAW image in the desktop application.");
+      setNotice("Point masks require a RAW image in the desktop application.");
       return;
     }
     const id = photo.id,
@@ -1643,29 +1696,49 @@ function App() {
       ];
     const token = ++samRequest.current;
     setProcessing(true);
-    setProgress("Generating SAM mask…");
+    setProgress("Generating point mask…");
     try {
       const result = await segmentRaw(photo.rawPath, points);
       if (samRequest.current !== token || recipeRevision(id) !== revision
-        || !photosRef.current.find((item) => item.id === id)?.layers.some((item) => item.id === layer)) return;
-      setPhotos((ps) =>
-        ps.map((p) =>
-          p.id === id
-            ? {
-                ...p,
-                dirty: true,
-                layers: p.layers.map((l) =>
-                  l.id === layer ? { ...l, points, aiMask: result.mask } : l,
-                ),
-              }
-            : p,
-        ),
-      );
+        || activeMaskKey.current !== `${id}:${layer}` || closing.current) return;
+      patchPhoto({
+        dirty: true,
+        layers: photo.layers.map(l => l.id === layer ? { ...l, points, aiMask: result.mask, depth: undefined } : l),
+      });
     } catch (error) {
       setNotice(String(error));
       setRawError(String(error));
     } finally {
-      if (samRequest.current === token) setProcessing(false);
+      if (samRequest.current === token) { setProcessing(false); setProgress(""); }
+    }
+  }
+  async function addDepthMask() {
+    if (processing || externalLock || active.depth) return;
+    const key = `${photo.id}:${active.id}`;
+    setDepthError(null);
+    if (!photo.rawPath || !isDesktop()) {
+      setDepthError({ key, message: "Depth masks require a RAW image in the desktop application." });
+      return;
+    }
+    const id = photo.id, layer = active.id, revision = recipeRevision(id);
+    const token = ++samRequest.current;
+    setProcessing(true);
+    setProgress("Estimating depth…");
+    try {
+      const result = await estimateDepth(photo.rawPath);
+      if (token !== samRequest.current || recipeRevision(id) !== revision
+        || activeMaskKey.current !== `${id}:${layer}` || closing.current) return;
+      patchPhoto({
+        depthMaps: { ...photo.depthMaps, [result.key]: { png: result.png, modelId: result.modelId } },
+        layers: photo.layers.map(l => l.id === layer ? { ...l, points: [], aiMask: undefined,
+          depth: { map: result.key, range: [0, 0, 50, 65] } } : l),
+        dirty: true,
+      });
+    } catch (error) {
+      if (token === samRequest.current && activeMaskKey.current === key && !closing.current)
+        setDepthError({ key, message: String(error) });
+    } finally {
+      if (token === samRequest.current) { setProcessing(false); setProgress(""); }
     }
   }
   const filtersActive = !!search.trim() || minimumRating > 0 || !!fileType || !!labelFilter;
@@ -1715,6 +1788,7 @@ function App() {
           </button>
           <button
              className={!library && !batchView ? "tab selected" : "tab"}
+            disabled={!photos.length}
             onClick={() => openPhoto(currentId)}
           >
             <SlidersHorizontal size={16} /> Edit
@@ -1816,7 +1890,7 @@ function App() {
                           <option value="jpeg">JPEG</option>
                           <option value="png">PNG</option>
                           <option value="webp">WebP</option>
-                          <option value="demo">Demo illustration</option>
+                          {photos.some((p) => p.kind === "demo") && <option value="demo">Demo illustration</option>}
                           <option value="raw">RAW</option>
                         </select>
                       </label>
@@ -1914,7 +1988,7 @@ function App() {
                 ))}
                 {!visiblePhotos.length && (
                   <p className="empty-state">
-                    No photographs match this filter.
+                    {photos.length ? "No photographs match this filter." : "Import pictures or a folder to begin."}
                   </p>
                 )}
               </div>
@@ -2034,13 +2108,14 @@ function App() {
               >
                 <div
                   ref={frame}
-                  className={`photo-frame ${pixelZoom ? "pixel-zoom" : ""} ${editingMask && active.id !== 0 && !processing ? spacePan ? "mask-pan" : "mask-drawing" : ""}`}
+                  className={`photo-frame ${pixelZoom ? "pixel-zoom" : ""} ${editingMask && active.id !== 0 && !processing ? spacePan || maskTool === "Depth" ? "mask-pan" : "mask-drawing" : ""}`}
                   tabIndex={0}
                   onPointerDown={(e) => {
                     if (
                       !editingMask ||
                       active.id === 0 ||
-                      spacePan ||
+                       spacePan ||
+                       maskTool === "Depth" ||
                       processing ||
                       e.button !== 0 ||
                       (e.target as HTMLElement).closest("button")
@@ -2147,7 +2222,7 @@ function App() {
                         }}
                       >
                         <img
-                          src={rendered?.before ?? originalUrl}
+                          src={beforeUrl}
                           alt="Original before processing"
                           draggable={false}
                         />
@@ -2213,9 +2288,11 @@ function App() {
                     </>
                   )}
                   {editingMask && active.id !== 0 && (
-                    <MaskOverlay key={`${photo.id}:${active.id}`} ref={maskOverlay} {...active} />
+                    <MaskOverlay key={`${photo.id}:${active.id}`} ref={maskOverlay} {...active}
+                      depthPng={active.depth ? photo.depthMaps?.[active.depth.map]?.png : undefined}
+                      depthRange={active.depth ? depthDraft ?? active.depth.range : undefined} onError={setNotice} />
                   )}
-                  {editingMask && active.id !== 0 && !spacePan && !processing && (
+                  {editingMask && active.id !== 0 && maskTool !== "Depth" && !spacePan && !processing && (
                     <MaskGuides key={`guides:${photo.id}:${active.id}`} ref={maskGuides}
                       tool={maskTool} radius={brushSize / 200} ratio={imageRatio} zoom={zoom} />
                   )}
@@ -2386,7 +2463,7 @@ function App() {
                               key={p.name}
                               aria-pressed={photo.preset === p.name}
                               onClick={() => {
-                                const apply = (recipe: { layers: unknown[]; highlights?: boolean; sharpenModelId?: string } | null) => {
+                                const apply = (recipe: { layers: unknown[]; highlights?: boolean; sharpenModelId?: string; depthMaps?: Record<string, DepthMap> } | null) => {
                                   const source = recipe && Array.isArray(recipe.layers) ? recipe : p;
                                   patchPhoto({
                                     layers: source.layers.map((layer, index) => {
@@ -2395,6 +2472,7 @@ function App() {
                                     }),
                                      highlights: source.highlights !== false,
                                      sharpenModelId: source.sharpenModelId,
+                                     depthMaps: source.depthMaps,
                                      preset: p.name,
                                      dirty: true,
                                    });
@@ -2464,6 +2542,7 @@ function App() {
                 </div>
               </div>
               <div className="edit-scroll">
+                <fieldset className="edit-lock" disabled={externalLock}>
                 <Section title="Layers" icon={<Layers size={16} />}>
                   <div className="layer-list">
                     {photo.layers.map((layer) => (
@@ -2532,7 +2611,7 @@ function App() {
                     <button
                       className="subtle"
                       disabled={active.id === 0}
-                      onClick={() => setEditingMask(true)}
+                      onClick={() => { setEditingMask(true); if (active.depth) setMaskTool("Depth"); }}
                     >
                       <Sparkles size={14} /> Edit Mask
                     </button>
@@ -2570,24 +2649,26 @@ function App() {
                       </button>
                     </div>
                     <div
-                      className="mask-tools"
+                      className="mask-tools segmented"
                       role="group"
                       aria-label="Mask tools"
                     >
-                      {["AI", "Brush", "Erase", "Gradient", "Ellipse"].map(
+                      {["AI", "Depth", "Brush", "Erase", "Gradient", "Ellipse"].map(
                         (tool) => (
                           <button
                             className={maskTool === tool ? "chosen" : ""}
                             aria-pressed={maskTool === tool}
                             key={tool}
+                            disabled={processing}
                             onClick={() => {
                               setMaskTool(tool);
+                              if (tool === "Depth") { void addDepthMask(); return; }
                               setNotice(
-                                "Draw on the image. Hold Space to pan; Shift-click adds a negative AI point.",
+                                "Draw on the image. Hold Space to pan; Shift-click adds a negative point.",
                               );
                             }}
                           >
-                            {tool}
+                            {tool === "AI" ? "Point" : tool}
                           </button>
                         ),
                       )}
@@ -2597,16 +2678,28 @@ function App() {
                       <input type="range" aria-label="Brush size" min="0.2" max="50" step="0.2"
                         value={brushSize} onChange={(event) => setBrushSizes((sizes) => ({ ...sizes, [brushKind]: +event.target.value }))} />
                     </label>}
-                    <Slider
+                    {maskTool === "Depth" ? active.depth ? <DepthRangeControls
+                      key={`${photo.id}:${active.id}`} value={depthDraft ?? active.depth.range}
+                      preview={setDepthDraft} disabled={processing}
+                      commit={range => {
+                        if (active.depth && range.some((v, i) => v !== active.depth!.range[i]))
+                          change({ depth: { ...active.depth, range } });
+                      }} /> : !processing && <button className="subtle" onClick={() => void addDepthMask()}>Create depth mask</button> : <>{!active.depth && <Slider
                       label="Feather"
                       value={active.feather}
                       change={(feather) => change({ feather })}
-                    />
+                    />}
                     <Slider
                       label="Blur"
                       value={active.blur}
                       change={(blur) => change({ blur })}
-                    />
+                    /></>}
+                    {maskTool === "Depth" && depthError?.key === `${photo.id}:${active.id}` && (
+                      <div className="field-error dismissible-error" role="alert" aria-label="Depth mask error">
+                        <span>{depthError.message}</span>
+                        <IconButton label="Dismiss depth error" onClick={() => setDepthError(null)}><X size={14} /></IconButton>
+                      </div>
+                    )}
                     <button type="button" role="switch" aria-checked={active.inverted}
                       className={`quality-toggle ${active.inverted ? "on" : ""}`}
                       onClick={() => change({ inverted: !active.inverted })}>
@@ -2622,8 +2715,8 @@ function App() {
                         onClick={() => restoreHistory()}>Undo</button>
                       <button className="subtle" disabled={processing || !history.current.get(photo.id)?.redo.length}
                         onClick={() => restoreHistory(true)}>Redo</button>
-                      <button className="subtle" disabled={processing || (!active.marks.length && !active.points.length && !active.aiMask)}
-                        onClick={() => { samRequest.current++; change({ marks: [], points: [], aiMask: undefined }); }}>
+                      <button className="subtle" disabled={processing || (!active.marks.length && !active.points.length && !active.aiMask && !active.depth)}
+                        onClick={() => { samRequest.current++; setDepthDraft(undefined); change({ marks: [], points: [], aiMask: undefined, depth: undefined }); }}>
                         Clear mask
                       </button>
                     </div>
@@ -2684,9 +2777,9 @@ function App() {
                   </div>
                 </Section>
                 <Section title="Sharpen" icon={<Sparkles size={16} />}>
-                  <fieldset className="output-dependent" disabled={exportKind === "cfa"}>
-                  {exportKind === "cfa" && <p className="hint">Available with Linear RGB output.</p>}
-                  {isDesktop() && active.sharpen === "AI" && (
+                  <fieldset className="output-dependent">
+                  {exportKind === "cfa" && <p className="hint">AI sharpening requires Linear RGB output.</p>}
+                  {isDesktop() && active.sharpen === "AI" && exportKind === "linear-rgb" && (
                     <select
                       aria-label="AI sharpening model"
                       value={photo.sharpenModelId ?? defaultSharpenModelId}
@@ -2712,6 +2805,7 @@ function App() {
                     {["Off", "Normal", "AI"].map((mode) => (
                       <button
                         key={mode}
+                        disabled={mode === "AI" && exportKind === "cfa"}
                         aria-pressed={active.sharpen === mode}
                         className={active.sharpen === mode ? "chosen" : ""}
                         onClick={() => change({ sharpen: mode })}
@@ -2723,7 +2817,7 @@ function App() {
                   <Slider
                     label="Strength"
                     value={active.strength}
-                    disabled={active.sharpen === "Off"}
+                    disabled={active.sharpen === "Off" || (active.sharpen === "AI" && exportKind === "cfa")}
                     change={(strength) => change({ strength })}
                   />
                   </fieldset>
@@ -2754,6 +2848,7 @@ function App() {
                       <p className="hint optics-status">{photo.metadata?.optics?.message ?? "Checking lens profile..."}</p>}
                   </fieldset>
                 </Section>
+                </fieldset>
               </div>
               <div className="export-footer">
                 <div className="export-format">
@@ -2815,9 +2910,12 @@ function App() {
         </IconButton>}
         {failedPersistenceKey && <button className="subtle" onClick={() => {
           setNotice("Retrying save...");
-          void persistence.current?.retry(failedPersistenceKey).then((saved) => {
-            if (saved) setFailedPersistenceKey("");
-          });
+          void persistence.current?.retry(failedPersistenceKey).then(async (saved) => {
+            if (saved) {
+              setFailedPersistenceKey(persistence.current?.failedKeys()[0] ?? "");
+              if (pendingExternalExit.current !== undefined) await finishSavedExternal(pendingExternalExit.current);
+            }
+          }).catch((error) => setNotice(String(error)));
         }}>Retry save</button>}
         <span className={`status-state ${pendingChanges ? "pending" : "ready"}`}>
           {progress || (updatingPreview ? "Updating preview…" : pendingChanges ? "Changes pending" : "Visual preview ready")}
@@ -2842,6 +2940,7 @@ function App() {
                 sharpenModelId: photo.sharpenModelId ?? defaultSharpenModelId,
                 name,
                 layers: photo.layers.map((l) => ({ ...l })),
+                depthMaps: photo.depthMaps,
                 highlights: photo.highlights,
               };
               setPresets((ps) =>

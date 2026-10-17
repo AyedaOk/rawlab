@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <vector>
 
 namespace rawlab::pipeline {
@@ -34,5 +35,6 @@ Mask verticalSplitMask(int width, int height);
 Mask filledMask(int width, int height, float value = 0.0f);
 Mask featherMask(const Mask &source, float radius);
 Mask blurMask(const Mask &source, float radius);
+Mask depthRangeMask(const Mask &depth, int width, int height, const std::array<float, 4> &range);
 
 }

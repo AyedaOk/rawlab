@@ -38,8 +38,8 @@ export const renderRaw = (path: string, highQuality: boolean, size = 4096, backg
 export const renderProcessed = (path: string, highQuality: boolean, resultId: string, recipe: unknown, size = 4096) =>
   invoke<RawPreview>("render_processed", { path, highQuality, resultId, recipe, size });
 export type RawDetail = {version:number;x:number;y:number;width:number;height:number;sourceWidth:number;sourceHeight:number;sourceVersion?:string;png:string};
-export const renderRawDetail = (path:string,target:'original'|'processed',resultId:string|undefined,x:number,y:number,width:number,height:number,recipe:unknown) =>
-  invoke<RawDetail>("render_raw_detail",{path,target,resultId,x,y,width,height,recipe});
+export const renderRawDetail = (path:string,target:'original'|'processed',resultId:string|undefined,x:number,y:number,width:number,height:number,recipe:unknown,highQuality=true) =>
+  invoke<RawDetail>("render_raw_detail",{path,target,resultId,x,y,width,height,recipe,highQuality});
 export const rawSourceVersion = (path:string) => invoke<string>("raw_source_version",{path});
 const rawExtensions = [
   "arw",
@@ -64,7 +64,7 @@ export type StoredLayer = Record<string, unknown> & {
   marks?: unknown[];
   points?: unknown[];
 };
-export type StoredRecipe = { layers: StoredLayer[]; highlights?: boolean; sharpenModelId?: string; chromaticAberration?: boolean; lensCorrection?: boolean };
+export type StoredRecipe = { layers: StoredLayer[]; highlights?: boolean; sharpenModelId?: string; chromaticAberration?: boolean; lensCorrection?: boolean; depthMaps?: Record<string, DepthMap> };
 export type RecipeLoadOutcome = 'loaded' | 'missing' | 'unreadable' | 'invalid' | 'future-version' | 'missing-mask';
 const readStoredRecipe = (value: unknown): StoredRecipe | null => {
   if (value === null) return null;
@@ -133,6 +133,8 @@ export const runBatch = () => batchControl({ operation: 'batch_run' });
 export type ModelCatalog = {
   denoise: { id: string; name: string; path?: string; origin?: string; available: boolean }[];
   sharpen: { id: string; name: string; path?: string; origin?: string; available: boolean }[];
+  depth?: { id: string; name: string; path?: string; origin?: string; available: boolean }[];
+  activeDepthModelId?: string;
   provider: string;
 };
 export const configuredModels = async () =>
@@ -197,6 +199,11 @@ export const segmentRaw = (path: string, points: [number, number, boolean][]) =>
     highQuality: false,
     output: null,
   });
+export type DepthMap = { png: string; modelId: string };
+export const estimateDepth = (path: string) =>
+  invoke<DepthMap & { key: string; sourceVersion?: string }>("process_raw", {
+    path, operation: "depth", recipe: {}, highQuality: false, output: null,
+  });
 export async function exportDestination(name: string) {
   const { save } = await import("@tauri-apps/plugin-dialog");
   return save({
@@ -242,7 +249,8 @@ export async function chooseNativePreviews(
           filters: [
             {
               name: "RAW and preview images",
-              extensions: [...rawExtensions, ...Object.keys(formats)],
+              extensions: [...rawExtensions, ...Object.keys(formats)]
+                .flatMap((extension) => [extension, extension.toUpperCase()]),
             },
           ],
         },

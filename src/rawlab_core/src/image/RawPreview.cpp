@@ -231,8 +231,6 @@ std::array<float, 3> cameraToSrgb(const raw::RawMetadata &metadata,
 
 std::uint8_t displayByte(float value)
 {
-  // Roll values above white gently below display white instead of hard-clipping.
-  if(value > 1.0f) value = 1.0f - 0.08f * (value - 1.0f) / value;
   value = std::clamp(value, 0.0f, 1.0f);
   value = value <= 0.0031308f ? 12.92f * value
                              : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
@@ -420,18 +418,6 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
         const std::size_t i = static_cast<std::size_t>(y) * static_cast<std::size_t>(width)
                               + static_cast<std::size_t>(x);
         std::array<float, 3> rgb = linear[i];
-        if(quality == PreviewQuality::Fast && x > 0 && y > 0 && x + 1 < width && y + 1 < height)
-        {
-          const auto luma = [&linear, width](const int px, const int py) {
-            const auto &pixel = linear[static_cast<std::size_t>(py) * static_cast<std::size_t>(width)
-                                       + static_cast<std::size_t>(px)];
-            return 0.2126f * pixel[0] + 0.7152f * pixel[1] + 0.0722f * pixel[2];
-          };
-          const float detail = luma(x, y) - (luma(x - 1, y) + luma(x + 1, y)
-                                            + luma(x, y - 1) + luma(x, y + 1)) * 0.25f;
-          const float amount = quality == PreviewQuality::High ? 0.08f : 0.04f;
-          for(float &channel : rgb) channel = std::max(0.0f, channel + amount * detail);
-        }
         preview.pixels[3 * i] = displayByte(rgb[0]);
         preview.pixels[3 * i + 1] = displayByte(rgb[1]);
         preview.pixels[3 * i + 2] = displayByte(rgb[2]);
@@ -442,7 +428,7 @@ RawPreview renderRawPreview(const raw::RawImage &source, const int maxDimension,
 }
 
 LinearRawPreview renderLinearRawPreviewRegion(const raw::RawImage &source, const int x, const int y,
-                                  const int width, const int height)
+                                  const int width, const int height, const PreviewQuality quality)
 {
   if(!source.metadata().cfa.isBayer) throw std::runtime_error{"Raw preview requires a Bayer CFA source"};
   const raw::ActiveArea area = boundedActiveArea(source);
@@ -456,44 +442,28 @@ LinearRawPreview renderLinearRawPreviewRegion(const raw::RawImage &source, const
     throw std::invalid_argument{"Invalid source preview region"};
 
   const PreviewGeometry geometry{area, orientedWidth, orientedHeight, source.metadata().flip};
-  // Include the display-sharpening halo so adjacent viewport tiles have no seams.
-  const int left = std::max(0, x - 1), top = std::max(0, y - 1);
-  const int linearWidth = std::min(orientedWidth, x + width + 1) - left;
-  const int linearHeight = std::min(orientedHeight, y + height + 1) - top;
-  std::vector<std::array<float, 3>> linear(static_cast<std::size_t>(linearWidth) * linearHeight);
-  parallelRows(linearHeight, linear.size(), [&](const int begin, const int end, int) {
-    for(int row = begin; row < end; ++row)
-      for(int column = 0; column < linearWidth; ++column)
-      {
-        const auto [rawXf, rawYf] = geometry.previewToRaw(
-          static_cast<float>(left + column) + 0.5f, static_cast<float>(top + row) + 0.5f);
-        const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
-        const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
-        linear[static_cast<std::size_t>(row) * linearWidth + column] = cameraToSrgb(
-          source.metadata(), demosaicBilinear(source, area, rawX, rawY), false);
-      }
-  });
+  const auto p0 = geometry.previewToRaw(x, y), p1 = geometry.previewToRaw(x + width, y + height);
+  const auto working = amazeWorkingArea(source, {static_cast<int>(std::lround(std::min(p0.first, p1.first))),
+    static_cast<int>(std::lround(std::min(p0.second, p1.second))),
+    static_cast<int>(std::lround(std::fabs(p1.first - p0.first))),
+    static_cast<int>(std::lround(std::fabs(p1.second - p0.second)))});
+  const bool high = quality == PreviewQuality::High;
+  const auto amaze = high ? demosaicAmaze(source, working) : std::vector<CameraRgb>{};
   LinearRawPreview image;
   image.width = width;
   image.height = height;
   image.pixels.resize(static_cast<std::size_t>(width) * height * 3);
-  parallelRows(height, linear.size(), [&](const int begin, const int end, int) {
+  parallelRows(height, static_cast<std::size_t>(width) * height, [&](const int begin, const int end, int) {
     for(int row = begin; row < end; ++row)
       for(int column = 0; column < width; ++column)
       {
         const std::size_t index = static_cast<std::size_t>(row) * width + column;
-        const int lx = x + column - left, ly = y + row - top;
-        auto rgb = linear[static_cast<std::size_t>(ly) * linearWidth + lx];
-        if(lx > 0 && ly > 0 && lx + 1 < linearWidth && ly + 1 < linearHeight)
-        {
-          const auto luma = [&linear, linearWidth](const int px, const int py) {
-            const auto &pixel = linear[static_cast<std::size_t>(py) * linearWidth + px];
-            return 0.2126f * pixel[0] + 0.7152f * pixel[1] + 0.0722f * pixel[2];
-          };
-          const float detail = luma(lx, ly) - (luma(lx - 1, ly) + luma(lx + 1, ly)
-            + luma(lx, ly - 1) + luma(lx, ly + 1)) * 0.25f;
-          for(float &channel : rgb) channel = std::max(0.0f, channel + 0.04f * detail);
-        }
+        const auto [rawXf, rawYf] = geometry.previewToRaw(x + column + 0.5f, y + row + 0.5f);
+        const int rawX = std::clamp(static_cast<int>(rawXf), area.left, area.left + area.width - 1);
+        const int rawY = std::clamp(static_cast<int>(rawYf), area.top, area.top + area.height - 1);
+        const auto camera = high ? amaze[static_cast<std::size_t>(rawY - working.top) * working.width + rawX - working.left]
+          : demosaicBilinear(source, area, rawX, rawY);
+        const auto rgb = cameraToSrgb(source.metadata(), camera, high);
         image.pixels[index * 3] = rgb[0];
         image.pixels[index * 3 + 1] = rgb[1];
         image.pixels[index * 3 + 2] = rgb[2];

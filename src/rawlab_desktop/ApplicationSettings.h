@@ -25,6 +25,8 @@ struct SamModelDefinition
   QString origin{};
 };
 
+using DepthModelDefinition = DenoiseModelDefinition;
+
 struct SharpenModelDefinition
 {
   QString id;
@@ -45,6 +47,8 @@ struct ApplicationSettingsData
   QString activeSamModelId;
   QList<DenoiseModelDefinition> denoiseModels;
   QList<SharpenModelDefinition> sharpenModels;
+  QList<DepthModelDefinition> depthModels;
+  QString activeDepthModelId;
 };
 
 class ApplicationSettingsStore

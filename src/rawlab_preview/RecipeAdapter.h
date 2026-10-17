@@ -2,6 +2,7 @@
 #include "PictureRecipe.h"
 #include <QBuffer>
 #include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <algorithm>
 #include <cmath>
@@ -67,7 +68,45 @@ inline std::vector<PictureRecipeStroke> readStrokes(const QJsonArray &values)
   return result;
 }
 
-inline rawlab::pipeline::Mask desktopMask(const QJsonObject &layer,int w,int h)
+// Pack a normalized 16-bit depth sample into R/G bytes. Browser PNG decoders retain
+// both bytes; a grayscale16 PNG would be reduced to 8 bits by Canvas.
+inline QString depthMapPng(const rawlab::pipeline::Mask &depth)
+{
+  QImage image{depth.width(), depth.height(), QImage::Format_RGB888};
+  for(int y = 0; y < depth.height(); ++y) for(int x = 0; x < depth.width(); ++x)
+  {
+    const int value = static_cast<int>(std::lround(depth.sampleNearest(x, y) * 65535));
+    auto *pixel = image.scanLine(y) + x * 3;
+    pixel[0] = static_cast<unsigned char>(value >> 8);
+    pixel[1] = static_cast<unsigned char>(value & 255);
+    pixel[2] = 0;
+  }
+  QByteArray bytes; QBuffer buffer{&bytes}; buffer.open(QIODevice::WriteOnly);
+  if(!image.save(&buffer, "PNG")) throw std::runtime_error{"Cannot encode depth map"};
+  return QString::fromLatin1(bytes.toBase64());
+}
+
+inline rawlab::pipeline::Mask decodeDepthMap(const QJsonValue &value)
+{
+  auto bytes = QByteArray::fromBase64(value.toString().toLatin1());
+  QBuffer buffer{&bytes}; buffer.open(QIODevice::ReadOnly);
+  QImageReader reader{&buffer, "PNG"};
+  const auto size = reader.size();
+  if(!size.isValid() || size.width() > 2048 || size.height() > 2048
+     || static_cast<qint64>(size.width()) * size.height() > 2 * 1024 * 1024)
+    throw std::runtime_error{"Invalid or oversized depth map PNG"};
+  const auto image = reader.read().convertToFormat(QImage::Format_RGB888);
+  if(image.isNull()) throw std::runtime_error{"Invalid depth map PNG"};
+  std::vector<float> values(static_cast<std::size_t>(image.width()) * image.height());
+  for(int y = 0; y < image.height(); ++y) for(int x = 0; x < image.width(); ++x)
+  {
+    const auto *pixel = image.constScanLine(y) + x * 3;
+    values[static_cast<std::size_t>(y * image.width() + x)] = (pixel[0] * 256 + pixel[1]) / 65535.0f;
+  }
+  return {image.width(), image.height(), std::move(values)};
+}
+
+inline rawlab::pipeline::Mask desktopMask(const QJsonObject &layer,int w,int h, const QJsonObject &depthMaps = {})
 {
   const auto emptyMask = [w, h] { return rawlab::pipeline::Mask{w, h, std::vector<float>(static_cast<std::size_t>(w * h), 0.0f)}; };
   const auto applyOperations = [w, h](rawlab::pipeline::Mask mask, const QJsonArray &operations) {
@@ -111,7 +150,21 @@ inline rawlab::pipeline::Mask desktopMask(const QJsonObject &layer,int w,int h)
     return mask;
   };
   auto mask=rawlab::pipeline::filledMask(w,h);
-  if(!layer["aiMask"].toString().isEmpty())
+  if(layer.contains("depth"))
+  {
+    const auto depth = layer["depth"].toObject();
+    const auto range = depth["range"].toArray();
+    if(range.size() != 4) throw std::runtime_error{"Depth selection requires four range handles"};
+    std::array<float, 4> bounds;
+    for(int i = 0; i < 4; ++i)
+    {
+      if(!range[i].isDouble()) throw std::runtime_error{"Invalid depth range value"};
+      bounds[i] = static_cast<float>(range[i].toDouble() / 100);
+    }
+    const auto map = depthMaps[depth["map"].toString()].toObject();
+    mask = rawlab::pipeline::depthRangeMask(decodeDepthMap(map["png"]), w, h, bounds);
+  }
+  else if(!layer["aiMask"].toString().isEmpty())
   {
     const auto data=QByteArray::fromBase64(layer["aiMask"].toString().toLatin1());
     const auto image=QImage::fromData(data,"PNG").convertToFormat(QImage::Format_Grayscale8).scaled(w,h,Qt::IgnoreAspectRatio,Qt::SmoothTransformation);
@@ -126,7 +179,7 @@ inline rawlab::pipeline::Mask desktopMask(const QJsonObject &layer,int w,int h)
     hasCategoryData = hasCategoryData
       || (category < categoryMasks.size() && !categoryMasks[category].toString().isEmpty())
       || (category < categoryStrokes.size() && !categoryStrokes[category].toArray().isEmpty());
-  if(hasCategoryData)
+  if(hasCategoryData && !layer.contains("depth"))
   {
     mask = emptyMask();
     for(int category = 0; category < 3; ++category)
@@ -142,9 +195,13 @@ inline rawlab::pipeline::Mask desktopMask(const QJsonObject &layer,int w,int h)
       for(std::size_t i = 0; i < values.size(); ++i) values[i] = std::max(values[i], contribution.values()[i]);
       mask = {w, h, std::move(values)};
     }
-    return mask;
   }
-  return applyOperations(std::move(mask), layer["marks"].toArray());
+  else mask = applyOperations(std::move(mask), layer["marks"].toArray());
+  const float edge = std::min(w, h);
+  // Depth handles supply the fades; spatial feathering would threshold them away.
+  if(!layer.contains("depth"))
+    mask = rawlab::pipeline::featherMask(mask, static_cast<float>(layer["feather"].toDouble() / 1000.0) * edge);
+  return rawlab::pipeline::blurMask(mask, static_cast<float>(layer["blur"].toDouble() / 1000.0) * edge);
 }
 
 inline PictureRecipe toQtRecipe(const QJsonObject &front,int width,int height)
@@ -161,6 +218,7 @@ inline PictureRecipe toQtRecipe(const QJsonObject &front,int width,int height)
     layer.blend=l["blend"].toDouble(100)/100;layer.sharpenMode=mode(l["sharpen"].toString());layer.sharpenEnabled=layer.sharpenMode!=SharpenMode::Off;layer.sharpenStrength=l["strength"].toDouble(100)/100;
     layer.inverted=l["inverted"].toBool();layer.showMask=l["showMask"].toBool(true);layer.feather=l["feather"].toDouble()/1000;layer.blur=l["blur"].toDouble()/1000;
     layer.baseMask = decodeMaskPng(l["aiMask"], width, height);
+    if(l.contains("depth")) (void)desktopMask(l, 1, 1, front["depthMaps"].toObject());
     layer.strokes = readStrokes(l["strokes"].toArray());
     if(l.contains("marks"))
     {
@@ -247,6 +305,7 @@ inline QJsonObject fromQtRecipe(const PictureRecipe &recipe)
     }
     l["categoryMasks"] = categoryMasks;
     l["categoryStrokes"] = categoryStrokes;
+    if(l.contains("depth")) (void)desktopMask(l, 1, 1, result["depthMaps"].toObject());
     layers.push_back(l);
   }
   result["layers"] = layers;

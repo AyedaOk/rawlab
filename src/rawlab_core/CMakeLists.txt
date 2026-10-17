@@ -2,6 +2,7 @@ add_library(rawlab_core STATIC
   src/ai/OnnxSession.cpp
   src/ai/RawForgeAdapter.cpp
   src/ai/Sam2Segmenter.cpp
+  src/ai/DepthEstimator.cpp
   src/dng/TiffDngWriter.cpp
   src/image/PngImage.cpp
   src/image/AmazeDemosaic.cpp

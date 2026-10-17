@@ -22,7 +22,6 @@
 // go to stderr. No output paths are accepted and source files are never modified.
 static std::uint8_t displayByte(float value)
 {
-  if(value > 1.0f) value = 1.0f - 0.08f * (value - 1.0f) / value;
   value = std::clamp(value, 0.0f, 1.0f);
   value = value <= 0.0031308f ? 12.92f * value
                               : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
@@ -367,7 +366,9 @@ int main(int argc, char **argv)
              const auto corrections = recipe["outputKind"].toString("cfa") == "linear-rgb"
               ? opticsFromRecipe(recipe) : rawlab::image::OpticsOptions{};
              const QRect region{request["x"].toInt(), request["y"].toInt(), request["width"].toInt(), request["height"].toInt()};
-             auto linear = session.detail(path, recipe, region, corrections, checkCancelled);
+              auto linear = session.detail(path, recipe, region, corrections, checkCancelled,
+                request["quality"].toString("high") == "high"
+                  ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast);
              const auto geometry = linear.geometry;
              const auto display = linearDisplay(std::move(linear), original->metadata(), {});
              checkCancelled();
@@ -382,6 +383,13 @@ int main(int argc, char **argv)
                {"png", QString::fromLatin1(encoded.toBase64())}});
            continue;
          }
+        if(operation == "depth")
+        {
+          auto result = session.depth(path, checkCancelled);
+          checkCancelled();
+          result["version"] = 1;
+          reply(result); continue;
+        }
         if(operation == "segment")
         {
           const auto mask = session.segment(path, request["points"].toArray());
@@ -394,8 +402,13 @@ int main(int argc, char **argv)
         }
          auto processed = original;
           const bool rememberResult = operation == "process";
-         if(operation == "processed_preview")
-           processed = session.processed(path, request["resultId"].toString());
+          if(operation == "processed_preview")
+          {
+            (void)session.processed(path, request["resultId"].toString());
+            processed = session.process(path, request["recipe"].toObject(),
+              [&](int, int) { checkCancelled(); }, nullptr, false,
+              [&](const QString &, int, int) { checkCancelled(); });
+          }
          else if(operation == "recompose")
            processed = session.processed(path, request["resultId"].toString());
          else if(operation != "preview")
@@ -420,8 +433,7 @@ int main(int argc, char **argv)
            const QString previewQuality = request["quality"].toString("high");
            const auto quality = previewQuality == "high"
              ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast;
-           const bool useComposedPreview = operation == "process" || operation == "recompose"
-             || operation == "processed_preview";
+           const bool useComposedPreview = operation == "recompose";
            auto linear = useComposedPreview
              ? std::optional<rawlab::image::LinearRawPreview>{session.preview(
                   path, recipe, resultId, *processed, previewSize, quality, checkCancelled)}

@@ -43,6 +43,13 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
     const auto active=request["activeSamModelId"].toString();
     if(!active.isEmpty() && ApplicationSettingsStore::samModelById(settings,active).id.isEmpty()) throw std::runtime_error{"Selected SAM model is not installed"};
     settings.onnxProvider=provider;settings.onnxDeviceId=deviceId;settings.onnxRuntimeLibrary=runtime;settings.activeSamModelId=active;
+    if(request.contains("activeDepthModelId"))
+    {
+      const auto depthId = request["activeDepthModelId"].toString();
+      if(!depthId.isEmpty() && std::none_of(settings.depthModels.begin(), settings.depthModels.end(),
+        [&](const auto &model) { return model.id == depthId; })) throw std::runtime_error{"Selected depth model is not configured"};
+      settings.activeDepthModelId = depthId;
+    }
     ApplicationSettingsStore{}.save(settings);return {{"saved",true}};
   }
   if(operation=="model_add" || operation=="model_remove")
@@ -69,14 +76,18 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
       if(task=="denoise") for(const auto &model:settings.denoiseModels) removeFiles(model);
       if(task=="sharpen") for(const auto &model:settings.sharpenModels) removeFiles(model);
       if(task=="mask") for(const auto &model:settings.samModels) removeFiles(model);
+      if(task=="depth") for(const auto &model:settings.depthModels) removeFiles(model);
       settings.denoiseModels.removeIf([&](const auto &m){return task=="denoise"&&m.id==id;});
       settings.sharpenModels.removeIf([&](const auto &m){return task=="sharpen"&&m.id==id;});
       settings.samModels.removeIf([&](const auto &m){return task=="mask"&&m.id==id;});
+      settings.depthModels.removeIf([&](const auto &m){return task=="depth"&&m.id==id;});
+      if(task=="depth"&&settings.activeDepthModelId==id)settings.activeDepthModelId=settings.depthModels.isEmpty()?QString{}:settings.depthModels.front().id;
       if(task=="mask"&&settings.activeSamModelId==id)settings.activeSamModelId=settings.samModels.isEmpty()?QString{}:settings.samModels.front().id;
     }
     else
     {
-      if(name.trimmed().isEmpty() || (task!="denoise"&&task!="sharpen"&&task!="mask"))throw std::runtime_error{"Invalid local model definition"};
+      if(name.trimmed().isEmpty() || (task!="denoise"&&task!="sharpen"&&task!="mask"&&task!="depth"))throw std::runtime_error{"Invalid local model definition"};
+      if(task=="depth" && request["adapter"].toString()!="depth-anything-v2-v1")throw std::runtime_error{"Unsupported depth model adapter"};
       if(task=="mask" ? !QFileInfo{QDir{path}.filePath("encoder.onnx")}.isFile()||!QFileInfo{QDir{path}.filePath("decoder.onnx")}.isFile() : !QFileInfo{path}.isFile())throw std::runtime_error{"Model files are missing"};
       const auto normalized=QFileInfo{path}.absoluteFilePath();
       const auto digest=QCryptographicHash::hash(normalized.toUtf8(),QCryptographicHash::Sha256).toHex().left(24);
@@ -152,6 +163,20 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
     const QString directory = request["outputDirectory"].toString();
     if(sources.isEmpty() || directory.isEmpty() || !QFileInfo{directory}.isDir())
       throw std::runtime_error{"Batch requires source files and an output directory"};
+    auto recipes = request["recipes"].toArray();
+    if(request.contains("recipesPath"))
+    {
+      QFile file{request["recipesPath"].toString()};
+      if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"Cannot read staged batch recipes"};
+      QJsonParseError error;
+      const auto document = QJsonDocument::fromJson(file.readAll(), &error);
+      if(error.error != QJsonParseError::NoError || !document.isArray())
+        throw std::runtime_error{"Invalid staged batch recipes"};
+      recipes = document.array();
+    }
+    if(!recipes.isEmpty() && (recipes.size() != sources.size()
+       || std::any_of(recipes.begin(), recipes.end(), [](const auto &recipe) { return !recipe.isObject(); })))
+      throw std::runtime_error{"Batch requires one recipe per photograph"};
     auto recipe = toQtRecipe(request["recipe"].toObject(), request["width"].toInt(1024),
                              request["height"].toInt(1024));
     BatchQueue queue = BatchQueue::create(sources, directory, std::move(recipe), settings);
@@ -160,8 +185,7 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
     {
       if(!queue.temporary) beginBatchModelSnapshot();
       BatchQueueStore::save(queue);
-      if(!queue.temporary && request["recipes"].isArray() && !request["recipes"].toArray().isEmpty())
-        saveBatchRecipeSnapshots(queue, request["recipes"].toArray());
+      if(!queue.temporary && !recipes.isEmpty()) saveBatchRecipeSnapshots(queue, recipes);
       if(!queue.temporary) { saveBatchModelSnapshot(queue); finishBatchModelSnapshot(); }
     }
     catch(...)

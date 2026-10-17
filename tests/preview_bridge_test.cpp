@@ -1,4 +1,7 @@
 #include "rawlab/dng/DngWriter.h"
+#include "rawlab/raw/LibRawDecoder.h"
+#include "rawlab/image/LensCorrection.h"
+#include "rawlab/image/RawPreview.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QProcess>
@@ -162,7 +165,70 @@ int main(int argc, char **argv)
     if(samplesPerPixel != 3 || bitsPerSample != 16 || photometric != 34892
        || width != 64 || height != 96 || orientation != ORIENTATION_RIGHTTOP
        || !linearMetadataValid || !linearPixelsValid || !hasLinearDisplayPreview
-       || displayType != FILETYPE_REDUCEDIMAGE || displayCompression != COMPRESSION_JPEG) return 1;
+        || displayType != FILETYPE_REDUCEDIMAGE || displayCompression != COMPRESSION_JPEG) return 1;
+  // Compare displayed highlights with actual exported samples, including white balance and orientation.
+  auto brightMetadata = metadata;
+  brightMetadata.asShotNeutral = {.25f, 1.0f, .5f};
+  const QString brightInput = directory.filePath("highlights.dng");
+  const QString brightOutput = directory.filePath("highlights-linear.dng");
+  rawlab::dng::TiffDngWriter{}.writeCfaDng(brightInput.toStdString(),
+    {64, 96, std::vector<float>(64 * 96, 2048), brightMetadata});
+  const auto bright = rawlab::raw::LibRawDecoder{}.decodeRawImage(brightInput.toStdString());
+  const auto brightRgb = rawlab::image::renderLinearRgb(bright);
+  if(std::none_of(brightRgb.pixels.begin(), brightRgb.pixels.end(), [](float value) { return value > 1.25f; }))
+  { std::cerr << "Highlight fixture needs values above display white\n"; return 1; }
+  auto brightRecipe = recipe;
+  brightRecipe["outputKind"] = "linear-rgb";
+  QJsonObject brightRequest{{"operation", "export_linear"}, {"path", brightInput}, {"output", brightOutput},
+    {"recipe", brightRecipe}, {"size", 128}, {"quality", "high"}};
+  const auto brightExport = send(brightRequest);
+  TIFF *brightTiff = TIFFOpen(brightOutput.toStdString().c_str(), "r");
+  if(!brightTiff) return 1;
+  std::uint16_t brightIfdCount = 0;
+  toff_t *brightIfds = nullptr;
+  if(TIFFGetField(brightTiff, TIFFTAG_SUBIFD, &brightIfdCount, &brightIfds) != 1
+     || brightIfdCount != 2 || TIFFSetSubDirectory(brightTiff, brightIfds[0]) != 1)
+  { TIFFClose(brightTiff); return 1; }
+  std::vector<std::uint16_t> brightSamples(64 * 96 * 3);
+  for(int y = 0; y < 96; ++y)
+    if(TIFFReadScanline(brightTiff, brightSamples.data() + y * 64 * 3, y) != 1)
+    { TIFFClose(brightTiff); return 1; }
+  TIFFClose(brightTiff);
+  const auto brightGeometry = rawlab::image::rawPreviewGeometry(bright, 128);
+  const auto matchesExport = [&](const QJsonObject &response, const QString &field = "png") {
+    const auto png = QImage::fromData(QByteArray::fromBase64(response[field].toString().toLatin1()), "PNG")
+      .convertToFormat(QImage::Format_RGB888);
+    if(png.isNull()) return false;
+    for(int y = 0; y < png.height(); ++y) for(int x = 0; x < png.width(); ++x)
+    {
+      const auto raw = brightGeometry.previewToRaw(x + response["x"].toInt() + .5f, y + response["y"].toInt() + .5f);
+      const int offset = (static_cast<int>(raw.second) * 64 + static_cast<int>(raw.first)) * 3;
+      for(int c = 0; c < 3; ++c)
+      {
+        const float value = brightSamples[offset + c] / 65535.0f;
+        const int expected = std::lround(255 * (value <= .0031308f ? 12.92f * value : 1.055f * std::pow(value, 1 / 2.4f) - .055f));
+        if(std::abs(png.constScanLine(y)[x * 3 + c] - expected) > 1) return false;
+      }
+    }
+    return true;
+  };
+  if(!matchesExport(brightExport)) { std::cerr << "Export preview highlights differ from Linear RGB DNG\n"; return 1; }
+  for(const QString &operation : {QStringLiteral("preview"), QStringLiteral("process"),
+      QStringLiteral("recompose"), QStringLiteral("processed_preview")})
+  {
+    brightRequest["operation"] = operation;
+    const auto response = send(brightRequest);
+    if(operation == "process") brightRequest["resultId"] = response["resultId"];
+    if(!matchesExport(response) || (response.contains("before") && !matchesExport(response, "before")))
+    { std::cerr << "Preview highlights differ from Linear RGB DNG: " << operation.toStdString() << '\n'; return 1; }
+  }
+  brightRequest["operation"] = "detail";
+  brightRequest["x"] = 11; brightRequest["y"] = 7; brightRequest["width"] = 24; brightRequest["height"] = 18;
+  for(const QString &target : {QStringLiteral("original"), QStringLiteral("processed")})
+  {
+    brightRequest["target"] = target;
+    if(!matchesExport(send(brightRequest))) { std::cerr << "Detail highlights differ from Linear RGB DNG\n"; return 1; }
+  }
   if(exportOnly)
   {
     server.closeWriteChannel();
@@ -187,10 +253,25 @@ int main(int argc, char **argv)
    const QString recoveryDirectory = directory.filePath("recovery");
    if(!QDir{}.mkdir(recoveryDirectory)) return 1;
    batch["sources"] = QJsonArray{input, secondInput};
-   const QJsonObject secondRecipe{{"layers", QJsonArray{QJsonObject{{"id",0},{"enabled",false}}}}, {"highlights", false}};
-   batch["recipes"] = QJsonArray{recipe, secondRecipe};
+   const QJsonObject secondRecipe{{"layers", QJsonArray{QJsonObject{{"id",0},{"enabled",false}}}},
+     {"highlights", false}, {"outputKind", "linear-rgb"}};
+   const QString recipesPath = directory.filePath("staged-recipes.json");
+   batch["recipesPath"] = recipesPath;
    batch["outputDirectory"] = recoveryDirectory;
+   if(send(batch)["error"].toString().isEmpty()) return 1;
+   QFile stagedRecipes{recipesPath};
+   if(!stagedRecipes.open(QIODevice::WriteOnly) || stagedRecipes.write("{invalid}") < 1) return 1;
+   stagedRecipes.close();
+   if(send(batch)["error"].toString().isEmpty()) return 1;
+   if(!stagedRecipes.open(QIODevice::WriteOnly | QIODevice::Truncate)
+      || stagedRecipes.write(QJsonDocument{QJsonArray{recipe}}.toJson()) < 1) return 1;
+   stagedRecipes.close();
+   if(send(batch)["error"].toString().isEmpty()) return 1;
+   if(!stagedRecipes.open(QIODevice::WriteOnly | QIODevice::Truncate)
+      || stagedRecipes.write(QJsonDocument{QJsonArray{recipe, secondRecipe}}.toJson()) < 1) return 1;
+   stagedRecipes.close();
    const auto recoverableBatch = send(batch);
+   if(!QFile::remove(recipesPath)) return 1;
    const QString cancelPath = directory.filePath("cancel-batch");
    server.write(QJsonDocument{QJsonObject{{"operation", "batch_run"}, {"cancelPath", cancelPath}}}.toJson(QJsonDocument::Compact)+'\n');
    server.waitForBytesWritten();
@@ -219,8 +300,18 @@ int main(int argc, char **argv)
    if(send({{"operation", "batch_retry"}})["remaining"].toInt() != 1) return 1;
    const auto resumed = send({{"operation", "batch_run"}});
    firstFile.close();
-    if(resumed["completed"].toInt() != 2 || !firstFile.open(QIODevice::ReadOnly)
-       || firstFile.readAll() != firstPublished || !QFileInfo::exists(recoveryDirectory + "/second-rawlab.dng")) return 1;
+     if(resumed["completed"].toInt() != 2 || !firstFile.open(QIODevice::ReadOnly)
+        || firstFile.readAll() != firstPublished || !QFileInfo::exists(recoveryDirectory + "/second-rawlab.dng")) return 1;
+   TIFF *secondExport = TIFFOpen((recoveryDirectory + "/second-rawlab.dng").toStdString().c_str(), "r");
+   if(!secondExport) return 1;
+   std::uint16_t subIfdCount = 0;
+   toff_t *subIfds = nullptr;
+   std::uint16_t secondPhotometric = 0;
+   const bool hasLinearMain = TIFFGetField(secondExport, TIFFTAG_SUBIFD, &subIfdCount, &subIfds) == 1
+     && subIfdCount == 2 && TIFFSetSubDirectory(secondExport, subIfds[0]) == 1;
+   if(hasLinearMain) TIFFGetField(secondExport, TIFFTAG_PHOTOMETRIC, &secondPhotometric);
+   TIFFClose(secondExport);
+   if(secondPhotometric != 34892) return 1;
    const QString externalOutput = directory.filePath("darktable output.dng");
    const QString externalRequest = directory.filePath("darktable-request");
    QFile externalRequestFile{externalRequest};

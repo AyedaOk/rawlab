@@ -6,9 +6,11 @@
 #include "rawlab/pipeline/RawProcessingPipeline.h"
 #include "rawlab/ai/RawForgeAdapter.h"
 #include "rawlab/image/RawPreview.h"
+#include "rawlab/image/AmazeDemosaic.h"
 #include "rawlab/image/LensCorrection.h"
 #include "rawlab/pipeline/MaskedBlend.h"
 #include "rawlab/ai/Sam2Segmenter.h"
+#include "rawlab/ai/DepthEstimator.h"
 #include <QImage>
 #include <QFile>
 #include <QDir>
@@ -37,6 +39,7 @@
 // Persistent desktop processing state. Cached CFA stays in C++.
 class ProcessingSession
 {
+  friend struct ProcessingSessionTest;
   QString sourceKey_;
   std::shared_ptr<rawlab::raw::RawImage> source_;
   std::deque<std::pair<QString, std::shared_ptr<rawlab::raw::RawImage>>> sources_;
@@ -56,6 +59,9 @@ class ProcessingSession
   std::deque<ProcessedEntry> processed_;
   std::shared_ptr<rawlab::ai::Sam2Segmenter> segmenter_;
   QString segmenterKey_;
+  std::unique_ptr<rawlab::ai::DepthEstimator> depthEstimator_;
+  QString depthModelKey_;
+  std::deque<std::pair<QString, QJsonObject>> depthMaps_;
   static QString fingerprint(const QString &path)
   {
     const QFileInfo file{path};
@@ -152,10 +158,11 @@ class ProcessingSession
   }
   std::shared_ptr<rawlab::image::LinearRawPreview> previewEndpoint(
     const QString &identity, const rawlab::raw::RawImage &image, const int size,
-    const rawlab::image::PreviewQuality quality)
+    const rawlab::image::PreviewQuality quality, const rawlab::raw::RawImage *highlightSource = nullptr)
   {
     const QString key = identity + ':' + QString::number(size) + ':'
-      + (quality == rawlab::image::PreviewQuality::High ? QStringLiteral("high") : QStringLiteral("fast"));
+      + (quality == rawlab::image::PreviewQuality::High ? QStringLiteral("high") : QStringLiteral("fast"))
+      + (highlightSource ? QStringLiteral(":highlights") : QString{});
     if(const auto hit = previewCache_.find(key); hit != previewCache_.end())
     {
       std::erase(previewCacheOrder_, key);
@@ -163,7 +170,8 @@ class ProcessingSession
       return hit->second;
     }
     auto preview = std::make_shared<rawlab::image::LinearRawPreview>(
-      rawlab::image::renderLinearRawPreview(image, size, quality));
+      rawlab::image::renderLinearRawPreview(highlightSource
+        ? rawlab::raw::preserveClippedHighlights(*highlightSource, image) : image, size, quality));
     cachePreview(key, preview);
     return preview;
   }
@@ -235,18 +243,12 @@ public:
       auto result = preview(path, globalRecipe, resultId + QStringLiteral(":global"),
                              fallback, size, quality, checkCancelled);
       const int mw = result.width, mh = result.height;
-      const float edge = static_cast<float>(std::min(mw, mh));
+      const auto geometry = rawlab::image::rawPreviewGeometry(*original, 1024);
       for(int i = layers.size() - 1; i > 0; --i)
       {
         auto layer = layers[i].toObject();
         if(!layer["enabled"].toBool(true)) continue;
-        const float layerBlend = static_cast<float>(
-          std::clamp(layer["blend"].toDouble(100.0), 0.0, 100.0) / 100.0);
-        auto mask = desktopMask(layer, mw, mh);
-        mask = rawlab::pipeline::blurMask(rawlab::pipeline::featherMask(
-          mask, static_cast<float>(layer["feather"].toDouble() / 1000.0) * edge),
-          static_cast<float>(layer["blur"].toDouble() / 1000.0) * edge);
-        layer["blend"] = 100;
+        auto mask = desktopMask(layer, geometry.previewWidth, geometry.previewHeight, recipe["depthMaps"].toObject());
         QJsonObject localRecipe = recipe;
         localRecipe["layers"] = QJsonArray{layer};
         const auto local = preview(path, localRecipe,
@@ -254,9 +256,8 @@ public:
         for(int y = 0; y < result.height; ++y)
           for(int x = 0; x < result.width; ++x)
           {
-            float amount = mask.sampleNearest(x, y);
+            float amount = mask.sampleNearestMapped(x, y, mw, mh);
             if(layer["inverted"].toBool()) amount = 1.0f - amount;
-            amount *= layerBlend;
             const std::size_t pixel = (static_cast<std::size_t>(y) * result.width + x) * 3U;
             for(std::size_t channel = 0; channel < 3; ++channel)
               result.pixels[pixel + channel] += (local.pixels[pixel + channel]
@@ -286,11 +287,12 @@ public:
     const auto originalPreview = previewEndpoint(
       QStringLiteral("original:") + sourceKey_, *original, size, quality);
     if(checkCancelled) checkCancelled();
+    const auto *highlightSource = recipe["highlights"].toBool(true) ? original.get() : nullptr;
     const auto denoisedPreview = previewEndpoint(
-      QStringLiteral("denoised:") + denoiseKey, *denoisedImage, size, quality);
+      QStringLiteral("denoised:") + denoiseKey, *denoisedImage, size, quality, highlightSource);
     if(checkCancelled) checkCancelled();
-    const QString mode = recipe["outputKind"].toString("cfa") == "linear-rgb"
-      ? global["sharpen"].toString("Off") : QStringLiteral("Off");
+    QString mode = global["sharpen"].toString("Off");
+    if(mode == "AI" && recipe["outputKind"].toString("cfa") != "linear-rgb") mode = "Off";
     std::shared_ptr<rawlab::image::LinearRawPreview> sharpenedPreview;
     if(mode != "Off")
     {
@@ -323,7 +325,7 @@ public:
         throw std::runtime_error{"Sharpening cache expired; press Update to process again"};
       touchCache(sharpenKey);
       sharpenedPreview = previewEndpoint(
-        QStringLiteral("sharpened:") + sharpenKey, *sharpened->second, size, quality);
+        QStringLiteral("sharpened:") + sharpenKey, *sharpened->second, size, quality, highlightSource);
       if(checkCancelled) checkCancelled();
     }
 
@@ -337,13 +339,6 @@ public:
     {
       float value = denoisedPreview->pixels[index];
       if(sharpenedPreview) value += (sharpenedPreview->pixels[index] - value) * strength;
-      if(recipe["highlights"].toBool(true))
-      {
-        const std::size_t pixel = index - index % 3U;
-        const float peak = std::max({originalPreview->pixels[pixel], originalPreview->pixels[pixel + 1],
-                                     originalPreview->pixels[pixel + 2]});
-        if(peak >= 0.98f) value = originalPreview->pixels[index];
-      }
       result.pixels[index] = originalPreview->pixels[index]
         + (value - originalPreview->pixels[index]) * blend;
     }
@@ -351,7 +346,8 @@ public:
   }
   rawlab::image::LinearRawPreview detail(const QString &path, const QJsonObject &recipe,
     const QRect &region, const rawlab::image::OpticsOptions &optics = {},
-    const std::function<void()> &checkCancelled = {})
+    const std::function<void()> &checkCancelled = {},
+    const rawlab::image::PreviewQuality quality = rawlab::image::PreviewQuality::High)
   {
     if(checkCancelled) checkCancelled();
     const auto original = source(path);
@@ -363,7 +359,8 @@ public:
       throw std::invalid_argument{"Invalid detail region"};
     const QString identity = sourceKey_ + ':' + QString::fromLatin1(QCryptographicHash::hash(
       QJsonDocument{recipe}.toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex())
-      + ':' + QString::number(optics.chromaticAberration) + ':' + QString::number(optics.lensCorrection);
+      + ':' + QString::number(optics.chromaticAberration) + ':' + QString::number(optics.lensCorrection)
+      + ':' + QString::number(static_cast<int>(quality));
     const auto settings = ApplicationSettingsStore{}.load();
     // Include model versions and execution settings so replacing a model cannot reuse old detail.
     QString execution = settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId) + ':' + settings.onnxRuntimeLibrary;
@@ -378,13 +375,16 @@ public:
       const QRect active{geometry.rawArea.left, geometry.rawArea.top, geometry.rawArea.width, geometry.rawArea.height};
       const int left = std::lround(std::min(p0.first, p1.first)), top = std::lround(std::min(p0.second, p1.second));
       const int right = std::lround(std::max(p0.first, p1.first)), bottom = std::lround(std::max(p0.second, p1.second));
-      const QRect rawRegion = QRect{left - 2, top - 2, right - left + 4, bottom - top + 4}.intersected(active);
+      const auto working = rawlab::image::amazeWorkingArea(*original, {left, top, right - left, bottom - top});
+      const QRect rawRegion = quality == rawlab::image::PreviewQuality::High
+        ? QRect{working.left, working.top, working.width, working.height}
+        : QRect{left - 2, top - 2, right - left + 4, bottom - top + 4}.intersected(active);
       const auto composed = process(path, recipe, [&](int, int) { if(checkCancelled) checkCancelled(); },
         &settings, false, [&](const QString &, int, int) { if(checkCancelled) checkCancelled(); }, rawRegion, &masks);
       const auto c0 = geometry.rawToPreview(rawRegion.x(), rawRegion.y());
       const auto c1 = geometry.rawToPreview(rawRegion.x() + rawRegion.width(), rawRegion.y() + rawRegion.height());
       auto linear = rawlab::image::renderLinearRawPreviewRegion(*composed,
-        x - std::lround(std::min(c0.first, c1.first)), y - std::lround(std::min(c0.second, c1.second)), width, height);
+        x - std::lround(std::min(c0.first, c1.first)), y - std::lround(std::min(c0.second, c1.second)), width, height, quality);
       return rawlab::image::LinearRgbImage{linear.width, linear.height, std::move(linear.pixels)};
     };
     constexpr int tileSize = 256;
@@ -418,10 +418,48 @@ public:
   static QJsonObject models()
   {
     const auto settings = ApplicationSettingsStore{}.load();
-    QJsonArray denoise, sharpen;
+    QJsonArray denoise, sharpen, depth;
     for(const auto &m : settings.denoiseModels) denoise.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"path", m.path}, {"origin", m.origin}, {"available", QFileInfo{m.path}.isFile()}});
     for(const auto &m : settings.sharpenModels) sharpen.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"path", m.path}, {"origin", m.origin}, {"available", QFileInfo{m.path}.isFile()}});
-    return {{"denoise", denoise}, {"sharpen", sharpen}, {"provider", settings.onnxProvider}};
+    for(const auto &m : settings.depthModels) depth.push_back(QJsonObject{{"id", m.id}, {"name", m.name}, {"path", m.path}, {"origin", m.origin}, {"available", QFileInfo{m.path}.isFile()}});
+    return {{"denoise", denoise}, {"sharpen", sharpen}, {"depth", depth},
+      {"activeDepthModelId", settings.activeDepthModelId}, {"provider", settings.onnxProvider}};
+  }
+  QJsonObject depth(const QString &path, const std::function<void()> &checkCancelled = {})
+  {
+    if(checkCancelled) checkCancelled();
+    const auto original = source(path);
+    const auto settings = ApplicationSettingsStore{}.load();
+    const auto found = std::find_if(settings.depthModels.begin(), settings.depthModels.end(),
+      [&](const auto &model) { return model.id == settings.activeDepthModelId; });
+    if(found == settings.depthModels.end() || !QFileInfo{found->path}.isFile())
+      throw std::runtime_error{"Configure a Depth Anything V2 model in Preferences first"};
+    if(found->adapter != "depth-anything-v2-v1") throw std::runtime_error{"Unsupported depth model adapter"};
+    const auto modelKey = fingerprint(found->path) + ':' + fingerprint(found->path + "_data")
+      + ':' + settings.onnxProvider + ':' + QString::number(settings.onnxDeviceId) + ':' + settings.onnxRuntimeLibrary;
+    const auto key = QString::fromLatin1(QCryptographicHash::hash(
+      (sourceKey_ + ':' + modelKey).toUtf8(), QCryptographicHash::Sha256).toHex());
+    const auto hit = std::find_if(depthMaps_.begin(), depthMaps_.end(), [&](const auto &entry) { return entry.first == key; });
+    if(hit != depthMaps_.end())
+    {
+      const auto entry = *hit; depthMaps_.erase(hit); depthMaps_.push_back(entry);
+      return entry.second;
+    }
+    if(!depthEstimator_ || depthModelKey_ != modelKey)
+    {
+      depthEstimator_.reset();
+      depthEstimator_ = std::make_unique<rawlab::ai::DepthEstimator>(found->path.toStdString(),
+        rawlab::ai::OnnxSessionOptions{settings.onnxProvider.toStdString(), settings.onnxDeviceId, settings.onnxRuntimeLibrary.toStdString()});
+      depthModelKey_ = modelKey;
+    }
+    if(checkCancelled) checkCancelled();
+    const auto preview = rawlab::image::renderRawPreview(*original, 1024);
+    const auto map = depthEstimator_->estimate(preview.image);
+    if(checkCancelled) checkCancelled();
+    const QJsonObject result{{"key", key}, {"png", depthMapPng(map)}, {"modelId", found->id}};
+    depthMaps_.emplace_back(key, result);
+    while(depthMaps_.size() > 4) depthMaps_.pop_front();
+    return result;
   }
   rawlab::pipeline::Mask segment(const QString &path, const QJsonArray &points)
   {
@@ -461,22 +499,18 @@ public:
       auto geometry = rawlab::image::rawPreviewGeometry(*original, 1024);
       const int w = geometry.previewWidth, h = geometry.previewHeight;
       if(!rawRegion.isNull()) { geometry.rawArea.left -= rawRegion.x(); geometry.rawArea.top -= rawRegion.y(); }
-      const float edge = std::min(w, h);
       std::map<int, rawlab::pipeline::Mask> localMasks;
       if(!maskCache) maskCache = &localMasks;
-      // Qt displays highest-priority local masks first; compose bottom to top.
+      // Compose bottom to top. Each local blends with the source before covering lower layers.
       for(int i = layers.size() - 1; i > 0; --i)
       {
         auto layer = layers[i].toObject(); if(!layer["enabled"].toBool(true)) continue;
-        const float blend = static_cast<float>(std::clamp(layer["blend"].toDouble(100),0.0,100.0)/100);
         if(!maskCache->contains(i))
-          maskCache->emplace(i, rawlab::pipeline::blurMask(rawlab::pipeline::featherMask(desktopMask(layer,w,h),
-            static_cast<float>(layer["feather"].toDouble()/1000)*edge),static_cast<float>(layer["blur"].toDouble()/1000)*edge));
+          maskCache->emplace(i, desktopMask(layer, w, h, recipe["depthMaps"].toObject()));
         const auto &mask = maskCache->at(i);
-        layer["blend"]=100;
         auto localRecipe=recipe; localRecipe["layers"]=QJsonArray{layer};
          const auto local=process(path,localRecipe,progress,settingsSnapshot,allowInference,stageProgress,rawRegion);
-        composed=std::make_shared<rawlab::raw::RawImage>(rawlab::pipeline::blendWithPreviewMask(*composed,*local,mask,geometry,blend,layer["inverted"].toBool()));
+        composed=std::make_shared<rawlab::raw::RawImage>(rawlab::pipeline::blendWithPreviewMask(*composed,*local,mask,geometry,1.0f,layer["inverted"].toBool()));
       }
       return composed;
     }
@@ -503,8 +537,8 @@ public:
     else touchCache(key);
     const auto denoised = cache_.at(key);
     auto processed = crop(denoised, rawRegion);
-     const QString mode = recipe["outputKind"].toString("cfa") == "linear-rgb"
-       ? global["sharpen"].toString("Off") : QStringLiteral("Off");
+     QString mode = global["sharpen"].toString("Off");
+     if(mode == "AI" && recipe["outputKind"].toString("cfa") != "linear-rgb") mode = "Off";
     const auto unit = [](QJsonValue v, double fallback) {
       const double value = v.toDouble(fallback);
       if(!std::isfinite(value) || value < 0 || value > 100) throw std::runtime_error{"Strength must be between 0 and 100"};

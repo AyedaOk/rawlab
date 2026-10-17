@@ -1,5 +1,29 @@
 export type Mark = { tool: string; points: [number, number][]; radius?: number; hardness?: number };
+export type DepthRange = [number, number, number, number];
+export type DepthPixels = { values: Float32Array; width: number; height: number };
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
+
+// Match depthRangeMask in Mask.cpp. Resample numerical depths before selecting the range.
+export function depthRangeMask(depth: DepthPixels, w: number, h: number, range: DepthRange) {
+  if (range.length !== 4 || range.some((v, i) => !Number.isFinite(v) || v < 0 || v > 100 || (i > 0 && v < range[i - 1])))
+    throw new Error("Invalid depth range");
+  const [a, b, c, d] = range.map(v => v / 100);
+  const values = new Float32Array(w * h), dw = depth.width, dh = depth.height;
+  for (let y = 0; y < h; y++) {
+    const sy = Math.max(0, Math.min(dh - 1, (y + .5) * dh / h - .5));
+    const y0 = Math.floor(sy), y1 = Math.min(y0 + 1, dh - 1), fy = sy - y0;
+    for (let x = 0; x < w; x++) {
+      const sx = Math.max(0, Math.min(dw - 1, (x + .5) * dw / w - .5));
+      const x0 = Math.floor(sx), x1 = Math.min(x0 + 1, dw - 1), fx = sx - x0;
+      const top = depth.values[y0 * dw + x0] * (1 - fx) + depth.values[y0 * dw + x1] * fx;
+      const bottom = depth.values[y1 * dw + x0] * (1 - fx) + depth.values[y1 * dw + x1] * fx;
+      const z = top * (1 - fy) + bottom * fy;
+      values[y * w + x] = Math.min(a === b ? Number(z >= b) : clamp((z - a) / (b - a)),
+        c === d ? Number(z <= c) : clamp((d - z) / (d - c)));
+    }
+  }
+  return values;
+}
 
 // Match Mask::paintSegment, ellipseMask and linearGradientMask in Mask.cpp.
 export function paintMask(values: Float32Array, w: number, h: number, mark: Mark, start = 0) {

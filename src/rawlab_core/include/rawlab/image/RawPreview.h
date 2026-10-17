@@ -46,6 +46,7 @@ RawPreview renderRawPreview(const raw::RawImage &source, int maxDimension = 2048
 RawPreview renderRawPreviewRegion(const raw::RawImage &source, int x, int y,
                                    int width, int height);
 LinearRawPreview renderLinearRawPreviewRegion(const raw::RawImage &source, int x, int y,
-                                              int width, int height);
+                                              int width, int height,
+                                              PreviewQuality quality = PreviewQuality::High);
 
 }

@@ -1,8 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { paintMask, type Mark } from "./mask";
+import { paintMask, type Mark, type DepthRange } from "./mask";
 
 export type MaskOverlayHandle = { draw: (mark: Mark | null) => void };
-type Props = { marks: Mark[]; aiMask?: string; feather: number; blur: number; inverted: boolean; showMask: boolean };
+type Props = { marks: Mark[]; aiMask?: string; feather: number; blur: number; inverted: boolean; showMask: boolean;
+  depthPng?: string; depthRange?: DepthRange; onError?: (message: string) => void };
 
 export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, ref) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -28,13 +29,15 @@ export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, 
       const values = working.slice();
       const edge = Math.min(surface.width, surface.height) / 1000;
       worker.postMessage({ values, width: surface.width, height: surface.height,
-        feather: settings.current.feather * edge, blur: settings.current.blur * edge,
-        inverted: settings.current.inverted, revision }, [values.buffer]);
+         feather: settings.current.feather * edge, blur: settings.current.blur * edge,
+        inverted: settings.current.inverted, revision, depthRange: settings.current.depthRange,
+        marks: props.marks, live }, [values.buffer]);
     }
     worker.onmessage = ({ data }) => {
       busy = false;
       if (data.revision === revision) {
-        context.putImageData(new ImageData(data.pixels, data.width, data.height), 0, 0);
+        if (data.error) settings.current.onError?.(data.error);
+        else context.putImageData(new ImageData(data.pixels, data.width, data.height), 0, 0);
       }
       send();
     };
@@ -42,7 +45,7 @@ export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, 
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        if (live) {
+        if (live && !props.depthPng) {
           if (live.tool !== "Brush" && live.tool !== "Erase") {
             working = base.slice();
             painted = 0;
@@ -69,7 +72,7 @@ export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, 
         for (let i = 0; i < base.length; i++) base[i] = pixels[i * 4] / 255;
         context.clearRect(0, 0, surface.width, surface.height);
       }
-      for (const mark of props.marks) paintMask(base, surface.width, surface.height, mark);
+      if (!props.depthPng) for (const mark of props.marks) paintMask(base, surface.width, surface.height, mark);
       working = base.slice();
       painted = 0;
       revision++;
@@ -88,7 +91,23 @@ export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, 
     const observer = new ResizeObserver(rebuild);
     observer.observe(surface);
     rebuild();
-    if (props.aiMask) {
+    if (props.depthPng) {
+      const image = new Image();
+      image.onload = () => {
+        if (disposed) return;
+        const decoded = document.createElement("canvas");
+        decoded.width = image.width; decoded.height = image.height;
+        const ctx = decoded.getContext("2d")!;
+        ctx.drawImage(image, 0, 0);
+        const pixels = ctx.getImageData(0, 0, image.width, image.height).data;
+        const values = new Float32Array(image.width * image.height);
+        for (let i = 0; i < values.length; i++) values[i] = (pixels[i * 4] * 256 + pixels[i * 4 + 1]) / 65535;
+        worker.postMessage({ depth: { values, width: image.width, height: image.height } }, [values.buffer]);
+        revision++; schedule();
+      };
+      image.onerror = () => { if (!disposed) settings.current.onError?.("Could not decode the depth map."); };
+      image.src = `data:image/png;base64,${props.depthPng}`;
+    } else if (props.aiMask) {
       const image = new Image();
       image.onload = () => { ai = image; rebuild(); };
       image.src = `data:image/png;base64,${props.aiMask}`;
@@ -101,8 +120,8 @@ export default forwardRef<MaskOverlayHandle, Props>(function MaskOverlay(props, 
       cancelAnimationFrame(frame);
       worker.terminate();
     };
-  }, [props.marks, props.aiMask]);
-  useEffect(() => { refresh.current(); }, [props.feather, props.blur, props.inverted]);
+  }, [props.marks, props.aiMask, props.depthPng]);
+  useEffect(() => { refresh.current(); }, [props.feather, props.blur, props.inverted, props.depthRange]);
 
   return <canvas ref={canvas} className="mask-overlay" aria-hidden="true"
     data-mark-count={props.marks.length} style={{ visibility: props.showMask ? "visible" : "hidden" }} />;

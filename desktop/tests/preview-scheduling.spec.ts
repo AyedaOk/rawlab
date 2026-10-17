@@ -43,11 +43,12 @@ test('quality changes issue one source request and reuse processed derivatives',
   await page.addInitScript((png) => {
     const calls:any[]=[];
     let resolveFirst!:(value:unknown)=>void;
-    let processedCalls=0;
+    let holdProcessed=false;
     let sourceVersion='v1';
     Object.assign(window,{isTauri:true,__previewCalls:calls,
+      __holdProcessed:()=>{holdProcessed=true;},
       __setSourceVersion:(value:string)=>{sourceVersion=value;},
-      __resolveProcessed:()=>resolveFirst({version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png:`${png}F`,quality:'fast',metadata:{rawWidth:6000,rawHeight:4000}}),
+      __resolveProcessed:()=>resolveFirst({version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png:`${png}H`,quality:'high',metadata:{rawWidth:6000,rawHeight:4000}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
       if(command==='external_session'||command==='supersede_previews') return null;
       calls.push({command,args:structuredClone(args)});
@@ -56,8 +57,7 @@ test('quality changes issue one source request and reuse processed derivatives',
       if(command==='render_raw_preview') return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion,png,quality:args.highQuality?'high':'fast',metadata:{rawWidth:6000,rawHeight:4000}};
       if(command==='process_raw') return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',resultId:'result-1',png,before:png,quality:'high',metadata:{rawWidth:6000,rawHeight:4000}};
       if(command==='render_processed') {
-        processedCalls++;
-        if(processedCalls===1) return new Promise((resolve)=>{resolveFirst=resolve;});
+        if(holdProcessed) {holdProcessed=false;return new Promise((resolve)=>{resolveFirst=resolve;});}
         return {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',png:`${png}${args.highQuality?'H':'F'}`,quality:args.highQuality?'high':'fast',metadata:{rawWidth:6000,rawHeight:4000}};
       }
       if(command==='desktop_control') {
@@ -83,7 +83,8 @@ test('quality changes issue one source request and reuse processed derivatives',
     return call.args.previewSize >= 128 && call.args.previewSize <= 4096
       && call.args.resultId === 'result-1';
   })).toBe(true);
-  await page.evaluate(() => ((window as any).__previewCalls.length=0));
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await page.evaluate(() => { (window as any).__previewCalls.length=0; (window as any).__holdProcessed(); });
   const quality=page.getByRole('switch',{name:'High Quality'});
   await quality.click();
   await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(1);
@@ -92,12 +93,12 @@ test('quality changes issue one source request and reuse processed derivatives',
   await quality.click();
   await quality.click();
   await page.evaluate(() => (window as any).__resolveProcessed());
-  await expect(page.locator('.main-photo')).toHaveAttribute('src',/F$/);
+  await expect(page.locator('.main-photo')).toHaveAttribute('src',/H$/);
   expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(1);
   await quality.click();
-  await expect(page.locator('.main-photo')).not.toHaveAttribute('src',/F$/);
+  await expect(page.locator('.main-photo')).not.toHaveAttribute('src',/H$/);
   await quality.click();
-  await expect(page.locator('.main-photo')).toHaveAttribute('src',/F$/);
+  await expect(page.locator('.main-photo')).toHaveAttribute('src',/H$/);
   expect(await page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').length)).toBe(1);
   await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await page.getByRole('button',{name:'Normal',exact:true}).click();
@@ -109,6 +110,19 @@ test('quality changes issue one source request and reuse processed derivatives',
   await page.evaluate(() => ((window as any).__previewCalls.length=0));
   await page.getByRole('slider',{name:'Strength'}).fill('70');
   await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='process_raw'&&call.args.operation==='recompose').length)).toBe(1);
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await page.evaluate(() => ((window as any).__previewCalls.length=0));
+  await page.getByRole('button',{name:'Add mask',exact:true}).click();
+  await page.getByRole('switch',{name:'Invert mask',exact:true}).click();
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__previewCalls.filter((call:any)=>call.command==='render_processed').at(-1)?.args.recipe.layers[1].inverted)).toBe(true);
+  await page.getByRole('button',{name:'Done',exact:true}).click();
+  await page.getByRole('button',{name:'Disable Mask 1',exact:true}).click();
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await page.getByRole('button',{name:'Enable Mask 1',exact:true}).click();
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__previewCalls.some((call:any)=>call.command==='process_raw'&&call.args.operation!=='recompose'))).toBe(false);
+  await page.evaluate(() => ((window as any).__previewCalls.length=0));
   await page.evaluate(() => (window as any).__setSourceVersion('v2'));
   await page.getByRole('button',{name:'Back to library'}).click();
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
@@ -163,11 +177,12 @@ test('Normal sharpening starts automatically and keeps the detail tile during st
   },png);
   await page.goto('/');
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
-  await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await page.getByRole('button',{name:'Normal',exact:true}).click();
   await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
   await page.getByRole('button',{name:'1:1',exact:true}).click();
   await expect(page.locator('.detail-tile').first()).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__sharpCalls.find((c:any)=>c.command==='process_raw').args.recipe.outputKind)).toBe('cfa');
+  expect(await page.evaluate(() => (window as any).__sharpCalls.find((c:any)=>c.command==='render_raw_detail').args.highQuality)).toBe(false);
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now()+1000));
   await page.evaluate(()=>{(window as any).__sharpCalls.length=0;(window as any).__delayDetail();(window as any).__delayOverview();});
@@ -204,6 +219,7 @@ test('Normal sharpening starts automatically and keeps the detail tile during st
   await page.evaluate(()=>(window as any).__finishBefore());
   await expect(page.locator('.detail-tile')).toHaveCount(2);
   await page.getByRole('button',{name:'Before and after'}).click();
+  await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
   await page.getByRole('group',{name:'Sharpening mode'}).getByRole('button',{name:'AI',exact:true}).click();
   await page.getByRole('button',{name:'Update',exact:true}).click();
   await expect(page.getByRole('button',{name:'Update',exact:true})).toHaveCount(0);
@@ -260,4 +276,80 @@ test('wheel zoom uses oriented source dimensions and requests a bounded detail r
   expect(request.width*request.height).toBeGreaterThan(4*1024*1024);
   expect(request.width*request.height).toBeLessThanOrEqual(16*1024*1024);
   expect(request.width).toBeLessThan(7008);
+});
+
+test('comparison uses matching geometry while editing corrected masks and refreshing blend', async ({page}) => {
+  await page.addInitScript((png) => {
+    let finish: (() => void) | undefined;
+    const state = {hold: false, release: () => { state.hold = false; finish?.(); }};
+    const metadata = {rawWidth:6000,rawHeight:4000,optics:{lensfunAvailable:true,profileMatched:true,
+      lensCorrectionAvailable:true,chromaticAberrationAvailable:true,message:'Test lens'}};
+    const image = {version:1,width:100,height:80,sourceWidth:6000,sourceHeight:4000,sourceVersion:'v1',metadata};
+    Object.assign(window,{isTauri:true,__geometry:state,__TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
+      if(command==='external_session'||command==='supersede_previews') return null;
+      if(command==='processing_models') return {models:{denoise:[{id:'hf:rawdenoise-okeinla',name:'Okeinla',available:true}],sharpen:[],provider:'cpu'}};
+      if(command==='render_raw_preview') return {...image,png:`${png}#unwarped-before`,quality:args.highQuality?'high':'fast'};
+      if(command==='process_raw'||command==='render_processed'||command==='render_raw_detail') {
+        if(state.hold) await new Promise<void>(resolve => { finish = resolve; });
+        const geometry=args.recipe.lensCorrection?'corrected':'unwarped';
+        return {...image,resultId:'r1',quality:args.highQuality?'high':'fast',x:args.x,y:args.y,
+          width:args.width??100,height:args.height??80,
+          png:`${png}#${geometry}-${args.target==='original'?'before':'after'}`,before:`${png}#${geometry}-before`};
+      }
+      if(command==='desktop_control') {
+        const op=args.request.operation;
+        if(op==='library_list') return {paths:['/photos/a.ARW']};
+        if(op==='preset_list') return {names:[]};
+        if(op==='recipe_load') return {outcome:'missing',recipe:null};
+        if(op==='recipe_save') return {saved:true};
+        if(op==='library_metadata'||op==='library_metadata_save') return {rating:0,labels:[]};
+      }
+      throw new Error(`Unexpected ${command}`);
+    }}});
+  }, png);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
+  await page.getByRole('button',{name:'Linear RGB',exact:true}).click();
+  await page.getByRole('group',{name:'Lens correction'}).getByRole('button',{name:'On',exact:true}).click();
+  await page.getByRole('button',{name:'Update',exact:true}).click();
+  await page.getByRole('button',{name:'Before and after'}).click();
+  const after=page.locator('.main-photo'), before=page.getByAltText('Original before processing',{exact:true});
+  await expect(after).toHaveAttribute('src',/#corrected-after$/);
+  await expect(before).toHaveAttribute('src',/#corrected-before$/);
+  await page.getByRole('button',{name:'Add mask',exact:true}).click();
+  await expect(after).toHaveAttribute('src',/#unwarped-after$/);
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await expect(before).toHaveAttribute('src',/#unwarped-before$/);
+  await page.getByRole('button',{name:'1:1',exact:true}).click();
+  await expect(page.getByAltText('Source-resolution detail',{exact:true})).toHaveAttribute('src',/#unwarped-after$/);
+  await expect(page.getByAltText('Original source-resolution detail',{exact:true})).toHaveAttribute('src',/#unwarped-before$/);
+  await page.evaluate(() => { (window as any).__geometry.hold=true; });
+  await page.getByRole('button',{name:'Done',exact:true}).click();
+  await expect(page.locator('.detail-tile')).toHaveCount(0);
+  await expect(after).toHaveAttribute('src',/#corrected-after$/);
+  await expect(before).toHaveAttribute('src',/#corrected-before$/);
+  await page.evaluate(() => (window as any).__geometry.release());
+  await expect(page.getByAltText('Source-resolution detail',{exact:true})).toHaveAttribute('src',/#corrected-after$/);
+  await expect(page.getByAltText('Original source-resolution detail',{exact:true})).toHaveAttribute('src',/#corrected-before$/);
+  await page.getByRole('button',{name:'Fit image',exact:true}).click();
+  await expect(after).toHaveAttribute('src',/#corrected-after$/);
+  await expect(before).toHaveAttribute('src',/#corrected-before$/);
+  await page.evaluate(() => { (window as any).__geometry.hold=true; });
+  await page.getByRole('slider',{name:'Blend with denoised'}).fill('45');
+  await expect(page.locator('.update-pill')).toHaveText('Updating preview…');
+  await expect(after).toHaveAttribute('src',/#corrected-after$/);
+  await expect(before).toHaveAttribute('src',/#corrected-before$/);
+  await page.evaluate(() => (window as any).__geometry.release());
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await page.getByRole('group',{name:'Lens correction'}).getByRole('button',{name:'Off',exact:true}).click();
+  await expect(after).toHaveAttribute('src',/#unwarped-after$/);
+  await expect(before).toHaveAttribute('src',/#unwarped-before$/);
+  await expect(page.locator('.update-pill')).toHaveCount(0);
+  await page.evaluate(() => { (window as any).__geometry.hold=true; });
+  await page.getByRole('slider',{name:'Blend with denoised'}).fill('55');
+  await expect(page.locator('.update-pill')).toHaveText('Updating preview…');
+  await expect(after).toHaveAttribute('src',/#unwarped-after$/);
+  await expect(before).toHaveAttribute('src',/#unwarped-before$/);
+  await page.evaluate(() => (window as any).__geometry.release());
+  await expect(page.locator('.update-pill')).toHaveCount(0);
 });
