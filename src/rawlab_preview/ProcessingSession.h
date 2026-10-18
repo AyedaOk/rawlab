@@ -405,7 +405,8 @@ public:
         {
           auto rgb = rawlab::image::renderOpticsRegion(fullWidth, fullHeight, x, y, tile.width(), tile.height(),
             original->metadata(), optics, renderSource, checkCancelled);
-          pixels = std::make_shared<rawlab::image::LinearRawPreview>(rgb.width, rgb.height, std::move(rgb.pixels), geometry);
+          pixels = std::make_shared<rawlab::image::LinearRawPreview>(
+            rawlab::image::LinearRawPreview{rgb.width, rgb.height, std::move(rgb.pixels), geometry});
           cachePreview(key, pixels);
         }
         const QRect overlap = tile.intersected(region);

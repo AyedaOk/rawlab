@@ -144,7 +144,7 @@ int main()
     const char *&stage;
     ~Progress() { if(stage) std::fprintf(stderr, "Smoke test stopped at: %s\n", stage); }
   } progress{stage};
-  if(rawlab::core::version() != std::string_view{"0.2.2"}) return 1;
+  if(rawlab::core::version() != std::string_view{"0.2.3"}) return 1;
 
   const rawlab::raw::CfaPattern rggb = makeRggb();
   if(rawlab::raw::toString(rggb) != "RGGB") return 1;
