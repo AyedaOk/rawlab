@@ -196,14 +196,19 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
   }
   const bool hasSeparateBlack = color.cblack[0] != 0 || color.cblack[1] != 0
                                 || color.cblack[2] != 0 || color.cblack[3] != 0;
+  const unsigned blackRows = color.cblack[4];
+  const unsigned blackColumns = color.cblack[5];
   for(int y = 0; y < 2; ++y)
   {
     for(int x = 0; x < 2; ++x)
     {
       const int channel = processor.COLOR(y, x);
-      metadata.blackLevel[static_cast<std::size_t>(siteIndex(x, y))]
-        = static_cast<float>(color.black)
-          + (hasSeparateBlack ? static_cast<float>(color.cblack[channel]) : 0.0f);
+      auto &black = metadata.blackLevel[static_cast<std::size_t>(siteIndex(x, y))];
+      black = static_cast<float>(color.black)
+              + (hasSeparateBlack ? static_cast<float>(color.cblack[channel]) : 0.0f);
+      // shortcut: four-site metadata supports black repeats up to 2x2; larger repeats need a spatial map.
+      if(blackRows > 0 && blackRows <= 2 && blackColumns > 0 && blackColumns <= 2)
+        black += static_cast<float>(color.cblack[6 + (y % blackRows) * blackColumns + x % blackColumns]);
     }
   }
 

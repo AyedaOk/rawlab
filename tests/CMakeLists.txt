@@ -63,6 +63,11 @@ target_link_libraries(rawlab_exposure_metadata_test PRIVATE rawlab::core)
 rawlab_enable_warnings(rawlab_exposure_metadata_test)
 add_test(NAME rawlab_exposure_metadata_test COMMAND rawlab_exposure_metadata_test)
 
+add_executable(rawlab_raw_decode_test raw_decode_test.cpp)
+target_link_libraries(rawlab_raw_decode_test PRIVATE rawlab::core)
+rawlab_enable_warnings(rawlab_raw_decode_test)
+add_test(NAME rawlab_raw_decode_test COMMAND rawlab_raw_decode_test)
+
 if(RAWLAB_BUILD_CLI)
 add_test(
   NAME rawlab_process_requires_denoise

@@ -82,6 +82,12 @@ separate from DNG BaselineExposure. Preserve the latter from input DNGs or use t
 zero default. For DNG inputs, retain embedded color matrices and illuminants even
 when the generic camera-table matrix is empty.
 
+Read black calibration from LibRaw's common level, per-channel offsets, and spatial
+repeat table. Fold 1x1 through 2x2 repeats into the four sensor-site levels; keep
+stored CFA samples unchanged. Run `ctest --preset dev -R rawlab_raw_decode_test`
+for metadata-only reads, neutral-shadow previews, Linear RGB rendering, and CFA
+round trips. Do not use camera JPEG brightness as a sensor-normalization target.
+
 Run `cmake --preset dev`, `cmake --build --preset dev`, and `ctest --preset dev`
 for native checks. Use `npm --prefix desktop run build` and
 `npm --prefix desktop test` for frontend checks. Validate representative DNGs with
