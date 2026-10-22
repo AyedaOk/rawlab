@@ -11,9 +11,32 @@
 #include <QImage>
 #include <QBuffer>
 #include <QFile>
+#include <QDataStream>
 #include <tiffio.h>
 #include <cmath>
 #include <iostream>
+
+bool hasWindowsExifPointer(const QString &path)
+{
+  QFile file{path};
+  if(!file.open(QIODevice::ReadOnly) || !file.seek(4)) return false;
+  QDataStream stream{&file};
+  stream.setByteOrder(QDataStream::LittleEndian);
+  quint32 offset = 0;
+  stream >> offset;
+  if(!file.seek(offset)) return false;
+  quint16 count = 0;
+  stream >> count;
+  for(unsigned i = 0; i < count; ++i)
+  {
+    quint16 tag = 0, type = 0;
+    quint32 length = 0, value = 0;
+    stream >> tag >> type >> length >> value;
+    if(stream.status() != QDataStream::Ok) return false;
+    if(tag == TIFFTAG_EXIFIFD) return type == TIFF_LONG && length == 1 && value != 0;
+  }
+  return false;
+}
 
 int main(int argc, char **argv)
 {
@@ -102,10 +125,12 @@ int main(int argc, char **argv)
   const QString output=directory.filePath("export.dng");
   request["operation"]="export";request["output"]=output;
   if(send(request)["output"].toString()!=output || !QFile::exists(output))return 1;
+  if(!hasWindowsExifPointer(output)) return 1;
   if(send(request)["error"].toString().isEmpty())return 1;
   const QString linearOutput=directory.filePath("linear.dng");
   request["operation"]="export_linear";request["output"]=linearOutput;
   if(send(request)["output"].toString()!=linearOutput || !QFile::exists(linearOutput))return 1;
+  if(!hasWindowsExifPointer(linearOutput)) return 1;
   TIFF *linear = TIFFOpen(linearOutput.toStdString().c_str(), "r");
   if(!linear) return 1;
   std::uint32_t thumbnailWidth = 0, thumbnailHeight = 0;
@@ -158,6 +183,12 @@ int main(int argc, char **argv)
     std::uint16_t displayCompression = 0;
     if(hasLinearDisplayPreview)
     {
+      std::uint32_t previewWidth = 0, previewHeight = 0;
+      TIFFGetField(linear, TIFFTAG_IMAGEWIDTH, &previewWidth);
+      TIFFGetField(linear, TIFFTAG_IMAGELENGTH, &previewHeight);
+      const bool rotated = orientation == ORIENTATION_RIGHTTOP || orientation == ORIENTATION_LEFTBOT;
+      if(previewWidth != (rotated ? height : width) || previewHeight != (rotated ? width : height))
+      { TIFFClose(linear); return 1; }
       TIFFGetField(linear, TIFFTAG_SUBFILETYPE, &displayType);
       TIFFGetField(linear, TIFFTAG_COMPRESSION, &displayCompression);
     }

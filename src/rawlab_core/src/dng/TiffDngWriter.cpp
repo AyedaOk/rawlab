@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -23,6 +24,43 @@
 
 namespace rawlab::dng {
 namespace {
+
+void normalizeExifPointer(const std::filesystem::path &path)
+{
+  // libtiff writes TIFF_IFD on some versions; Windows requires LONG for ExifIFD.
+  std::fstream file{path, std::ios::in | std::ios::out | std::ios::binary};
+  file.exceptions(std::ios::failbit | std::ios::badbit);
+  const auto read = [&file](auto &bytes) {
+    file.read(reinterpret_cast<char *>(bytes.data()), bytes.size());
+  };
+  const auto little32 = [](const unsigned char *bytes) {
+    return std::uint32_t{bytes[0]} | (std::uint32_t{bytes[1]} << 8)
+      | (std::uint32_t{bytes[2]} << 16) | (std::uint32_t{bytes[3]} << 24);
+  };
+  std::array<unsigned char, 8> header{};
+  read(header);
+  if(header[0] != 'I' || header[1] != 'I' || header[2] != 42 || header[3] != 0)
+    throw std::runtime_error{"Expected little-endian classic DNG"};
+  file.seekg(little32(header.data() + 4));
+  std::array<unsigned char, 2> countBytes{};
+  read(countBytes);
+  const unsigned count = countBytes[0] | (unsigned{countBytes[1]} << 8);
+  for(unsigned i = 0; i < count; ++i)
+  {
+    const auto position = file.tellg();
+    std::array<unsigned char, 12> entry{};
+    read(entry);
+    if((entry[0] | (unsigned{entry[1]} << 8)) != TIFFTAG_EXIFIFD) continue;
+    if(entry[3] != 0 || (entry[2] != TIFF_IFD && entry[2] != TIFF_LONG)
+       || little32(entry.data() + 4) != 1)
+      throw std::runtime_error{"Unexpected DNG EXIF pointer encoding"};
+    file.seekp(position + std::streamoff{2});
+    const char type[2] = {TIFF_LONG, 0};
+    file.write(type, sizeof(type));
+    file.flush();
+    return;
+  }
+}
 
 std::uint8_t dngColor(raw::CfaColor color)
 {
@@ -301,6 +339,16 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t
   TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
 }
 
+void setResolution(TIFF *tif, const raw::RawMetadata &metadata)
+{
+  if(!validPositive(metadata.xResolution) || !validPositive(metadata.yResolution)
+     || !metadata.resolutionUnit || *metadata.resolutionUnit < 1
+     || *metadata.resolutionUnit > 3) return;
+  TIFFSetField(tif, TIFFTAG_XRESOLUTION, *metadata.xResolution);
+  TIFFSetField(tif, TIFFTAG_YRESOLUTION, *metadata.yResolution);
+  TIFFSetField(tif, TIFFTAG_RESOLUTIONUNIT, *metadata.resolutionUnit);
+}
+
 void setJpegPreviewFields(TIFF *tif, const JpegPreview &preview,
                           const raw::RawMetadata *metadata,
                           const toff_t exifOffset,
@@ -442,12 +490,14 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     if(canonical)
     {
       setJpegPreviewFields(tif, previews->thumbnail, &metadata, exifOffset, 2);
+      setResolution(tif, metadata);
       writeJpegStrip(tif, previews->thumbnail);
       requireTiffOk(TIFFWriteDirectory(tif), "DNG thumbnail directory");
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
     }
     else setSharedMetadata(tif, metadata, exifOffset);
+    setResolution(tif, metadata);
 
     TIFFSetField(tif, TIFFTAG_SUBFILETYPE, static_cast<std::uint32_t>(0));
     TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, static_cast<std::uint32_t>(image.width()));
@@ -541,6 +591,7 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
       setJpegPreviewFields(tif, previews->display, nullptr, 0, 0);
+      setResolution(tif, metadata);
       writeJpegStrip(tif, previews->display);
       requireTiffOk(TIFFWriteDirectory(tif), "DNG display preview directory");
     }
@@ -552,6 +603,7 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
   }
 
   TIFFClose(tif);
+  normalizeExifPointer(path);
 }
 
 void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
@@ -579,12 +631,14 @@ void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
     if(canonical)
     {
       setJpegPreviewFields(tif, previews->thumbnail, &image.metadata(), exifOffset, 2);
+      setResolution(tif, image.metadata());
       writeJpegStrip(tif, previews->thumbnail);
       requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG thumbnail directory");
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
     }
     writeLinearRgbMetadata(tif, image.metadata());
+    setResolution(tif, image.metadata());
     TIFFSetField(tif, TIFFTAG_SUBFILETYPE, static_cast<std::uint32_t>(0));
     TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, static_cast<std::uint32_t>(width));
     TIFFSetField(tif, TIFFTAG_IMAGELENGTH, static_cast<std::uint32_t>(height));
@@ -615,6 +669,7 @@ void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
       TIFFCreateDirectory(tif);
       registerDngFields(tif);
       setJpegPreviewFields(tif, previews->display, nullptr, 0, 0);
+      setResolution(tif, image.metadata());
       writeJpegStrip(tif, previews->display);
       requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG display preview directory");
     }
@@ -625,6 +680,7 @@ void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
     throw;
   }
   TIFFClose(tif);
+  normalizeExifPointer(path);
 }
 
 }

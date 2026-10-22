@@ -58,12 +58,13 @@ static QImage correctedDisplay(const rawlab::raw::RawImage &image,
 
 static rawlab::dng::JpegPreview jpegPreview(const QImage &display, const int dimension)
 {
-  const QImage image = display.scaled(dimension, dimension, Qt::KeepAspectRatio,
-                                      Qt::SmoothTransformation);
+  const QImage image = std::max(display.width(), display.height()) <= dimension
+    ? display : display.scaled(dimension, dimension, Qt::KeepAspectRatio,
+                               Qt::SmoothTransformation);
   QByteArray bytes;
   QBuffer buffer{&bytes};
   buffer.open(QIODevice::WriteOnly);
-  if(!image.save(&buffer, "JPEG", 90)) throw std::runtime_error{"Cannot encode DNG preview"};
+  if(!image.save(&buffer, "JPEG", 85)) throw std::runtime_error{"Cannot encode DNG preview"};
   rawlab::dng::JpegPreview preview;
   preview.width = image.width(); preview.height = image.height();
   preview.data.assign(bytes.begin(), bytes.end());
@@ -73,15 +74,16 @@ static rawlab::dng::JpegPreview jpegPreview(const QImage &display, const int dim
 static rawlab::dng::DngPreviews dngPreviews(const rawlab::raw::RawImage &image,
                                              const rawlab::image::OpticsOptions &optics)
 {
+  const int dimension = std::max(image.width(), image.height());
   const QImage display = (optics.chromaticAberration || optics.lensCorrection)
-    ? correctedDisplay(image, optics, 2048, rawlab::image::PreviewQuality::Fast)
+    ? correctedDisplay(image, optics, dimension, rawlab::image::PreviewQuality::High)
     : [&] {
         const auto preview = rawlab::image::renderRawPreview(
-          image, 2048, rawlab::image::PreviewQuality::Fast);
+          image, dimension, rawlab::image::PreviewQuality::High);
         return QImage{preview.image.pixels.data(), preview.image.width, preview.image.height,
                       preview.image.width * 3, QImage::Format_RGB888}.copy();
       }();
-  return {jpegPreview(display, 320), jpegPreview(display, 2048)};
+  return {jpegPreview(display, 320), jpegPreview(display, dimension)};
 }
 
 static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QString &quality,
@@ -228,7 +230,10 @@ int main(int argc, char **argv)
                     rawlab::dng::TiffDngWriter{}.writeLinearRgbDng(
                       temporary.toStdString(), *image, optics, &previews);
                   }
-                 else rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *image);
+                  else {
+                    const auto previews = dngPreviews(*image, {});
+                    rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *image, &previews);
+                  }
                  std::error_code linkError;
                  std::filesystem::create_hard_link(temporary.toStdString(), job.output.toStdString(), linkError);
                  if(linkError) throw std::runtime_error{"Could not publish Darktable output"};
@@ -311,7 +316,10 @@ int main(int argc, char **argv)
                     rawlab::dng::TiffDngWriter{}.writeLinearRgbDng(
                       temporary.toStdString(), *processedImage, optics, &previews);
                   }
-                  else rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *processedImage);
+                   else {
+                     const auto previews = dngPreviews(*processedImage, {});
+                     rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *processedImage, &previews);
+                   }
                  checkCancelled();
                  job.publishedHash = BatchQueueStore::hashFile(temporary);
                  BatchQueueStore::save(*queue);
@@ -457,9 +465,8 @@ int main(int argc, char **argv)
           const auto temporary = destination + ".rawlab-" + QUuid::createUuid().toString(QUuid::Id128);
           try
           {
-            const auto display = QImage::fromData(QByteArray::fromBase64(response["png"].toString().toLatin1()), "PNG");
-             const rawlab::dng::DngPreviews previews{
-               jpegPreview(display, 320), jpegPreview(display, 2048)};
+             const auto previews = dngPreviews(*processed, operation == "export_linear"
+               ? opticsFromRecipe(request["recipe"].toObject()) : rawlab::image::OpticsOptions{});
              if(operation == "export_linear")
                 rawlab::dng::TiffDngWriter{}.writeLinearRgbDng(temporary.toStdString(), *processed,
                   opticsFromRecipe(request["recipe"].toObject()), &previews);

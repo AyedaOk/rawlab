@@ -25,11 +25,16 @@ int main(int argc, char **argv)
                          std::optional<double>{0.0}, std::optional<double>{1.0 / 3.0}})
   {
     metadata.exposureBiasEv = bias;
+    metadata.xResolution = bias ? std::optional<double>{300} : std::nullopt;
+    metadata.yResolution = metadata.xResolution;
+    metadata.resolutionUnit = bias ? std::optional<std::uint16_t>{2} : std::nullopt;
     // Deliberately different from EXIF exposure compensation.
     metadata.baselineExposureEv = 0.5;
     rawlab::raw::RawImage image{64, 64, std::vector<float>(64 * 64, 1024), metadata};
     rawlab::dng::TiffDngWriter{}.writeCfaDng(path, image);
     const auto actual = decoder.readMetadata(path).metadata;
+    if(actual.xResolution != metadata.xResolution || actual.yResolution != metadata.yResolution
+       || actual.resolutionUnit != metadata.resolutionUnit) return 1;
     if(actual.exposureBiasEv.has_value() != bias.has_value()
        || (bias && std::abs(*bias - *actual.exposureBiasEv) > 1e-6)
        || !actual.baselineExposureEv || std::abs(*actual.baselineExposureEv - 0.5) > 1e-6

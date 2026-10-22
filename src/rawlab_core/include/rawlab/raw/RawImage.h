@@ -24,6 +24,9 @@ struct RawMetadata
   std::string make;
   std::string model;
   std::optional<double> iso;
+  std::optional<double> xResolution;
+  std::optional<double> yResolution;
+  std::optional<std::uint16_t> resolutionUnit;
   std::optional<double> aperture;
   std::optional<double> exposureTimeSeconds;
   std::optional<double> exposureBiasEv;

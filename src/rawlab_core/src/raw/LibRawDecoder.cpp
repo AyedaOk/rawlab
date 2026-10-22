@@ -66,11 +66,14 @@ struct ExposureMetadata
 {
   std::optional<double> bias;
   std::optional<double> baseline;
+  std::optional<double> xResolution;
+  std::optional<double> yResolution;
+  std::optional<std::uint16_t> resolutionUnit;
 };
 
 // LibRaw can parse RAW metadata-only IFDs that libtiff rejects for lacking
 // ImageLength. Its callback points at the tag data and restores the stream
-// position afterwards. Only accept standard signed-rational exposure tags.
+// position afterwards. Read standard exposure and print-resolution tags here.
 void readExposureTags(void *context, int tag, int type, int count,
                       unsigned int order, void *input, INT64)
 {
@@ -78,6 +81,33 @@ void readExposureTags(void *context, int tag, int type, int count,
   // namespaces (bits 16..19), where numeric tag IDs can mean something else.
   if(tag & 0xf0000) return;
   tag &= 0xffff;
+  auto &metadata = *static_cast<ExposureMetadata *>(context);
+  if((tag == 282 || tag == 283 || tag == 296) && count == 1
+     && (order == 0x4949 || order == 0x4d4d))
+  {
+    auto *stream = static_cast<LibRaw_abstract_datastream *>(input);
+    std::array<unsigned char, 8> bytes{};
+    const int length = tag == 296 ? 2 : 8;
+    if(type != (tag == 296 ? 3 : 5)
+       || stream->read(bytes.data(), 1, length) != length) return;
+    const auto integer = [&](int offset, int size) {
+      std::uint32_t value = 0;
+      for(int i = 0; i < size; ++i)
+        value = (value << 8) | bytes[offset + (order == 0x4949 ? size - 1 - i : i)];
+      return value;
+    };
+    if(tag == 296)
+    {
+      const auto unit = integer(0, 2);
+      if(!metadata.resolutionUnit && unit >= 1 && unit <= 3) metadata.resolutionUnit = unit;
+    }
+    else if(integer(0, 4) > 0 && integer(4, 4) > 0)
+    {
+      auto &value = tag == 282 ? metadata.xResolution : metadata.yResolution;
+      if(!value) value = static_cast<double>(integer(0, 4)) / integer(4, 4);
+    }
+    return;
+  }
   if((tag != 0x9204 && tag != 0xc62a) || type != 10 || count != 1
      || (order != 0x4949 && order != 0x4d4d)) return;
   std::array<unsigned char, 8> bytes{};
@@ -91,7 +121,6 @@ void readExposureTags(void *context, int tag, int type, int count,
   };
   const auto denominator = signed32(4);
   if(denominator == 0) return;
-  auto &metadata = *static_cast<ExposureMetadata *>(context);
   auto &value = tag == 0x9204 ? metadata.bias : metadata.baseline;
   if(!value) value = static_cast<double>(signed32(0)) / denominator;
 }
@@ -120,6 +149,9 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
       ? std::optional<double>{static_cast<double>(value)} : std::nullopt;
   };
   metadata.iso = positiveValue(other.iso_speed);
+  metadata.xResolution = exposure.xResolution;
+  metadata.yResolution = exposure.yResolution;
+  metadata.resolutionUnit = exposure.resolutionUnit;
   metadata.aperture = positiveValue(other.aperture);
   metadata.exposureTimeSeconds = positiveValue(other.shutter);
   metadata.exposureBiasEv = exposure.bias;

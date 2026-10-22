@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "RawLab",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "identifier": "org.rawlab.desktop-preview",
   "build": {
     "beforeDevCommand": "node scripts/dev.mjs",
