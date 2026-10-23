@@ -4,7 +4,7 @@ namespace rawlab::core {
 
 std::string_view version()
 {
-  return "0.2.5";
+  return "0.2.6";
 }
 
 }

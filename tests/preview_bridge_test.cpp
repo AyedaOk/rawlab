@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QBuffer>
 #include <QFile>
+#include "LinearDngSamples.h"
 #include <QDataStream>
 #include <tiffio.h>
 #include <cmath>
@@ -175,9 +176,9 @@ int main(int argc, char **argv)
      && neutralCount == 3 && neutral && neutral[0] == 1.0f && neutral[1] == 1.0f && neutral[2] == 1.0f
      && illuminant == 21 && blackCount == 3 && blackLevel && blackLevel[0] == 0.0f
      && whiteCount == 3 && whiteLevel && whiteLevel[0] == 65535;
-   std::vector<std::uint16_t> linearRow(static_cast<std::size_t>(width) * 3U);
-    const bool linearPixelsValid = TIFFReadScanline(linear, linearRow.data(), 0, 0) == 1
-      && std::any_of(linearRow.begin(), linearRow.end(), [](std::uint16_t value) { return value > 0; });
+    const auto linearPixels = linearDngSamples(linearOutput.toStdString(), width, height);
+    const bool linearPixelsValid = std::any_of(linearPixels.begin(), linearPixels.end(),
+      [](std::uint16_t value) { return value > 0; });
     const bool hasLinearDisplayPreview = TIFFSetSubDirectory(linear, linearDisplayOffset) == 1;
     std::uint32_t displayType = 0;
     std::uint16_t displayCompression = 0;
@@ -220,10 +221,7 @@ int main(int argc, char **argv)
   if(TIFFGetField(brightTiff, TIFFTAG_SUBIFD, &brightIfdCount, &brightIfds) != 1
      || brightIfdCount != 2 || TIFFSetSubDirectory(brightTiff, brightIfds[0]) != 1)
   { TIFFClose(brightTiff); return 1; }
-  std::vector<std::uint16_t> brightSamples(64 * 96 * 3);
-  for(int y = 0; y < 96; ++y)
-    if(TIFFReadScanline(brightTiff, brightSamples.data() + y * 64 * 3, y) != 1)
-    { TIFFClose(brightTiff); return 1; }
+   const auto brightSamples = linearDngSamples(brightOutput.toStdString(), 64, 96);
   TIFFClose(brightTiff);
   const auto brightGeometry = rawlab::image::rawPreviewGeometry(bright, 128);
   const auto matchesExport = [&](const QJsonObject &response, const QString &field = "png") {

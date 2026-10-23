@@ -24,7 +24,7 @@ namespace {
 
 LinearRgbImage baseLinearRgb(const raw::RawImage &image)
 {
-  auto area = image.metadata().activeArea;
+  auto area = image.displayArea();
   if(area.width <= 0 || area.height <= 0) area = {0, 0, image.width(), image.height()};
   const auto demosaiced = demosaicAmaze(image, area);
   LinearRgbImage result{area.width, area.height, {}};

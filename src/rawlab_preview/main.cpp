@@ -110,7 +110,7 @@ static QJsonObject render(const rawlab::raw::RawImage &image, int size, const QS
       display = correctedDisplay(image, corrections, size,
         quality == "high" ? rawlab::image::PreviewQuality::High : rawlab::image::PreviewQuality::Fast);
       width = display.width(); height = display.height();
-      geometry.rawArea = image.metadata().activeArea;
+      geometry.rawArea = image.displayArea();
       if(geometry.rawArea.width <= 0 || geometry.rawArea.height <= 0)
         geometry.rawArea = {0, 0, image.width(), image.height()};
       geometry.previewWidth = width; geometry.previewHeight = height; geometry.flip = image.metadata().flip;

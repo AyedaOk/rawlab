@@ -2,6 +2,7 @@
 
 #include "rawlab/raw/RawInspectInfo.h"
 #include "rawlab/image/LensCorrection.h"
+#include "LosslessJpeg.h"
 
 #include <tiffio.h>
 
@@ -74,14 +75,15 @@ std::uint8_t dngColor(raw::CfaColor color)
   throw std::invalid_argument{"Unsupported CFA color for DNG export"};
 }
 
-std::vector<std::uint16_t> toUint16Cfa(const raw::RawImage &image, const float whiteLevel)
+std::vector<std::uint16_t> toUint16Cfa(const raw::RawImage &image)
 {
   std::vector<std::uint16_t> cfa;
   cfa.reserve(image.samples().size());
   for(const float sample : image.samples())
   {
     if(!std::isfinite(sample)) throw std::invalid_argument{"DNG CFA contains a non-finite sample"};
-    const float clipped = std::clamp(sample, 0.0f, std::min(whiteLevel, 65535.0f));
+    // WhiteLevel describes saturation, not the storage limit; retain sensor overshoot.
+    const float clipped = std::clamp(sample, 0.0f, 65535.0f);
     cfa.push_back(static_cast<std::uint16_t>(std::lround(clipped)));
   }
   return cfa;
@@ -104,6 +106,10 @@ bool validColorMetadata(const raw::RawMetadata &metadata)
 void registerDngFields(TIFF *tif)
 {
   static const TIFFFieldInfo fields[] = {
+    {50964, TIFF_VARIABLE, TIFF_VARIABLE, TIFF_SRATIONAL, FIELD_CUSTOM, true, true,
+     const_cast<char *>("ForwardMatrix1")},
+    {50965, TIFF_VARIABLE, TIFF_VARIABLE, TIFF_SRATIONAL, FIELD_CUSTOM, true, true,
+     const_cast<char *>("ForwardMatrix2")},
     {TIFFTAG_PREVIEWCOLORSPACE, 1, 1, TIFF_LONG, FIELD_CUSTOM, true, false,
      const_cast<char *>("PreviewColorSpace")},
     {TIFFTAG_CFAREPEATPATTERNDIM, 2, 2, TIFF_SHORT, FIELD_CUSTOM, true, false,
@@ -334,6 +340,13 @@ void setSharedMetadata(TIFF *tif, const raw::RawMetadata &metadata, const toff_t
                static_cast<std::uint32_t>(metadata.colorMatrix1.size()),
                metadata.colorMatrix1.data());
   TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT1, metadata.calibrationIlluminant1);
+  if(metadata.colorMatrix2 && metadata.calibrationIlluminant2)
+  {
+    TIFFSetField(tif, TIFFTAG_COLORMATRIX2, 9u, metadata.colorMatrix2->data());
+    TIFFSetField(tif, TIFFTAG_CALIBRATIONILLUMINANT2, *metadata.calibrationIlluminant2);
+  }
+  if(metadata.forwardMatrix1) TIFFSetField(tif, 50964, 9u, metadata.forwardMatrix1->data());
+  if(metadata.forwardMatrix2) TIFFSetField(tif, 50965, 9u, metadata.forwardMatrix2->data());
   const float baselineExposure = metadata.baselineExposureEv && std::isfinite(*metadata.baselineExposureEv)
     ? static_cast<float>(*metadata.baselineExposureEv) : 0.0f;
   TIFFSetField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
@@ -477,7 +490,7 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     }
     registerDngFields(tif);
     const float white = std::clamp(metadata.whiteLevel, 1.0f, 65535.0f);
-    const std::vector<std::uint16_t> cfa = toUint16Cfa(image, white);
+    const std::vector<std::uint16_t> cfa = toUint16Cfa(image);
     raw::ActiveArea active = metadata.activeArea;
     if(active.width <= 0 || active.height <= 0) active = {0, 0, image.width(), image.height()};
     if(active.left < 0 || active.top < 0 || active.width <= 0 || active.height <= 0
@@ -507,13 +520,13 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     TIFFSetField(tif, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
     TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_CFA);
     TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
-    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
+    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_JPEG);
     std::uint16_t orientation = ORIENTATION_TOPLEFT;
     if(metadata.flip == 3) orientation = ORIENTATION_BOTRIGHT;
     else if(metadata.flip == 5) orientation = ORIENTATION_LEFTBOT;
     else if(metadata.flip == 6) orientation = ORIENTATION_RIGHTTOP;
     TIFFSetField(tif, TIFFTAG_ORIENTATION, orientation);
-    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, static_cast<std::uint32_t>(image.height()));
 
     const std::uint16_t cfaRepeatDim[2] = { 2, 2 };
     if(TIFFSetField(tif, TIFFTAG_CFAREPEATPATTERNDIM, cfaRepeatDim) != 1)
@@ -570,20 +583,24 @@ void TiffDngWriter::writeCfaDng(const std::filesystem::path &path, const raw::Ra
     };
     TIFFSetField(tif, TIFFTAG_ACTIVEAREA, activeArea);
     const float defaultScale[2] = { 1.0f, 1.0f };
-    const float defaultCropOrigin[2] = { 0.0f, 0.0f };
-    const float defaultCropSize[2] = { static_cast<float>(activeWidth), static_cast<float>(activeHeight) };
+    const auto defaultCropOrigin = metadata.defaultCropOrigin.value_or(std::array<float, 2>{0, 0});
+    const auto defaultCropSize = metadata.defaultCropSize.value_or(
+      std::array<float, 2>{static_cast<float>(activeWidth), static_cast<float>(activeHeight)});
+    for(int i = 0; i < 2; ++i)
+      if(!std::isfinite(defaultCropOrigin[i]) || !std::isfinite(defaultCropSize[i])
+         || defaultCropOrigin[i] < 0 || defaultCropSize[i] <= 0
+         || defaultCropOrigin[i] + defaultCropSize[i] > (i == 0 ? activeWidth : activeHeight))
+        throw std::invalid_argument{"DNG default crop lies outside active area"};
     TIFFSetField(tif, TIFFTAG_DEFAULTSCALE, defaultScale);
-    TIFFSetField(tif, TIFFTAG_DEFAULTCROPORIGIN, defaultCropOrigin);
-    TIFFSetField(tif, TIFFTAG_DEFAULTCROPSIZE, defaultCropSize);
+    TIFFSetField(tif, TIFFTAG_DEFAULTCROPORIGIN, defaultCropOrigin.data());
+    TIFFSetField(tif, TIFFTAG_DEFAULTCROPSIZE, defaultCropSize.data());
 
-    for(int y = 0; y < image.height(); ++y)
-    {
-      const auto *row = cfa.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(image.width());
-      if(TIFFWriteScanline(tif, const_cast<std::uint16_t *>(row), static_cast<std::uint32_t>(y), 0) < 0)
-      {
-        throw std::runtime_error{"TIFFWriteScanline failed"};
-      }
-    }
+    // Two JPEG components predict each Bayer column parity independently.
+    const int components = image.width() % 2 == 0 ? 2 : 1;
+    const auto compressed = losslessJpeg(cfa, image.width() / components, image.height(), components);
+    if(TIFFWriteRawStrip(tif, 0, const_cast<std::uint8_t *>(compressed.data()), compressed.size())
+       != static_cast<tmsize_t>(compressed.size()))
+      throw std::runtime_error{"Could not write lossless DNG samples"};
 
     requireTiffOk(TIFFWriteDirectory(tif), "TIFFWriteDirectory");
     if(canonical)
@@ -648,21 +665,18 @@ void TiffDngWriter::writeLinearRgbDng(const std::filesystem::path &path,
     constexpr std::uint16_t photometricLinearRaw = 34892;
     TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, photometricLinearRaw);
     TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
-    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_NONE);
-    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+    TIFFSetField(tif, TIFFTAG_COMPRESSION, COMPRESSION_JPEG);
+    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, static_cast<std::uint32_t>(height));
     const std::array<float, 3> blackLevel{0.0f, 0.0f, 0.0f};
     const std::array<std::uint32_t, 3> whiteLevel{65535, 65535, 65535};
     TIFFSetField(tif, TIFFTAG_BLACKLEVEL,
                  static_cast<std::uint32_t>(blackLevel.size()), blackLevel.data());
     TIFFSetField(tif, TIFFTAG_WHITELEVEL,
                  static_cast<std::uint32_t>(whiteLevel.size()), whiteLevel.data());
-    for(int y = 0; y < height; ++y)
-    {
-      auto *row = const_cast<std::uint16_t *>(rgb.data()
-        + static_cast<std::size_t>(y) * static_cast<std::size_t>(width) * 3U);
-      if(TIFFWriteScanline(tif, row, static_cast<std::uint32_t>(y), 0) < 0)
-        throw std::runtime_error{"TIFFWriteScanline failed for linear RGB DNG"};
-    }
+    const auto compressed = losslessJpeg(rgb, width, height, 3);
+    if(TIFFWriteRawStrip(tif, 0, const_cast<std::uint8_t *>(compressed.data()), compressed.size())
+       != static_cast<tmsize_t>(compressed.size()))
+      throw std::runtime_error{"Could not write lossless linear RGB DNG samples"};
     requireTiffOk(TIFFWriteDirectory(tif), "linear RGB DNG directory");
     if(canonical)
     {

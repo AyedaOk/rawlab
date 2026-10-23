@@ -69,6 +69,10 @@ struct ExposureMetadata
   std::optional<double> xResolution;
   std::optional<double> yResolution;
   std::optional<std::uint16_t> resolutionUnit;
+  std::optional<std::array<float, 2>> cropOrigin;
+  std::optional<std::array<float, 2>> cropSize;
+  std::optional<std::array<float, 9>> forwardMatrix1;
+  std::optional<std::array<float, 9>> forwardMatrix2;
 };
 
 // LibRaw can parse RAW metadata-only IFDs that libtiff rejects for lacking
@@ -82,6 +86,48 @@ void readExposureTags(void *context, int tag, int type, int count,
   if(tag & 0xf0000) return;
   tag &= 0xffff;
   auto &metadata = *static_cast<ExposureMetadata *>(context);
+  if(((tag == 50719 || tag == 50720) && count == 2
+      && (type == 3 || type == 4 || type == 5))
+     || ((tag == 50964 || tag == 50965) && count == 9 && type == 10))
+  {
+    if(order != 0x4949 && order != 0x4d4d) return;
+    auto *stream = static_cast<LibRaw_abstract_datastream *>(input);
+    std::array<float, 9> values{};
+    for(int i = 0; i < count; ++i)
+    {
+      std::array<unsigned char, 8> bytes{};
+      const int length = type == 3 ? 2 : (type == 4 ? 4 : 8);
+      if(stream->read(bytes.data(), 1, length) != length) return;
+      const auto integer = [&](int start, int size) {
+        std::uint32_t value = 0;
+        for(int j = 0; j < size; ++j)
+          value = (value << 8) | bytes[start + (order == 0x4949 ? size - 1 - j : j)];
+        return value;
+      };
+      double value = integer(0, std::min(length, 4));
+      if(type == 10) value = std::bit_cast<std::int32_t>(integer(0, 4));
+      if(length == 8)
+      {
+        const double denominator = type == 10
+          ? static_cast<double>(std::bit_cast<std::int32_t>(integer(4, 4)))
+          : static_cast<double>(integer(4, 4));
+        if(denominator == 0) return;
+        value /= denominator;
+      }
+      values[i] = static_cast<float>(value);
+    }
+    if(count == 2)
+    {
+      auto &crop = tag == 50719 ? metadata.cropOrigin : metadata.cropSize;
+      if(!crop) crop = {values[0], values[1]};
+    }
+    else
+    {
+      auto &matrix = tag == 50964 ? metadata.forwardMatrix1 : metadata.forwardMatrix2;
+      if(!matrix) matrix = values;
+    }
+    return;
+  }
   if((tag == 282 || tag == 283 || tag == 296) && count == 1
      && (order == 0x4949 || order == 0x4d4d))
   {
@@ -180,6 +226,17 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
     sizes.height,
   };
   metadata.flip = sizes.flip;
+  if(exposure.cropOrigin && exposure.cropSize)
+  {
+    const auto &origin = *exposure.cropOrigin;
+    const auto &size = *exposure.cropSize;
+    if(origin[0] >= 0 && origin[1] >= 0 && size[0] > 0 && size[1] > 0
+       && origin[0] + size[0] <= sizes.width && origin[1] + size[1] <= sizes.height)
+    {
+      metadata.defaultCropOrigin = origin;
+      metadata.defaultCropSize = size;
+    }
+  }
   metadata.whiteLevel = static_cast<float>(color.maximum);
   float neutralMax = 0.0f;
   metadata.asShotNeutralValid = true;
@@ -216,6 +273,18 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
           metadata.colorMatrix1[static_cast<std::size_t>(cam * 3 + xyz)] = dngColor.colormatrix[cam][xyz];
       metadata.calibrationIlluminant1 = dngColor.illuminant;
     }
+    if(color.dng_color[0].illuminant && color.dng_color[1].illuminant)
+    {
+      std::array<float, 9> matrix{};
+      for(int cam = 0; cam < 3; ++cam)
+        for(int xyz = 0; xyz < 3; ++xyz)
+          matrix[cam * 3 + xyz] = color.dng_color[1].colormatrix[cam][xyz];
+      metadata.colorMatrix2 = matrix;
+      metadata.calibrationIlluminant2 = color.dng_color[1].illuminant;
+    }
+    metadata.forwardMatrix1 = color.dng_color[0].illuminant
+      ? exposure.forwardMatrix1 : exposure.forwardMatrix2;
+    if(metadata.colorMatrix2) metadata.forwardMatrix2 = exposure.forwardMatrix2;
   }
   metadata.cameraToXyz = inverse3x3(metadata.colorMatrix1, metadata.colorMatrix1Valid);
   for(int rgb = 0; rgb < 3; ++rgb)

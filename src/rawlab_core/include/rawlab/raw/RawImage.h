@@ -44,6 +44,8 @@ struct RawMetadata
   std::optional<std::array<double, 4>> lensSpecification;
   CfaPattern cfa;
   ActiveArea activeArea;
+  std::optional<std::array<float, 2>> defaultCropOrigin;
+  std::optional<std::array<float, 2>> defaultCropSize;
   // LibRaw orientation: 0 is normal, 3 is 180, 5 is 90 CCW, 6 is 90 CW.
   int flip = 0;
   std::array<float, 4> blackLevel = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -67,6 +69,10 @@ struct RawMetadata
   };
   bool colorMatrix1Valid = true;
   std::uint16_t calibrationIlluminant1 = 21;
+  std::optional<std::array<float, 9>> colorMatrix2;
+  std::optional<std::array<float, 9>> forwardMatrix1;
+  std::optional<std::array<float, 9>> forwardMatrix2;
+  std::optional<std::uint16_t> calibrationIlluminant2;
 };
 
 class RawImage
@@ -83,6 +89,7 @@ public:
   RawMetadata &metadata() { return metadata_; }
 
   float sample(int x, int y) const;
+  ActiveArea displayArea() const;
   void setSample(int x, int y, float value);
 
 private:

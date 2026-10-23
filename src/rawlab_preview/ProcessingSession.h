@@ -134,6 +134,8 @@ class ProcessingSession
         rawlab::raw::siteIndex(x + region.x(), y + region.y())];
     }
     metadata.activeArea = {0, 0, region.width(), region.height()};
+    metadata.defaultCropOrigin.reset();
+    metadata.defaultCropSize.reset();
     std::vector<float> samples(static_cast<std::size_t>(region.width()) * region.height());
     for(int y = 0; y < region.height(); ++y)
       std::copy_n(image->samples().begin() + static_cast<std::size_t>(region.y() + y) * image->width() + region.x(),

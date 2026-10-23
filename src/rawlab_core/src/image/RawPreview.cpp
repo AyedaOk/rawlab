@@ -22,7 +22,7 @@ namespace {
 
 raw::ActiveArea boundedActiveArea(const raw::RawImage &source)
 {
-  raw::ActiveArea area = source.metadata().activeArea;
+  raw::ActiveArea area = source.displayArea();
   if(area.width <= 0 || area.height <= 0) area = {0, 0, source.width(), source.height()};
   area.left = std::clamp(area.left, 0, source.width() - 1);
   area.top = std::clamp(area.top, 0, source.height() - 1);

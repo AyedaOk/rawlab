@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QElapsedTimer>
 #include <tiffio.h>
+#include "LinearDngSamples.h"
 #include <iostream>
 
 int main(int argc,char **argv)
@@ -214,14 +215,11 @@ int main(int argc,char **argv)
          const QString linearPath = directory.filePath("depth-linear.dng");
          rawlab::dng::TiffDngWriter{}.writeLinearRgbDng(linearPath.toStdString(), *depthProcessed);
          const auto rgb = rawlab::image::renderLinearRgb(expected);
-         const std::unique_ptr<TIFF, decltype(&TIFFClose)> linear{TIFFOpen(linearPath.toStdString().c_str(), "r"), TIFFClose};
-         if(!linear) throw std::runtime_error{"Cannot read Linear RGB DNG"};
-         std::vector<std::uint16_t> row(rgb.width * 3);
+          const auto samples = linearDngSamples(linearPath.toStdString(), rgb.width, rgb.height);
          for(int y = 0; y < rgb.height; ++y)
          {
-           if(TIFFReadScanline(linear.get(), row.data(), y) != 1) throw std::runtime_error{"Cannot read Linear RGB pixels"};
-           for(int x = 0; x < rgb.width * 3; ++x)
-             if(std::fabs(row[x] / 65535.0f - std::clamp(rgb.pixels[y * rgb.width * 3 + x], 0.0f, 1.0f)) > 2.0f / 65535)
+            for(int x = 0; x < rgb.width * 3; ++x)
+              if(std::fabs(samples[y * rgb.width * 3 + x] / 65535.0f - std::clamp(rgb.pixels[y * rgb.width * 3 + x], 0.0f, 1.0f)) > 2.0f / 65535)
                throw std::runtime_error{"Local blend changed in exported Linear RGB DNG"};
          }
        }
