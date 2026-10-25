@@ -15,6 +15,20 @@ RawLab is a vibe-coded RAW photo preprocessor with AI denoising, local masks, an
 - Darktable integration with Lua script
 - CPU and supported GPU inference through ONNX Runtime
 
+## Camera Compatibility
+
+RAW compatibility depends on the LibRaw version and the camera's compression
+mode. LibRaw's [supported-camera list](https://www.libraw.org/supported-cameras)
+is a starting point, not a guarantee that every mode works in RawLab.
+
+| Camera / RAW mode | Status in current source |
+| --- | --- |
+| Nikon Z5II, lossless-compressed NEF | FX and DX samples pass preview and Bayer DNG export/reload tests. |
+| Nikon Z5II, High Efficiency (HE / HE*) NEF | Unsupported. Convert to DNG externally before importing. |
+
+The Z5II calibration fix is not included in v0.2.6. Real-model denoising and
+packaged-app testing of these samples remain unverified.
+
 ## Build From Source
 
 Install C++20, CMake 3.25+, Ninja, Qt 6 Core/Gui/Network, LibRaw, libtiff,
@@ -80,6 +94,7 @@ RawLab acknowledges these projects and publications:
 - [darktable](https://darktable.org/), whose raw-processing work informs parts of the pipeline.
 - [RapidRAW](https://github.com/CyberTimon/RapidRAW), used as a visual and workflow reference.
 - [Lensfun](https://lensfun.github.io/), used for lens and chromatic-aberration correction data and processing.
+- [RawSpeed contributors](https://github.com/darktable-org/rawspeed), whose Z5II D65 calibration in `data/cameras.xml` is used under [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/), with coefficients scaled by 1/10000.
 
 ## License
 

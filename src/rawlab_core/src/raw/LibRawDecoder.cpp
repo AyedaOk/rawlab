@@ -295,6 +295,38 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
         = color.rgb_cam[rgb][camera];
     }
   }
+  if(!id.dng_version && !metadata.colorMatrix1Valid
+     && id.maker_index == LIBRAW_CAMERAMAKER_Nikon && boundedString(id.model) == "Z5_2")
+  {
+    // Z5II D65 calibration: RawSpeed data/cameras.xml (CC-BY-SA-3.0), scaled by 1/10000.
+    // https://github.com/darktable-org/rawspeed/blob/develop/data/cameras.xml
+    metadata.colorMatrix1 = {1.3133f, -0.5542f, -0.1280f,
+                            -0.4325f, 1.2543f, 0.1972f,
+                            0.0034f, 0.0792f, 0.7662f};
+    metadata.calibrationIlluminant1 = 21;
+    metadata.cameraToXyz = inverse3x3(metadata.colorMatrix1, metadata.colorMatrix1Valid);
+    // Match LibRaw's white-balanced RGB convention: normalize camera rows before inversion.
+    constexpr std::array<float, 9> srgbToXyz = {
+      0.412453f, 0.357580f, 0.180423f,
+      0.212671f, 0.715160f, 0.072169f,
+      0.019334f, 0.119193f, 0.950227f};
+    std::array<float, 9> srgbToCamera{};
+    for(int camera = 0; camera < 3; ++camera)
+    {
+      float sum = 0.0f;
+      for(int rgb = 0; rgb < 3; ++rgb)
+      {
+        for(int xyz = 0; xyz < 3; ++xyz)
+          srgbToCamera[camera * 3 + rgb] += metadata.colorMatrix1[camera * 3 + xyz]
+                                          * srgbToXyz[xyz * 3 + rgb];
+        sum += srgbToCamera[camera * 3 + rgb];
+      }
+      for(int rgb = 0; rgb < 3; ++rgb) srgbToCamera[camera * 3 + rgb] /= sum;
+    }
+    bool valid = false;
+    metadata.cameraToSrgb = inverse3x3(srgbToCamera, valid);
+    if(!valid) throw std::runtime_error{"Invalid Z5II preview calibration"};
+  }
   const bool hasSeparateBlack = color.cblack[0] != 0 || color.cblack[1] != 0
                                 || color.cblack[2] != 0 || color.cblack[3] != 0;
   const unsigned blackRows = color.cblack[4];
@@ -330,6 +362,13 @@ RawMetadata metadataFromLibRaw(LibRaw &processor, const ExposureMetadata &exposu
 
 RawImage rawImageFromLibRaw(LibRaw &processor, const ExposureMetadata &exposure)
 {
+  // LibRaw can report data errors while unpack() still returns success.
+  if(processor.error_count() != 0)
+  {
+    throw std::runtime_error{
+      "Could not decode this RAW file: damaged data, unsupported camera or unsupported compression. "
+      "Try converting it to DNG first."};
+  }
   const libraw_image_sizes_t &sizes = processor.imgdata.sizes;
   const libraw_rawdata_t &rawdata = processor.imgdata.rawdata;
   if(!rawdata.raw_image)
