@@ -68,6 +68,11 @@ target_link_libraries(rawlab_raw_decode_test PRIVATE rawlab::core)
 rawlab_enable_warnings(rawlab_raw_decode_test)
 add_test(NAME rawlab_raw_decode_test COMMAND rawlab_raw_decode_test)
 
+add_executable(rawlab_raw_denoise_test raw_denoise_test.cpp)
+target_link_libraries(rawlab_raw_denoise_test PRIVATE rawlab::core)
+rawlab_enable_warnings(rawlab_raw_denoise_test)
+add_test(NAME rawlab_raw_denoise_test COMMAND rawlab_raw_denoise_test)
+
 if(RAWLAB_BUILD_CLI)
 add_test(
   NAME rawlab_process_requires_denoise

@@ -152,6 +152,24 @@ int main(int argc,char **argv)
        recipe["layers"] = QJsonArray{global};
        const auto denoised = session.process(path, recipe, {}, nullptr, false);
        if(denoised->samples() == source->samples()) throw std::runtime_error{"Test needs visible denoising"};
+       for(const int amount : {0, 50, 100})
+       {
+         auto smart = global; smart["blendMode"] = "smart"; smart["blend"] = amount;
+         auto smartRecipe = recipe; smartRecipe["layers"] = QJsonArray{smart};
+         const auto actual = session.process(path, smartRecipe, {}, nullptr, false);
+         const auto base = rawlab::raw::mildRawDenoise(*source, amount / 100.0f);
+         const auto expected = rawlab::raw::blendWithOriginal(base, *denoised, amount / 100.0f);
+         if(actual->samples() != expected.samples()) throw std::runtime_error{"Smart blend endpoints/composition differ"};
+         const auto preview = session.preview(path, smartRecipe, "smart", *actual, 64, rawlab::image::PreviewQuality::High);
+         const auto reference = rawlab::image::renderLinearRawPreview(*actual, 64, rawlab::image::PreviewQuality::High);
+         if(preview.pixels != reference.pixels) throw std::runtime_error{"Smart overview differs from export"};
+         const auto detail = session.detail(path, smartRecipe, tile);
+         const auto detailReference = rawlab::image::renderLinearRawPreviewRegion(*actual,
+           tile.x(), tile.y(), tile.width(), tile.height());
+         for(std::size_t i = 0; i < detail.pixels.size(); ++i)
+           if(std::abs(detail.pixels[i] - detailReference.pixels[i]) > 1e-5f)
+             throw std::runtime_error{"Smart detail differs from export"};
+       }
        for(const bool highlights : {false, true})
        {
          recipe["highlights"] = highlights;

@@ -21,13 +21,7 @@ RAW compatibility depends on the LibRaw version and the camera's compression
 mode. LibRaw's [supported-camera list](https://www.libraw.org/supported-cameras)
 is a starting point, not a guarantee that every mode works in RawLab.
 
-| Camera / RAW mode | Status in current source |
-| --- | --- |
-| Nikon Z5II, lossless-compressed NEF | FX and DX samples pass preview and Bayer DNG export/reload tests. |
-| Nikon Z5II, High Efficiency (HE / HE*) NEF | Unsupported. Convert to DNG externally before importing. |
-
-The Z5II calibration fix is not included in v0.2.6. Real-model denoising and
-packaged-app testing of these samples remain unverified.
+**Currently unsupported:** Nikon Z5 II High Efficiency (HE / HE★) NEF.
 
 ## Build From Source
 

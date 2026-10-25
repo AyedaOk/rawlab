@@ -88,6 +88,7 @@ type Layer = {
   name: string;
   enabled: boolean;
   blend: number;
+  blendMode?: "original" | "smart";
   sharpen: string;
   strength: number;
   feather: number;
@@ -2756,6 +2757,11 @@ function App() {
                     value={active.blend}
                     change={(blend) => change({ blend })}
                   />
+                  <select aria-label="Blend mode" value={active.blendMode ?? "original"}
+                    onChange={(event) => change({ blendMode: event.target.value as "original" | "smart" })}>
+                    <option value="original">Original blend</option>
+                    <option value="smart">Smart blend</option>
+                  </select>
                   <div className="field-label">Preserve highlights</div>
                   <div
                     className="segmented"

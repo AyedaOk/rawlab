@@ -212,10 +212,12 @@ inline PictureRecipe toQtRecipe(const QJsonObject &front,int width,int height)
   const auto mode=[](QString value){return value=="AI"?SharpenMode::Ai:value=="Normal"?SharpenMode::Normal:SharpenMode::Off;};
   const auto g=layers[0].toObject();result.globalModelId=g["modelId"].toString();result.globalEnabled=g["enabled"].toBool(true);
   result.globalBlend=g["blend"].toDouble(100)/100;result.globalSharpenMode=mode(g["sharpen"].toString());result.globalSharpenEnabled=result.globalSharpenMode!=SharpenMode::Off;result.globalSharpenStrength=g["strength"].toDouble(100)/100;
+  result.globalBlendMode=g["blendMode"].toString("original");
   for(int i=1;i<layers.size();++i)
   {
     auto l=layers[i].toObject();PictureRecipeLayer layer;layer.id=l["id"].toInt(i);layer.name=l["name"].toString();layer.modelId=l["modelId"].toString();layer.enabled=l["enabled"].toBool(true);
     layer.blend=l["blend"].toDouble(100)/100;layer.sharpenMode=mode(l["sharpen"].toString());layer.sharpenEnabled=layer.sharpenMode!=SharpenMode::Off;layer.sharpenStrength=l["strength"].toDouble(100)/100;
+    layer.blendMode=l["blendMode"].toString("original");
     layer.inverted=l["inverted"].toBool();layer.showMask=l["showMask"].toBool(true);layer.feather=l["feather"].toDouble()/1000;layer.blur=l["blur"].toDouble()/1000;
     layer.baseMask = decodeMaskPng(l["aiMask"], width, height);
     if(l.contains("depth")) (void)desktopMask(l, 1, 1, front["depthMaps"].toObject());
@@ -265,6 +267,7 @@ inline QJsonObject fromQtRecipe(const PictureRecipe &recipe)
   QJsonObject global = existingLayers.isEmpty() ? QJsonObject{} : existingLayers.at(0).toObject();
   global.insert("id", 0); global.insert("name", "Global"); global.insert("modelId", recipe.globalModelId);
   global.insert("enabled", recipe.globalEnabled); global.insert("blend", recipe.globalBlend * 100);
+  global.insert("blendMode", recipe.globalBlendMode);
   global.insert("sharpen", mode(recipe.globalSharpenMode));
   global.insert("strength", recipe.globalSharpenStrength * 100);
   global.insert("marks", QJsonArray{}); global.insert("points", QJsonArray{});
@@ -276,6 +279,7 @@ inline QJsonObject fromQtRecipe(const PictureRecipe &recipe)
       if(existing.toObject()["id"].toInt(-1) == layer.id) { l = existing.toObject(); break; }
     l.insert("id", layer.id); l.insert("name", layer.name); l.insert("modelId", layer.modelId);
     l.insert("enabled", layer.enabled); l.insert("blend", layer.blend * 100);
+    l.insert("blendMode", layer.blendMode);
     l.insert("sharpen", mode(layer.sharpenMode)); l.insert("strength", layer.sharpenStrength * 100);
     l.insert("feather", layer.feather * 1000); l.insert("blur", layer.blur * 1000);
     l.insert("inverted", layer.inverted); l.insert("showMask", layer.showMask);

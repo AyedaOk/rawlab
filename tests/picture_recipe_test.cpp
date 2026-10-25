@@ -21,11 +21,13 @@ bool writeFile(const QString &path, const QByteArray &bytes)
 PictureRecipe recipeWithMask(const float value)
 {
   PictureRecipe recipe;
+  recipe.globalBlendMode = QStringLiteral("smart");
   recipe.previewWidth = 4;
   recipe.previewHeight = 2;
   PictureRecipeLayer layer;
   layer.id = 7;
   layer.name = QStringLiteral("Local");
+  layer.blendMode = QStringLiteral("smart");
   layer.baseMask = rawlab::pipeline::Mask{4, 2, std::vector<float>(8, value)};
   layer.categoryMasks[1] = rawlab::pipeline::Mask{
     4, 2, {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f}};
@@ -79,6 +81,8 @@ int main(int argc, char **argv)
   const PictureRecipe original = recipeWithMask(0.25f);
   PictureRecipeStore::saveAtPath(recipePath, original);
   const auto loaded = PictureRecipeStore::loadAtPathResult(recipePath, 2, 4);
+  if(!loaded.recipe || loaded.recipe->globalBlendMode != "smart" || loaded.recipe->layers.empty()
+     || loaded.recipe->layers.front().blendMode != "smart") return 1;
   if(loaded.outcome != PictureRecipeLoadOutcome::Loaded || !loaded.recipe
      || loaded.recipe->previewWidth != 2 || loaded.recipe->previewHeight != 4
      || loaded.recipe->layers.front().categoryStrokes[2].front().tool != QStringLiteral("Ellipse")

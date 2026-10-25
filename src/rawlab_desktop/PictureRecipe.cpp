@@ -142,6 +142,7 @@ void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &re
   root[QStringLiteral("previewHeight")] = recipe.previewHeight;
   root[QStringLiteral("globalModelId")] = recipe.globalModelId;
   root[QStringLiteral("globalBlend")] = recipe.globalBlend;
+  root[QStringLiteral("globalBlendMode")] = recipe.globalBlendMode;
   root[QStringLiteral("globalEnabled")] = recipe.globalEnabled;
   root[QStringLiteral("globalSharpenEnabled")] = recipe.globalSharpenEnabled;
    root[QStringLiteral("globalSharpenStrength")] = recipe.globalSharpenStrength;
@@ -212,6 +213,7 @@ void PictureRecipeStore::saveAtPath(const QString &path, const PictureRecipe &re
                         {QStringLiteral("name"), layer.name},
                         {QStringLiteral("modelId"), layer.modelId},
                         {QStringLiteral("blend"), layer.blend},
+                        {QStringLiteral("blendMode"), layer.blendMode},
                         {QStringLiteral("sharpenEnabled"), layer.sharpenEnabled},
                          {QStringLiteral("sharpenStrength"), layer.sharpenStrength},
                          {QStringLiteral("sharpenMode"), static_cast<int>(
@@ -374,6 +376,7 @@ PictureRecipeLoadResult PictureRecipeStore::loadAtPathResult(
   recipe.globalModelId = root.value(QStringLiteral("globalModelId")).toString();
   recipe.sharpenModelId = root.value(QStringLiteral("sharpenModelId")).toString();
   recipe.globalBlend = static_cast<float>(root.value(QStringLiteral("globalBlend")).toDouble(1.0));
+  recipe.globalBlendMode = root.value(QStringLiteral("globalBlendMode")).toString("original");
   recipe.globalEnabled = root.value(QStringLiteral("globalEnabled")).toBool(true);
   recipe.globalSharpenEnabled = version >= 6
     && root.value(QStringLiteral("globalSharpenEnabled")).toBool(false);
@@ -395,6 +398,7 @@ PictureRecipeLoadResult PictureRecipeStore::loadAtPathResult(
     layer.name = object.value(QStringLiteral("name")).toString();
     layer.modelId = object.value(QStringLiteral("modelId")).toString(recipe.globalModelId);
     layer.blend = static_cast<float>(object.value(QStringLiteral("blend")).toDouble(1.0));
+    layer.blendMode = object.value(QStringLiteral("blendMode")).toString("original");
     layer.sharpenEnabled = version >= 4
       && object.value(QStringLiteral("sharpenEnabled")).toBool(false);
     layer.sharpenStrength = clampUnit(

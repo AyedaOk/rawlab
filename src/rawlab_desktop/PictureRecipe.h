@@ -35,6 +35,7 @@ struct PictureRecipeLayer
   QString name;
   QString modelId;
   float blend = 1.0f;
+  QString blendMode = QStringLiteral("original");
   bool sharpenEnabled = false;
   float sharpenStrength = 1.0f;
   SharpenMode sharpenMode = SharpenMode::Off;
@@ -58,6 +59,7 @@ struct PictureRecipe
   QString globalModelId;
   QString sharpenModelId;
   float globalBlend = 1.0f;
+  QString globalBlendMode = QStringLiteral("original");
   bool globalEnabled = true;
   bool globalSharpenEnabled = false;
   float globalSharpenStrength = 1.0f;

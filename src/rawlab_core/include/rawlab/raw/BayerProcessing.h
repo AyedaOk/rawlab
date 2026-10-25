@@ -33,4 +33,6 @@ RawImage blendWithOriginal(const RawImage &original,
 RawImage preserveClippedHighlights(const RawImage &original,
                                    const RawImage &processed);
 
+RawImage mildRawDenoise(const RawImage &original, float amount);
+
 }

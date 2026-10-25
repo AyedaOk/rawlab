@@ -238,6 +238,12 @@ public:
       return *previewEndpoint(QStringLiteral("result:") + resultId, fallback, size, quality);
     };
     const auto layers = recipe["layers"].toArray();
+    for(const auto &entry : layers)
+      if(entry.toObject()["enabled"].toBool(true) && entry.toObject()["blendMode"].toString() == "smart")
+      {
+        const auto composed = process(path, recipe, [&](int, int) { if(checkCancelled) checkCancelled(); }, {}, false);
+        return rawlab::image::renderLinearRawPreview(*composed, size, quality);
+      }
     if(layers.size() > 1)
     {
       QJsonObject globalRecipe = recipe;
@@ -578,6 +584,18 @@ public:
     }
      if(stageProgress) stageProgress("Composing preview", 1, 1);
      if(recipe["highlights"].toBool(true)) processed = std::make_shared<rawlab::raw::RawImage>(rawlab::raw::preserveClippedHighlights(*originalRegion, *processed));
-    return std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*originalRegion, *processed, unit(global["blend"], 100)));
+    const float blend = unit(global["blend"], 100);
+    const QString blendMode = global["blendMode"].toString("original");
+    if(blendMode != "original" && blendMode != "smart") throw std::runtime_error{"Unknown blend mode"};
+    auto base = originalRegion;
+    if(blendMode == "smart" && blend > 0 && blend < 1)
+    {
+      const QString mildKey = sourceKey_ + ":mild:" + QString::number(blend, 'g', 9);
+      if(!cache_.contains(mildKey))
+        cacheImage(mildKey, std::make_shared<rawlab::raw::RawImage>(rawlab::raw::mildRawDenoise(*original, blend)), true);
+      else touchCache(mildKey);
+      base = crop(cache_.at(mildKey), rawRegion);
+    }
+    return std::make_shared<rawlab::raw::RawImage>(rawlab::raw::blendWithOriginal(*base, *processed, blend));
   }
 };
