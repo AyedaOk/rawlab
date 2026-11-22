@@ -5,6 +5,7 @@ add_executable(rawlab_cli
 target_link_libraries(rawlab_cli
   PRIVATE
     rawlab::core
+    Qt6::Core
 )
 
 set_target_properties(rawlab_cli PROPERTIES OUTPUT_NAME rawlab)

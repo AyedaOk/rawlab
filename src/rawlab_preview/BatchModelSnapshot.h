@@ -1,6 +1,8 @@
 #pragma once
 
 #include "BatchQueueStore.h"
+#include "BatchRecipeSnapshot.h"
+#include "RecipeAdapter.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
@@ -18,31 +20,44 @@ inline QString batchModelPendingPath()
   return BatchQueueStore::directory() + "/model-snapshot.pending";
 }
 
-inline QMap<QString, QString> selectedBatchModels(const BatchQueue &queue)
+inline QMap<QString, QString> selectedRecipeModels(const PictureRecipe &recipe, const ApplicationSettingsData &settings)
 {
   QMap<QString, QString> selected;
   QSet<QString> denoiseIds;
-  if(queue.recipe.globalEnabled && !queue.recipe.globalModelId.isEmpty()) denoiseIds.insert(queue.recipe.globalModelId);
-  for(const auto &layer : queue.recipe.layers)
+  if(recipe.globalEnabled && !recipe.globalModelId.isEmpty()) denoiseIds.insert(recipe.globalModelId);
+  for(const auto &layer : recipe.layers)
     if(layer.enabled && !layer.modelId.isEmpty()) denoiseIds.insert(layer.modelId);
-  for(const auto &model : queue.settings.denoiseModels)
+  for(const auto &model : settings.denoiseModels)
     if(denoiseIds.contains(model.id)) selected["denoise:" + model.id] = model.path;
   for(const auto &id : denoiseIds)
     if(!selected.contains("denoise:" + id)) throw std::runtime_error{"Selected denoise model is missing from the batch snapshot"};
-  const bool usesAiSharpen = (queue.recipe.globalEnabled && queue.recipe.globalSharpenMode == SharpenMode::Ai)
-    || std::any_of(queue.recipe.layers.begin(), queue.recipe.layers.end(),
+  const bool usesAiSharpen = (recipe.globalEnabled && recipe.globalSharpenMode == SharpenMode::Ai)
+    || std::any_of(recipe.layers.begin(), recipe.layers.end(),
                    [](const auto &layer) { return layer.enabled && layer.sharpenMode == SharpenMode::Ai; });
-  QString sharpenId = queue.recipe.sharpenModelId;
-  if(sharpenId.isEmpty() && !queue.settings.sharpenModels.isEmpty())
-    sharpenId = queue.settings.sharpenModels.front().id;
+  QString sharpenId = recipe.sharpenModelId;
+  if(sharpenId.isEmpty() && !settings.sharpenModels.isEmpty())
+    sharpenId = settings.sharpenModels.front().id;
   if(usesAiSharpen && sharpenId.isEmpty())
     throw std::runtime_error{"Selected sharpening model is missing from the batch snapshot"};
   if(usesAiSharpen && !sharpenId.isEmpty())
   {
-    for(const auto &model : queue.settings.sharpenModels)
+    for(const auto &model : settings.sharpenModels)
       if(model.id == sharpenId) selected["sharpen:" + model.id] = model.path;
     if(!selected.contains("sharpen:" + sharpenId))
       throw std::runtime_error{"Selected sharpening model is missing from the batch snapshot"};
+  }
+  return selected;
+}
+
+inline QMap<QString, QString> selectedBatchModels(const BatchQueue &queue)
+{
+  QMap<QString, QString> selected;
+  const auto legacy = fromQtRecipe(queue.recipe);
+  for(const auto &job : queue.jobs)
+  {
+    const auto recipe = toQtRecipe(loadBatchRecipeSnapshot(queue, job.source, legacy),
+                                   queue.recipe.previewWidth, queue.recipe.previewHeight);
+    selected.insert(selectedRecipeModels(recipe, queue.settings));
   }
   return selected;
 }
@@ -75,7 +90,11 @@ inline void saveBatchModelSnapshot(const BatchQueue &queue)
 inline void verifyBatchModelSnapshot(const BatchQueue &queue)
 {
   QFile file{batchModelSnapshotPath(queue)};
-  if(!file.exists()) return; // Recovery files created before model fingerprints remain readable.
+  if(!file.exists())
+  {
+    if(queue.requiresModels) throw std::runtime_error{"Required batch model snapshot is missing"};
+    return;
+  }
   if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"Cannot read batch model snapshot"};
   QJsonParseError error;
   const auto document = QJsonDocument::fromJson(file.readAll(), &error);

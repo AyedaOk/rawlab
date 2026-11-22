@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import {
   Aperture,
   ArrowDownToLine,
@@ -119,6 +120,9 @@ type Photo = {
   preset: string;
   kind: string;
 };
+function recipeEdits({layers, depthMaps, highlights, sharpenModelId, lensCorrection, chromaticAberration, preset}: Photo) {
+  return {layers, depthMaps, highlights, sharpenModelId, lensCorrection, chromaticAberration, preset};
+}
 const initialLayer = (): Layer => ({
   marks: [],
   points: [],
@@ -287,7 +291,7 @@ function App() {
   const externalLock = !!externalSession && (processing || externalPendingExit);
   const photosRef = useRef(photos);
   photosRef.current = photos;
-  const history = useRef(new Map<number, { undo: Photo[]; redo: Photo[] }>());
+  const history = useRef(new Map<number, { undo: ReturnType<typeof recipeEdits>[]; redo: ReturnType<typeof recipeEdits>[] }>());
   const photoRevisions = useRef(new Map<number, number>());
   const metadataRevisions = useRef(new Map<number, number>());
   const loadedRecipes = useRef(new Set<number>());
@@ -300,7 +304,7 @@ function App() {
   useEffect(() => () => {
     void persistence.current?.flushAll();
   }, []);
-  const loadingRecipes = useRef(new Set<number>());
+  const loadingRecipes = useRef(new Map<number, Promise<void>>());
   const recipeLoadTokens = useRef(new Map<number, number>());
   const rawPreviewCache = useRef(new Map<string, RawPreview>());
   const processedPreviewCache = useRef(new Map<string, RawPreview>());
@@ -363,8 +367,10 @@ function App() {
         if (cancelled) return;
         setExternalSession(external);
         if (!external)
-          void loadBatchStatus().then((status) => { setBatchQueue(status); setBatchRecoveryError(""); })
-            .catch((error) => { setBatchRecoveryError(String(error)); });
+          void loadBatchStatus().then((status) => {
+            setBatchQueue(status); setBatchRecoveryError("");
+            if (status.snapshot) setBatchDialogOpen(true);
+          }).catch((error) => { setBatchRecoveryError(String(error)); });
         const persisted = (external?.sources ?? libraryResult.paths).filter((path) => /\.(arw|cr2|cr3|dng|nef|nrw|orf|rw2|pef|raf|srw|raw)$/i.test(path));
         const restored: Photo[] = [];
         for (const path of persisted) {
@@ -381,6 +387,7 @@ function App() {
               setNotice(external.mode === "batch" ? "Darktable batch · adjust the first photo, then export" : "Darktable external edit");
             }
            for (const photo of restored) {
+             void restoreMetadata(photo, () => cancelled);
              if (external?.recipeSource && photo === restored[0]) {
                const preview = await renderRaw(photo.rawPath!, false, 400, true);
                const stored = (await loadRecipe(external.recipeSource, preview.width, preview.height)).recipe;
@@ -395,16 +402,6 @@ function App() {
                  } : item));
                }
              } else await restorePhotoRecipe(photo, () => cancelled);
-             try {
-              const metadataRevision = metadataRevisions.current.get(photo.id) ?? 0;
-              const stored = await libraryMetadata(photo.rawPath!);
-              if (!cancelled && (metadataRevisions.current.get(photo.id) ?? 0) === metadataRevision)
-                setPhotos((items) => items.map((item) => item.id === photo.id ? { ...item, rating: stored.rating, labels: stored.labels } : item));
-            } catch {
-              // Optional metadata must not prevent RAW restoration.
-            } finally {
-              loadedMetadata.current.add(photo.id);
-            }
           }
         }
         if (!cancelled) {
@@ -475,8 +472,8 @@ function App() {
           const saved = await Promise.race([save, timeoutReached]);
           if (timeout) window.clearTimeout(timeout);
           if (saved === "timeout") {
-            setNotice("Closing after the save timed out. Some recent changes may not be saved.");
-            await currentWindow.destroy();
+            closeFailed.current = true;
+            setNotice("Saving timed out. Close again to leave without saving.");
           } else if (saved) {
             if (externalSessionRef.current) await finishExternal(3);
             else await currentWindow.destroy();
@@ -777,6 +774,7 @@ function App() {
     return () => observer.disconnect();
   }, [library]);
   const photo = photos.find((p) => p.id === currentId) ?? photos[0] ?? demo;
+  const editLocked = externalLock || (isDesktop() && !!photo.rawPath && !loadedRecipes.current.has(photo.id));
   const selectedRawCount = selection.filter((id) => photos.find((item) => item.id === id)?.rawPath).length;
   const active = photo.layers.find((l) => l.id === layerId) ?? photo.layers[0];
   useEffect(() => {
@@ -1200,12 +1198,12 @@ function App() {
       canvasSize.width, canvasSize.height, pan.x, pan.y, zoom, editingMask,
       correctedGeometry, recipeKey, exportKind]);
   function restoreHistory(redo = false) {
-    if (closing.current || processing || externalLock) return;
+    if (closing.current || processing || editLocked) return;
     const h = history.current.get(photo.id);
     if (!h) return;
     const saved = (redo ? h.redo : h.undo).pop();
     if (!saved) return;
-    (redo ? h.undo : h.redo).push(photo);
+    (redo ? h.undo : h.redo).push(recipeEdits(photo));
     photoRevisions.current.set(photo.id, recipeRevision(photo.id) + 1);
     mark.current = null;
     setDepthDraft(undefined);
@@ -1214,7 +1212,7 @@ function App() {
     maskGuides.current?.move([0, 0], null);
     maskGuides.current?.hide();
     setPhotos((items) => items.map((p) => p.id === photo.id
-      ? { ...saved, url: p.url, metadata: p.metadata, processed: p.processed, dirty: true } : p));
+      ? { ...p, ...saved, dirty: true } : p));
     if (!saved.layers.some((layer) => layer.id === layerId)) {
       setLayerId(0);
       setEditingMask(false);
@@ -1222,23 +1220,26 @@ function App() {
   }
   function patchPhoto(values: Partial<Photo>) {
     if (closing.current) return;
-    if (externalLock && (values.layers !== undefined || values.highlights !== undefined
+    if (isDesktop() && photo.rawPath && !loadedMetadata.current.has(photo.id)
+        && (values.rating !== undefined || values.labels !== undefined)) {
+      void restoreMetadata(photo);
+      setNotice("Reloading ratings and labels. Try the change again after they load.");
+      return;
+    }
+    const changesRecipe = values.layers !== undefined || values.highlights !== undefined
       || values.chromaticAberration !== undefined || values.lensCorrection !== undefined
-      || values.sharpenModelId !== undefined || values.depthMaps !== undefined || values.preset !== undefined)) return;
-    photoRevisions.current.set(photo.id, (photoRevisions.current.get(photo.id) ?? 0) + 1);
+      || values.sharpenModelId !== undefined || values.depthMaps !== undefined || values.preset !== undefined;
+    if (editLocked && changesRecipe) return;
+    if (changesRecipe) photoRevisions.current.set(photo.id, recipeRevision(photo.id) + 1);
     if (values.rating !== undefined || values.labels !== undefined)
       metadataRevisions.current.set(photo.id, (metadataRevisions.current.get(photo.id) ?? 0) + 1);
-    if (
-      values.layers ||
-      values.highlights !== undefined ||
-      values.preset !== undefined
-    ) {
+    if (changesRecipe) {
       let h = history.current.get(photo.id);
       if (!h) {
         h = { undo: [], redo: [] };
         history.current.set(photo.id, h);
       }
-      h.undo.push(photo);
+      h.undo.push(recipeEdits(photo));
       if (h.undo.length > 20) h.undo.shift();
       h.redo = [];
     }
@@ -1247,7 +1248,7 @@ function App() {
     );
   }
   function change(values: Partial<Layer>) {
-    if (externalLock) return;
+    if (editLocked) return;
     const nextLayers = photo.layers.map((l) =>
       l.id === active.id ? { ...l, ...values } : l,
     );
@@ -1262,11 +1263,11 @@ function App() {
     }
   }
   function changeOptics(key: "chromaticAberration" | "lensCorrection", enabled: boolean) {
-    if (externalLock) return;
+    if (editLocked) return;
     patchPhoto({ [key]: enabled, dirty: true });
   }
   function changeExportKind(kind: "cfa" | "linear-rgb") {
-    if (externalLock || kind === exportKind) return;
+    if (editLocked || kind === exportKind) return;
     setExportKind(kind);
     if (!photo.processed || photo.dirty || !processedCurrent) return;
     const hasLinearEffects = photo.chromaticAberration || photo.lensCorrection
@@ -1276,15 +1277,31 @@ function App() {
       return;
     }
   }
-  async function restorePhotoRecipe(selected: Photo, cancelled = () => false) {
-    if (!selected.rawPath || loadedRecipes.current.has(selected.id)
-      || loadingRecipes.current.has(selected.id)) return;
+  async function restoreMetadata(item: Photo, cancelled = () => false) {
+    if (!item.rawPath) return;
+    const revision = metadataRevisions.current.get(item.id);
+    try {
+      const stored = await libraryMetadata(item.rawPath);
+      if (cancelled() || metadataRevisions.current.get(item.id) !== revision) return;
+      flushSync(() => setPhotos(items => items.map(p => p.id === item.id ? {...p, ...stored} : p)));
+      loadedMetadata.current.add(item.id);
+    } catch (error) {
+      if (!cancelled()) setNotice(`Could not read ratings and labels for ${item.name}: ${String(error)}`);
+    }
+  }
+  function restorePhotoRecipe(selected: Photo, cancelled = () => false): Promise<void> {
+    if (!selected.rawPath || loadedRecipes.current.has(selected.id)) return Promise.resolve();
+    const existing = loadingRecipes.current.get(selected.id);
+    if (existing) return existing;
+    const task = readPhotoRecipe(selected, selected.rawPath, cancelled);
+    loadingRecipes.current.set(selected.id, task);
+    return task;
+  }
+  async function readPhotoRecipe(selected: Photo, path: string, cancelled: () => boolean) {
     const id = selected.id;
-    const path = selected.rawPath;
     const revision = recipeRevision(id);
     const token = (recipeLoadTokens.current.get(id) ?? 0) + 1;
     recipeLoadTokens.current.set(id, token);
-    loadingRecipes.current.add(id);
     let loadSucceeded = false;
     try {
       let width = selected.previewWidth;
@@ -1305,7 +1322,7 @@ function App() {
         setRecipeError((error) => error?.id === id ? null : error);
       if (!stored || !Array.isArray(stored.layers) || recipeRevision(id) !== revision
         || recipeLoadTokens.current.get(id) !== token || cancelled()) return;
-      setPhotos((items) => items.map((item) => item.id === id && item.rawPath === path ? {
+      flushSync(() => setPhotos((items) => items.map((item) => item.id === id && item.rawPath === path ? {
         ...item,
         layers: stored.layers.map((layer, index) => {
           const storedLayer = layer as Partial<Layer>;
@@ -1316,7 +1333,7 @@ function App() {
         lensCorrection: stored.lensCorrection === true,
         sharpenModelId: stored.sharpenModelId,
         depthMaps: stored.depthMaps,
-      } : item));
+      } : item)));
     } catch (error) {
       if (recipeLoadTokens.current.get(id) === token) {
         if (!cancelled()) setRecipeError({ id,
@@ -1325,7 +1342,7 @@ function App() {
     } finally {
       if (recipeLoadTokens.current.get(id) === token) {
         loadingRecipes.current.delete(id);
-        if (loadSucceeded) {
+        if (loadSucceeded && !cancelled() && recipeRevision(id) === revision) {
           loadedRecipes.current.add(id);
           setRestoreEpoch((value) => value + 1);
         }
@@ -1422,14 +1439,7 @@ function App() {
            setPhotos((ps) => [...ps.filter((p) => p.kind !== "demo"), ...rawPhotos]);
            setSelection(rawPhotos.map((p) => p.id));
            void addLibraryPaths(rawPhotos.map((p) => p.rawPath!)).catch((error) => setNotice(`Could not save library: ${String(error)}`));
-           for (const raw of rawPhotos) {
-             const metadataRevision = metadataRevisions.current.get(raw.id) ?? 0;
-             void libraryMetadata(raw.rawPath!).then((stored) => {
-               if ((metadataRevisions.current.get(raw.id) ?? 0) !== metadataRevision) return;
-               setPhotos((items) => items.map((item) => item.id === raw.id
-                 ? { ...item, rating: stored.rating, labels: stored.labels } : item));
-             }).catch(() => {}).finally(() => loadedMetadata.current.add(raw.id));
-           }
+           for (const raw of rawPhotos) void restoreMetadata(raw);
          }
         let failures = 0;
          for (const [index, raw] of rawPhotos.entries()) {
@@ -1495,10 +1505,16 @@ function App() {
     setBatchDialogOpen(true);
     setBatchBusy(true);
     try {
+      for (const item of selectedPhotos) await restorePhotoRecipe(item);
+      const recipes = selectedPhotos.map(({id, name}) => {
+        const current = photosRef.current.find(item => item.id === id);
+        if (!current || !loadedRecipes.current.has(id)) throw new Error(`Could not restore recipe for ${name}`);
+        return recipeFor(current, exportKind);
+      });
       const result = await processBatch(
         sources,
         directory,
-        selectedPhotos.map((item) => recipeFor(item, exportKind)),
+        recipes,
         quality,
         (status) => { setBatchQueue(status); setNotice(`Batch export: ${status.completed}/${status.jobs.length} complete`); },
       );
@@ -1515,8 +1531,6 @@ function App() {
       await stopBatch();
       return;
     }
-    try { await discardBatch(); } catch { /* the export result remains visible if cleanup fails */ }
-    setBatchQueue(null);
     setBatchDialogOpen(false);
   }
   async function continueBatch(retry = false) {
@@ -1538,6 +1552,7 @@ function App() {
     try {
       setBatchQueue(await discardBatch());
       setBatchRecoveryError("");
+      setBatchDialogOpen(false);
       setNotice("Damaged batch recovery data was discarded.");
     } catch (error) {
       setNotice(`Could not discard batch recovery data: ${String(error)}`);
@@ -1639,9 +1654,16 @@ function App() {
       window.removeEventListener("keydown", escape);
     };
   }, [contextMenu]);
-  function applySelectedMetadata(values: Partial<Pick<Photo, "rating" | "labels">>) {
+  async function applySelectedMetadata(values: Partial<Pick<Photo, "rating" | "labels">>) {
     if (closing.current) return;
     const ids = new Set(selection);
+    if (isDesktop()) {
+      for (const item of photosRef.current.filter(item => ids.has(item.id) && item.rawPath)) {
+        if (!loadedMetadata.current.has(item.id)) await restoreMetadata(item);
+        if (!loadedMetadata.current.has(item.id)) return;
+      }
+    }
+    if (closing.current) return;
     const updates = photosRef.current
       .filter((item) => ids.has(item.id))
       .map((item) => ({ ...item, ...values }));
@@ -1683,7 +1705,7 @@ function App() {
     ];
   }
   async function addSamPoint(point: [number, number], foreground: boolean) {
-    if (externalLock) return;
+    if (editLocked) return;
     if (!photo.rawPath || !isDesktop()) {
       setNotice("Point masks require a RAW image in the desktop application.");
       return;
@@ -1714,7 +1736,7 @@ function App() {
     }
   }
   async function addDepthMask() {
-    if (processing || externalLock || active.depth) return;
+    if (processing || editLocked || active.depth) return;
     const key = `${photo.id}:${active.id}`;
     setDepthError(null);
     if (!photo.rawPath || !isDesktop()) {
@@ -1794,6 +1816,9 @@ function App() {
           >
             <SlidersHorizontal size={16} /> Edit
          </button>
+          {!externalSession && (batchQueue?.snapshot || batchRecoveryError) && (
+            <button className="tab" onClick={() => setBatchDialogOpen(true)}>Saved batch</button>
+          )}
         </nav>
         <IconButton label="Preferences" onClick={() => showSettings(true)}>
           <Settings2 size={18} />
@@ -2543,7 +2568,7 @@ function App() {
                 </div>
               </div>
               <div className="edit-scroll">
-                <fieldset className="edit-lock" disabled={externalLock}>
+                <fieldset className="edit-lock" disabled={editLocked}>
                 <Section title="Layers" icon={<Layers size={16} />}>
                   <div className="layer-list">
                     {photo.layers.map((layer) => (
@@ -2886,21 +2911,25 @@ function App() {
           </>
         )}
       </div>
-      {batchDialogOpen && batchQueue && (
+      {batchDialogOpen && (batchQueue || batchRecoveryError) && (
         <div className="modal-backdrop" role="presentation">
           <section className="export-dialog" role="dialog" aria-modal="true" aria-labelledby="export-dialog-title">
             <div className="export-dialog-header">
-              <div><h2 id="export-dialog-title">Exporting {batchQueue.jobs.length} photographs</h2><p>{batchBusy ? progress || "Preparing export…" : `${batchQueue.completed} complete`}</p></div>
+              <div><h2 id="export-dialog-title">Batch export</h2><p>{batchBusy ? progress || "Preparing export…" : `${batchQueue?.completed ?? 0} complete`}</p></div>
               <button className="subtle" onClick={() => void closeBatchDialog()}>{batchBusy ? "Cancel" : "Close"}</button>
             </div>
             <div className="export-dialog-jobs">
-              {batchQueue.jobs.map((job) => <div className="export-dialog-job" key={`${job.source}:${job.output}`}>
+              {batchRecoveryError && <p role="alert">{batchRecoveryError}</p>}
+              {batchQueue?.jobs.map((job) => <div className="export-dialog-job" key={`${job.source}:${job.output}`}>
                 <span className={`batch-state state-${job.state}`}>{["Pending","Running","Completed","Failed","Cancelled"][job.state]}</span>
                 <span>{job.source.split(/[\\/]/).pop()}</span>
                 {job.message && <small>{job.message}</small>}
               </div>)}
             </div>
-            {!batchBusy && batchQueue.remaining > 0 && <div className="dialog-actions"><button className="button" onClick={() => void continueBatch(true)}>Retry unfinished</button><button className="button secondary" onClick={() => void closeBatchDialog()}>Close</button></div>}
+            {!batchBusy && <div className="dialog-actions">
+              {!batchRecoveryError && !!batchQueue?.remaining && <button className="button" onClick={() => void continueBatch(true)}>Retry unfinished</button>}
+              <button className="button secondary" onClick={() => void discardBrokenBatch()}>Discard recovery</button>
+            </div>}
           </section>
         </div>
       )}

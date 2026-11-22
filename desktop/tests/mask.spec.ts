@@ -148,7 +148,11 @@ test('mask history keeps the editor open and clear can be undone', async ({ page
   await expect(overlay).toHaveAttribute('data-mark-count', '2');
   await editor.getByRole('button', { name: 'Clear mask', exact: true }).click();
   await expect(overlay).toHaveAttribute('data-mark-count', '0');
+  await page.getByRole('button', { name: 'Rate 5 stars' }).click();
+  await page.getByRole('button', { name: 'Add red color label' }).click();
   await editor.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Remove red color label' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Rate 5 stars' }).locator('svg')).toHaveAttribute('fill', 'currentColor');
   await expect(overlay).toHaveAttribute('data-mark-count', '2');
   const show = page.getByRole('switch', { name: 'Show mask', exact: true });
   await show.click();

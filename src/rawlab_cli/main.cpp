@@ -2,6 +2,7 @@
 #include "rawlab/ai/Sam2Segmenter.h"
 #include "rawlab/core/Version.h"
 #include "rawlab/dng/DngWriter.h"
+#include "rawlab/dng/Publish.h"
 #include "rawlab/image/PngImage.h"
 #include "rawlab/pipeline/RawProcessingPipeline.h"
 #include "rawlab/raw/LibRawDecoder.h"
@@ -13,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <QTemporaryFile>
 
 namespace {
 
@@ -178,6 +180,9 @@ int main(const int argc, char **argv)
     if(command == "process" && argc >= 4)
     {
       const ProcessOptions options = parseProcessOptions(argc, argv);
+      const std::filesystem::path destination{argv[3]};
+      if(std::filesystem::exists(std::filesystem::symlink_status(destination)))
+        throw std::runtime_error{"Choose a new DNG path; existing files are not overwritten"};
       const auto source = rawlab::raw::LibRawDecoder{}.decodeRawImage(std::filesystem::path{argv[2]});
       rawlab::raw::RawImage output = source;
       if(!options.denoise.empty())
@@ -192,7 +197,11 @@ int main(const int argc, char **argv)
             rawlab::image::readMaskPng(options.mask),
             {options.blend, options.clippedHighlights, true}, progress);
       }
-      rawlab::dng::TiffDngWriter{}.writeCfaDng(std::filesystem::path{argv[3]}, output);
+      QTemporaryFile temporary{QString::fromLocal8Bit(argv[3]) + ".rawlab-XXXXXX"};
+      if(!temporary.open()) throw std::runtime_error{"Cannot create temporary DNG"};
+      temporary.close();
+      rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.fileName().toStdString(), output);
+      rawlab::dng::publish(temporary.fileName().toStdString(), destination);
       std::cout << "Wrote Bayer CFA DNG: " << argv[3] << '\n';
       return 0;
     }

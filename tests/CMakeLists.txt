@@ -10,6 +10,13 @@ target_link_libraries(rawlab_smoke_test
 rawlab_enable_warnings(rawlab_smoke_test)
 
 add_test(NAME rawlab_smoke_test COMMAND rawlab_smoke_test)
+find_program(RAWLAB_LUA_EXECUTABLE NAMES lua lua5.4 lua5.3)
+if(RAWLAB_LUA_EXECUTABLE)
+  add_test(NAME rawlab_darktable_receipt_test COMMAND ${RAWLAB_LUA_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/darktable_receipt_test.lua
+    ${CMAKE_SOURCE_DIR}/packaging/darktable/RawLab.lua
+    ${CMAKE_CURRENT_BINARY_DIR}/receipt-test)
+endif()
 
 add_executable(rawlab_rawnind_gain_test rawnind_gain_test.cpp)
 target_include_directories(rawlab_rawnind_gain_test PRIVATE ${CMAKE_SOURCE_DIR}/src/rawlab_core/src)
@@ -74,6 +81,11 @@ rawlab_enable_warnings(rawlab_raw_denoise_test)
 add_test(NAME rawlab_raw_denoise_test COMMAND rawlab_raw_denoise_test)
 
 if(RAWLAB_BUILD_CLI)
+add_executable(rawlab_export_safety_test export_safety_test.cpp)
+target_include_directories(rawlab_export_safety_test PRIVATE ${CMAKE_SOURCE_DIR}/src/rawlab_preview)
+target_link_libraries(rawlab_export_safety_test PRIVATE rawlab::desktop_support Qt6::Gui)
+rawlab_enable_warnings(rawlab_export_safety_test)
+add_test(NAME rawlab_export_safety_test COMMAND rawlab_export_safety_test $<TARGET_FILE:rawlab_cli>)
 add_test(
   NAME rawlab_process_requires_denoise
   COMMAND $<TARGET_FILE:rawlab_cli> process unused.raw unused.dng --blend 1.0

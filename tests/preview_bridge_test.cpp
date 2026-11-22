@@ -351,8 +351,9 @@ int main(int argc, char **argv)
    QFile receipt{externalRequest + ".results"};
    if(externalResult["complete"] != true || !QFileInfo::exists(externalOutput)
       || !receipt.open(QIODevice::ReadOnly) || !receipt.readAll().startsWith("rawlab-results-v1\ncomplete\n")) return 1;
-   QImage maskImage{1, 1, QImage::Format_Grayscale8};
-  maskImage.fill(255);
+  QImage maskImage{129, 63, QImage::Format_Grayscale8};
+  for(int y = 0; y < maskImage.height(); ++y)
+    for(int x = 0; x < maskImage.width(); ++x) maskImage.scanLine(y)[x] = x % 2 ? 255 : 0;
   QByteArray maskBytes;
   QBuffer maskBuffer{&maskBytes};
   maskBuffer.open(QIODevice::WriteOnly);
@@ -376,6 +377,13 @@ int main(int argc, char **argv)
    QJsonObject recipeLoad{{"operation", "recipe_load"}, {"path", input}};
   const auto roundTrip = send(recipeLoad)["recipe"].toObject();
   const auto roundTripLayer = roundTrip["layers"].toArray().at(1).toObject();
+  recipeSave["recipe"] = roundTrip;
+  recipeSave["width"] = 16; recipeSave["height"] = 8;
+  if(send(recipeSave)["saved"] != true) return 1;
+  const auto resaved = send(recipeLoad)["recipe"].toObject()["layers"].toArray().at(1).toObject();
+  for(const auto &value : {resaved["aiMask"].toString(), resaved["categoryMasks"].toArray().at(0).toString()})
+    if(QImage::fromData(QByteArray::fromBase64(value.toLatin1())).convertToFormat(QImage::Format_Grayscale8) != maskImage)
+      return 1;
    if(roundTripLayer["strokes"].toArray().size() < 2 || roundTripLayer["strokes"].toArray().at(1).toObject()["tool"] != "Gradient"
       || roundTripLayer["points"].toArray().isEmpty()
      || roundTripLayer["categoryMasks"].toArray().at(0).toString().isEmpty()

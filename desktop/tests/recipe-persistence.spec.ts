@@ -156,14 +156,14 @@ test('synchronous save errors remain retryable', async ({page}) => {
   expect(result).toEqual({saved: false, retried: true, attempts: 2, remaining: []});
 });
 
-test('an edit made during recipe restoration is preserved and saved', async ({page}) => {
+test('recipe controls wait for restoration and ratings do not discard saved layers', async ({page}) => {
   await page.addInitScript(() => {
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
     let resolveLoad!: (value: unknown) => void;
     let loads=0;
     const saves: any[]=[];
     Object.assign(window,{isTauri:true,__recipeSaves:saves,__recipeLoads:()=>loads,
-      __resolveRecipeLoad:()=>resolveLoad({recipe:{layers:[{id:0,name:'Global',enabled:true,modelId:'denoise',blend:12,sharpen:'Off',strength:30,marks:[],points:[]}]}}),
+      __resolveRecipeLoad:()=>resolveLoad({recipe:{layers:[{id:0,name:'Global',enabled:true,modelId:'denoise',blend:12,sharpen:'Off',strength:30,marks:[],points:[]},{id:1,name:'Saved subject',enabled:true,marks:[],points:[]}]}}),
       __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
         if(command==='external_session'||command==='supersede_previews') return null;
         if(command==='processing_models') return {models:{denoise:[{id:'denoise',name:'Denoise',available:true}],sharpen:[],provider:'cpu'}};
@@ -182,12 +182,15 @@ test('an edit made during recipe restoration is preserved and saved', async ({pa
   await page.goto('/');
   await expect(page.getByRole('button',{name:'Select a.ARW',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
-  await page.getByRole('slider',{name:'Blend with denoised'}).fill('67');
+  await expect(page.getByRole('slider',{name:'Blend with denoised'})).toBeDisabled();
+  await page.getByRole('button',{name:'Rate 5 stars'}).click();
   await page.evaluate(() => (window as any).__resolveRecipeLoad());
-  await expect(page.getByRole('slider',{name:'Blend with denoised'})).toHaveValue('67');
+  await expect(page.getByRole('slider',{name:'Blend with denoised'})).toHaveValue('12');
+  await expect(page.getByRole('slider',{name:'Blend with denoised'})).toBeEnabled();
   await expect.poll(() => page.evaluate(() => (window as any).__recipeSaves.length)).toBe(1);
   const saved = await page.evaluate(() => (window as any).__recipeSaves[0]);
-  expect(saved.recipe.layers[0].blend).toBe(67);
+  expect(saved.recipe.layers[0].blend).toBe(12);
+  expect(saved.recipe.layers[1].name).toBe('Saved subject');
   expect([saved.width,saved.height]).toEqual([321,213]);
   expect(await page.evaluate(() => (window as any).__recipeLoads())).toBe(1);
 });
@@ -219,7 +222,8 @@ test('saved recipe is restored after a page restart', async ({page}) => {
   await expect(page.getByRole('slider',{name:'Blend with denoised'})).toHaveValue('58');
 });
 
-test('close waits for saves and remains open after a failed write', async ({page}) => {
+for (const timeout of [false, true]) test(`close keeps pending edits after save failure or timeout (timeout=${timeout})`, async ({page}) => {
+  if(timeout) await page.clock.install();
   await page.addInitScript(() => {
     const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
     const callbacks=new Map<number,(event:any)=>unknown>();
@@ -262,6 +266,18 @@ test('close waits for saves and remains open after a failed write', async ({page
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
   await page.getByRole('slider',{name:'Blend with denoised'}).fill('73');
   const close = page.evaluate(() => (window as any).__requestClose());
+  if(timeout) {
+    await expect(page.getByText('Saving changes before closing...')).toBeVisible();
+    await page.clock.fastForward(10_001);
+    await close;
+    expect(await page.evaluate(() => (window as any).__destroyed())).toBe(0);
+    await expect(page.getByText('Saving timed out. Close again to leave without saving.')).toBeVisible();
+    await page.evaluate(() => (window as any).__releaseSave(false));
+    expect(await page.evaluate(() => (window as any).__destroyed())).toBe(0);
+    await page.evaluate(() => (window as any).__requestClose());
+    expect(await page.evaluate(() => (window as any).__destroyed())).toBe(1);
+    return;
+  }
   await page.waitForTimeout(200);
   expect(await page.evaluate(() => (window as any).__destroyed())).toBe(0);
   await page.evaluate(() => (window as any).__releaseSave(true));
@@ -272,6 +288,45 @@ test('close waits for saves and remains open after a failed write', async ({page
   await expect(page.getByRole('button',{name:'Retry save'})).toBeHidden();
   await page.evaluate(() => (window as any).__requestClose());
   await expect.poll(() => page.evaluate(() => (window as any).__destroyed())).toBe(1);
+});
+
+test('failed metadata reads cannot save defaults; retry preserves untouched labels', async ({page}) => {
+  await page.addInitScript(() => {
+    const calls:string[]=[];
+    const saves:any[]=[];
+    let repaired=false;
+    const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+    Object.assign(window,{isTauri:true,metadataCalls:calls,metadataSaves:saves,repairMetadata:()=>{repaired=true;},
+      __TAURI_INTERNALS__:{invoke:async(command:string,args:any)=>{
+        calls.push(command);
+        if(command==='external_session') return {mode:'single',sources:['/photos/a.ARW'],output:'/out/a.dng'};
+        if(command==='processing_models') return {models:{denoise:[],sharpen:[],provider:'cpu'}};
+        if(command==='render_raw_preview') return {version:1,width:3,height:3,png,metadata:{}};
+        if(command==='process_raw') return {output:args.output};
+        if(command==='desktop_control') {
+          const op=args.request.operation;
+          if(op==='library_list') return {paths:[]};
+          if(op==='preset_list') return {names:[]};
+          if(op==='recipe_load') return {outcome:'missing',recipe:null};
+          if(op==='library_metadata') {
+            if(!repaired) throw Error('Metadata unavailable');
+            return {rating:5,labels:['red']};
+          }
+          if(op==='library_metadata_save') {saves.push(args.request);return {};}
+        }
+        return {};
+      }}});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Export and return to Darktable'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).metadataCalls.includes('finish_external'))).toBe(true);
+  expect(await page.evaluate(()=>(window as any).metadataSaves.length)).toBe(0);
+  await page.evaluate(()=>(window as any).repairMetadata());
+  await page.getByRole('button',{name:'Rate 4 stars'}).click();
+  await expect(page.getByRole('button',{name:'Remove red color label'})).toBeVisible();
+  await page.getByRole('button',{name:'Rate 4 stars'}).click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).metadataSaves.at(-1)?.rating)).toBe(4);
+  expect(await page.evaluate(()=>(window as any).metadataSaves.at(-1).labels)).toEqual(['red']);
 });
 
 test('an invalid stored recipe is never overwritten by automatic saving', async ({page}) => {
@@ -297,7 +352,7 @@ test('an invalid stored recipe is never overwritten by automatic saving', async 
   await page.goto('/');
   await expect(page.getByText(/Could not restore recipe for a.ARW:.*Malformed recipe JSON/)).toBeVisible();
   await page.getByRole('button',{name:'Select a.ARW',exact:true}).dblclick();
-  await page.getByRole('slider',{name:'Blend with denoised'}).fill('44');
+  await expect(page.getByRole('slider',{name:'Blend with denoised'})).toBeDisabled();
   await page.waitForTimeout(900);
   expect(await page.evaluate(() => (window as any).__recipeSaves())).toBe(0);
   await page.evaluate(() => (window as any).__repairRecipe());

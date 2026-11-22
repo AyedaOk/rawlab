@@ -31,6 +31,8 @@ struct BatchQueue
   QString snapshotId;
   QString receiptPath;
   bool temporary = false;
+  bool requiresRecipes = false;
+  bool requiresModels = false;
 
   static BatchQueue create(const QStringList &sources, const QString &directory,
                            PictureRecipe recipe, ApplicationSettingsData settings)

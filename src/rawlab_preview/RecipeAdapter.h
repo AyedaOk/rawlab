@@ -20,13 +20,15 @@ inline QString maskPng(const rawlab::pipeline::Mask &mask)
   return QString::fromLatin1(bytes.toBase64());
 }
 
-inline std::optional<rawlab::pipeline::Mask> decodeMaskPng(const QJsonValue &value, int width, int height)
+inline std::optional<rawlab::pipeline::Mask> decodeMaskPng(const QJsonValue &value, int width = 0, int height = 0)
 {
   const QByteArray data = QByteArray::fromBase64(value.toString().toLatin1());
   if(data.isEmpty()) return std::nullopt;
-  const QImage image = QImage::fromData(data, "PNG").convertToFormat(QImage::Format_Grayscale8)
-                         .scaled(width, height, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+  QImage image = QImage::fromData(data, "PNG").convertToFormat(QImage::Format_Grayscale8);
+  if(width && height) image = image.scaled(width, height, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
   if(image.isNull()) throw std::runtime_error{"Invalid recipe mask PNG"};
+  width = image.width();
+  height = image.height();
   std::vector<float> values(static_cast<std::size_t>(width * height));
   for(int y = 0; y < height; ++y)
     for(int x = 0; x < width; ++x)
@@ -219,7 +221,7 @@ inline PictureRecipe toQtRecipe(const QJsonObject &front,int width,int height)
     layer.blend=l["blend"].toDouble(100)/100;layer.sharpenMode=mode(l["sharpen"].toString());layer.sharpenEnabled=layer.sharpenMode!=SharpenMode::Off;layer.sharpenStrength=l["strength"].toDouble(100)/100;
     layer.blendMode=l["blendMode"].toString("original");
     layer.inverted=l["inverted"].toBool();layer.showMask=l["showMask"].toBool(true);layer.feather=l["feather"].toDouble()/1000;layer.blur=l["blur"].toDouble()/1000;
-    layer.baseMask = decodeMaskPng(l["aiMask"], width, height);
+    layer.baseMask = decodeMaskPng(l["aiMask"]);
     if(l.contains("depth")) (void)desktopMask(l, 1, 1, front["depthMaps"].toObject());
     layer.strokes = readStrokes(l["strokes"].toArray());
     if(l.contains("marks"))
@@ -249,7 +251,7 @@ inline PictureRecipe toQtRecipe(const QJsonObject &front,int width,int height)
     for(int category = 0; category < 3; ++category)
     {
       const auto masks = l["categoryMasks"].toArray();
-      if(category < masks.size()) layer.categoryMasks[static_cast<std::size_t>(category)] = decodeMaskPng(masks[category], width, height);
+      if(category < masks.size()) layer.categoryMasks[static_cast<std::size_t>(category)] = decodeMaskPng(masks[category]);
       const auto strokes = l["categoryStrokes"].toArray();
       if(category < strokes.size()) layer.categoryStrokes[static_cast<std::size_t>(category)] = readStrokes(strokes[category].toArray());
     }

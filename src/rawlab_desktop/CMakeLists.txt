@@ -9,7 +9,6 @@ add_library(rawlab_desktop_support STATIC
   PictureLibraryStore.h
   PictureRecipe.cpp
   PictureRecipe.h
-  BatchModelSnapshot.h
   BatchQueue.h
   BatchQueueStore.h
   ExternalBatch.h

@@ -25,7 +25,11 @@ inline QJsonObject loadBatchRecipeSnapshot(const BatchQueue &queue, const QStrin
                                            const QJsonObject &legacyRecipe)
 {
   QFile file{batchRecipeSnapshotPath(queue)};
-  if(!file.exists()) return legacyRecipe;
+  if(!file.exists())
+  {
+    if(queue.requiresRecipes) throw std::runtime_error{"Required batch recipes are missing"};
+    return legacyRecipe;
+  }
   if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"Cannot read per-photo batch recipes"};
   const auto document = QJsonDocument::fromJson(file.readAll());
   const auto snapshots = document.object();

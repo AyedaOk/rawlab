@@ -6,6 +6,7 @@
 #include "BatchRecipeSnapshot.h"
 #include "ExternalBatch.h"
 #include "rawlab/dng/DngWriter.h"
+#include "rawlab/dng/Publish.h"
 #include "rawlab/image/LensCorrection.h"
 #include <QUuid>
 #include <QBuffer>
@@ -234,10 +235,7 @@ int main(int argc, char **argv)
                     const auto previews = dngPreviews(*image, {});
                     rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *image, &previews);
                   }
-                 std::error_code linkError;
-                 std::filesystem::create_hard_link(temporary.toStdString(), job.output.toStdString(), linkError);
-                 if(linkError) throw std::runtime_error{"Could not publish Darktable output"};
-                 QFile::remove(temporary);
+                 rawlab::dng::publish(temporary.toStdString(), job.output.toStdString());
                }
                catch(...) { QFile::remove(temporary); throw; }
                job.state = BatchQueue::State::Completed;
@@ -323,10 +321,7 @@ int main(int argc, char **argv)
                  checkCancelled();
                  job.publishedHash = BatchQueueStore::hashFile(temporary);
                  BatchQueueStore::save(*queue);
-                 std::error_code linkError;
-                std::filesystem::create_hard_link(temporary.toStdString(), job.output.toStdString(), linkError);
-                if(linkError) throw std::runtime_error{"Could not publish batch output"};
-                QFile::remove(temporary);
+                rawlab::dng::publish(temporary.toStdString(), job.output.toStdString());
               }
               catch(...) { QFile::remove(temporary); throw; }
               job.state = BatchQueue::State::Completed;
@@ -475,8 +470,7 @@ int main(int argc, char **argv)
                rawlab::dng::TiffDngWriter{}.writeCfaDng(temporary.toStdString(), *processed, &previews);
             }
             checkCancelled();
-            std::filesystem::create_hard_link(temporary.toStdString(), destination.toStdString());
-            std::filesystem::remove(temporary.toStdString());
+            rawlab::dng::publish(temporary.toStdString(), destination.toStdString());
           }
           catch(...) { std::error_code ec; std::filesystem::remove(temporary.toStdString(), ec); throw; }
           response["output"] = destination;

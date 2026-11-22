@@ -6,6 +6,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace {
 
@@ -252,6 +253,8 @@ void ApplicationSettingsStore::save(const ApplicationSettingsData &data) const
     settings.setValue(QStringLiteral("origin"), model.origin);
   }
   settings.endArray();
+  settings.sync();
+  if(settings.status() != QSettings::NoError) throw std::runtime_error{"Cannot save application settings"};
 }
 
 SamModelDefinition ApplicationSettingsStore::samModelById(const ApplicationSettingsData &data,

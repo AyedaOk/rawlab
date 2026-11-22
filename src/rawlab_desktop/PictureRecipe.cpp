@@ -427,8 +427,7 @@ PictureRecipeLoadResult PictureRecipeStore::loadAtPathResult(
                 QStringLiteral("Recipe mask is unreadable: %1").arg(maskName)};
       try
       {
-        rawlab::pipeline::Mask mask = rawlab::image::readMaskPng(maskPath.toStdString());
-        layer.baseMask = resizeMask(mask, targetWidth, targetHeight);
+        layer.baseMask = rawlab::image::readMaskPng(maskPath.toStdString());
       }
       catch(const std::exception &error)
       {
@@ -512,8 +511,7 @@ PictureRecipeLoadResult PictureRecipeStore::loadAtPathResult(
                     QStringLiteral("Recipe mask is unreadable: %1").arg(categoryMaskName)};
           try
           {
-            layer.categoryMasks[index] = resizeMask(
-              rawlab::image::readMaskPng(maskPath.toStdString()), targetWidth, targetHeight);
+            layer.categoryMasks[index] = rawlab::image::readMaskPng(maskPath.toStdString());
           }
           catch(const std::exception &error)
           {

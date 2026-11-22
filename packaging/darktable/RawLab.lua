@@ -132,14 +132,15 @@ local function run_batch(images, occupied)
   if job.valid then job.valid = false end
   local imported, complete = pcall(import_results, request .. ".results", allowed, #images)
   os.remove(request .. ".results.cancel")
-  if ran and imported then os.remove(request); os.remove(request .. ".results") end
+  if ran and result == 0 and imported and complete then os.remove(request); os.remove(request .. ".results") end
   if not ran then error(result) end
   if not imported then
     dt.print_error("RawLab receipt retained at " .. request .. ".results")
     error(complete)
   end
+  if result ~= 0 then error("RawLab exited with status " .. tostring(result) .. "; receipt retained at " .. request .. ".results") end
   if complete then dt.print(_("RawLab batch complete; outputs imported"))
-  else dt.print(_("RawLab batch stopped; completed outputs imported")) end
+  else dt.print(_("RawLab batch incomplete; receipt retained at ") .. request .. ".results") end
 end
 
 local function run_single(image, occupied)

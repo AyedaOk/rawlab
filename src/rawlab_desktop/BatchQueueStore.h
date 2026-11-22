@@ -55,7 +55,8 @@ public:
     for(const auto &job : queue.jobs)
       jobs.push_back(QJsonObject{{"source", job.source}, {"output", job.output},
         {"state", static_cast<int>(job.state)}, {"message", job.message}, {"hash", job.publishedHash}});
-    const QJsonObject json{{"version", 1}, {"snapshot", queue.snapshotId},
+    const QJsonObject json{{"version", 2}, {"snapshot", queue.snapshotId},
+      {"requiresRecipes", queue.requiresRecipes}, {"requiresModels", queue.requiresModels},
       {"receipt", queue.receiptPath},
       {"width", queue.recipe.previewWidth}, {"height", queue.recipe.previewHeight},
       {"settings", settings}, {"jobs", jobs}};
@@ -72,11 +73,23 @@ public:
     if(!file.open(QIODevice::ReadOnly)) throw std::runtime_error{"Cannot read saved batch"};
     const auto json = QJsonDocument::fromJson(file.readAll()).object();
     const QString id = json["snapshot"].toString();
-    if(json["version"].toInt() != 1 || id.size() != 32 || id.contains('/') || id.contains('\\')
+    const int version = json["version"].toInt();
+    if((version != 1 && version != 2) || id.size() != 32 || id.contains('/') || id.contains('\\')
        || json["width"].toInt() <= 0 || json["height"].toInt() <= 0 || !json["jobs"].isArray())
       throw std::runtime_error{"Invalid batch recovery file"};
     BatchQueue queue;
     queue.snapshotId = id;
+    if(version == 2)
+    {
+      if(!json["requiresRecipes"].isBool() || !json["requiresModels"].isBool())
+        throw std::runtime_error{"Invalid batch snapshot requirements"};
+      queue.requiresRecipes = json["requiresRecipes"].toBool();
+      queue.requiresModels = json["requiresModels"].toBool();
+      const QString root = directory() + '/' + id + '/';
+      if((queue.requiresRecipes && !QFileInfo::exists(root + "recipes.json"))
+         || (queue.requiresModels && !QFileInfo::exists(root + "models.json")))
+        throw std::runtime_error{"Required batch snapshot is missing"};
+    }
     queue.receiptPath = json["receipt"].toString();
     if(!queue.receiptPath.isEmpty() && !QDir::isAbsolutePath(queue.receiptPath))
       throw std::runtime_error{"Invalid saved batch receipt path"};

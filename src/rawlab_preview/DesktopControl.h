@@ -99,13 +99,17 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
   {
     ModelDownloader downloader;QEventLoop loop;QJsonArray entries;QString error;
     QObject::connect(&downloader,&ModelDownloader::catalogModelFound,&loop,[&](QString id,QString name,QString version,QString task,QString adapter,bool installed){entries.push_back(QJsonObject{{"id",id},{"name",name},{"version",version},{"task",task},{"adapter",adapter},{"installed",installed}});});
-    QObject::connect(&downloader,&ModelDownloader::modelInstalled,&loop,[&](QString id,QString name,QString version,QString task,QString adapter,QString location){ApplicationSettingsStore::registerInstalledModel(settings,id,name,task,adapter,location,version);ApplicationSettingsStore{}.save(settings);});
+    bool installed = false;
+    QObject::connect(&downloader,&ModelDownloader::modelInstalled,&loop,[&](QString id,QString name,QString version,QString task,QString adapter,QString location){ApplicationSettingsStore::registerInstalledModel(settings,id,name,task,adapter,location,version);installed=true;});
     QObject::connect(&downloader,&ModelDownloader::progressChanged,&loop,[&](int percent){progress({{"progress",percent},{"total",100},{"stage","Downloading model"}});});
     QObject::connect(&downloader,&ModelDownloader::failed,&loop,[&](QString message){error=message;loop.quit();});
     QObject::connect(&downloader,&ModelDownloader::finished,&loop,&QEventLoop::quit);
     QTimer cancel;cancel.setInterval(100);QObject::connect(&cancel,&QTimer::timeout,&loop,[&]{if(QFileInfo::exists(request["cancelPath"].toString())){error="Download cancelled";downloader.cancel();loop.quit();}});cancel.start();
     QTimer::singleShot(0,&downloader,[&]{if(operation=="catalog")downloader.refreshCatalog();else downloader.start({request["id"].toString()});});
-    loop.exec();if(!error.isEmpty())throw std::runtime_error{error.toStdString()};return {{"catalog",entries}};
+    loop.exec();
+    if(installed) ApplicationSettingsStore{}.save(settings);
+    if(!error.isEmpty())throw std::runtime_error{error.toStdString()};
+    return {{"catalog",entries}};
   }
   if(operation=="library_list" || operation=="library_add" || operation=="library_remove")
   {
@@ -181,6 +185,8 @@ inline QJsonObject desktopControl(const QJsonObject &request, const std::functio
                              request["height"].toInt(1024));
     BatchQueue queue = BatchQueue::create(sources, directory, std::move(recipe), settings);
     queue.temporary = request["temporary"].toBool(false);
+    queue.requiresRecipes = !recipes.isEmpty();
+    queue.requiresModels = true;
     try
     {
       if(!queue.temporary) beginBatchModelSnapshot();

@@ -20,7 +20,10 @@ QString metadataKey(const QString &path)
 
 QStringList PictureLibraryStore::files() const
 {
-  return QSettings{}.value(QStringLiteral("library/files")).toStringList();
+  QSettings settings;
+  const auto paths = settings.value(QStringLiteral("library/files")).toStringList();
+  if(settings.status() != QSettings::NoError) throw std::runtime_error{"Cannot read picture library"};
+  return paths;
 }
 
 QStringList PictureLibraryStore::addFiles(const QStringList &paths) const
@@ -31,7 +34,10 @@ QStringList PictureLibraryStore::addFiles(const QStringList &paths) const
     const QString normalized = normalizedPath(path);
     if(!normalized.isEmpty() && !result.contains(normalized)) result.push_back(normalized);
   }
-  QSettings{}.setValue(QStringLiteral("library/files"), result);
+  QSettings settings;
+  settings.setValue(QStringLiteral("library/files"), result);
+  settings.sync();
+  if(settings.status() != QSettings::NoError) throw std::runtime_error{"Cannot save picture library"};
   return result;
 }
 
@@ -39,7 +45,10 @@ void PictureLibraryStore::removeFiles(const QStringList &paths) const
 {
   QStringList result = files();
   for(const QString &path : paths) result.removeAll(normalizedPath(path));
-  QSettings{}.setValue(QStringLiteral("library/files"), result);
+  QSettings settings;
+  settings.setValue(QStringLiteral("library/files"), result);
+  settings.sync();
+  if(settings.status() != QSettings::NoError) throw std::runtime_error{"Cannot save picture library"};
 }
 
 void PictureLibraryStore::removeMetadata(const QString &path) const
@@ -60,6 +69,7 @@ PictureLibraryMetadata PictureLibraryStore::metadata(const QString &path) const
   const QStringList allowed{"red", "yellow", "green", "blue", "purple"};
   for(const QString &label : settings.value(key + "/labels").toStringList())
     if(allowed.contains(label) && !result.labels.contains(label)) result.labels.push_back(label);
+  if(settings.status() != QSettings::NoError) throw std::runtime_error{"Cannot read library metadata"};
   return result;
 }
 
