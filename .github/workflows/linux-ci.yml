@@ -32,13 +32,9 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - name: Fetch pinned ONNX Runtime headers
-        run: |
-          mkdir -p "$RUNNER_TEMP/onnx-include"
-          curl --fail --location --retry 3 \
-            https://raw.githubusercontent.com/microsoft/onnxruntime/v1.20.1/include/onnxruntime/core/session/onnxruntime_c_api.h \
-            --output "$RUNNER_TEMP/onnx-include/onnxruntime_c_api.h"
+        run: python3 scripts/stage-onnxruntime.py headers "$RUNNER_TEMP/onnx"
       - name: Configure
-        run: cmake --preset dev -DONNXRuntime_INCLUDE_DIR="$RUNNER_TEMP/onnx-include"
+        run: cmake --preset dev -DONNXRuntime_INCLUDE_DIR="$RUNNER_TEMP/onnx/include"
       - name: Build
         run: cmake --build --preset dev --parallel 2
       - name: Test (no model downloads required)
